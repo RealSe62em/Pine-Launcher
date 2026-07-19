@@ -1,0 +1,310 @@
+:root {
+  /* ── True black base ─────────────────────────────────────── */
+  --bg-0:       #000000;
+  --bg-1:       rgba(255,255,255,0.03);
+  --bg-2:       rgba(255,255,255,0.06);
+  --bg-3:       rgba(255,255,255,0.10);
+
+  /* ── Glass surface system (depth layers) ─────────────────── */
+  --glass-surface-base:       rgba(255,255,255,0.04);
+  --glass-surface-raised:     rgba(255,255,255,0.06);
+  --glass-surface-overlay:    rgba(255,255,255,0.10);
+  --glass-surface-modal:      rgba(255,255,255,0.14);
+  --glass-surface-cinematic:  rgba(255,255,255,0.18);
+
+  --glass-blur-base:     12px;
+  --glass-blur-raised:   20px;
+  --glass-blur-overlay:  40px;
+  --glass-blur-modal:    60px;
+  --glass-blur-cinematic: 80px;
+
+  --glass-inner-shadow:      inset 0 0.5px 0 rgba(255,255,255,0.12);
+  --glass-inner-shadow-deep: inset 0 0.5px 0 rgba(255,255,255,0.18), inset 0 -0.5px 0 rgba(0,0,0,0.2);
+  --glass-leak:              linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 100%);
+  --glass-stroke:            rgba(255,255,255,0.15);
+
+  /* ── iOS neon accent colors ──────────────────────────────── */
+  --accent:        #5e5ce6;
+  --accent-2:      #64d2ff;
+  --accent-orange: #ff9f0a;
+  --accent-green:  #30d158;
+  --accent-red:    #ff453a;
+  --accent-dim:    rgba(94, 92, 230, 0.20);
+  --accent-glow:  0 0 24px rgba(94, 92, 230, 0.35);
+  --accent-grad:  linear-gradient(135deg, #5e5ce6 0%, #64d2ff 100%);
+
+  /* ── Text ────────────────────────────────────────────────── */
+  --text-hi:    #ffffff;
+  --text-md:    rgba(255,255,255,0.65);
+  --text-lo:    rgba(255,255,255,0.40);
+  --text-on-accent: #ffffff;
+
+  /* ── Semantic ────────────────────────────────────────────── */
+  --success:    #30d158;
+  --success-dim: rgba(48, 209, 88, 0.20);
+  --warning:    #ff9f0a;
+  --warning-dim: rgba(255, 159, 10, 0.20);
+  --danger:     #ff453a;
+  --danger-dim: rgba(255, 69, 58, 0.20);
+  --scrim:      rgba(0, 0, 0, 0.50);
+
+  /* ── Typography ──────────────────────────────────────────── */
+  --font-sans:  -apple-system, 'Inter', 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+  --font-mono:  ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', monospace;
+
+  --text-caption:   12px;
+  --text-body:      15px;
+  --text-headline:  17px;
+  --text-title:     20px;
+  --text-large:     28px;
+  --text-extra-large: 34px;
+
+  --tracking-default: 0;
+  --tracking-tight:   -0.02em;
+  --tracking-wide:    0.04em;
+
+  /* ── Radii (iOS large) ───────────────────────────────────── */
+  --r-xs:   8px;
+  --r-sm:   12px;
+  --r-md:   16px;
+  --r-lg:   22px;
+  --r-xl:   28px;
+  --r-pill: 9999px;
+
+  /* ── Spacing ─────────────────────────────────────────────── */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ── iOS spring easings ──────────────────────────────────── */
+  --ease-spring:       cubic-bezier(0.32, 0.94, 0.6, 1);
+  --ease-spring-snappy: cubic-bezier(0.16, 1.3, 0.3, 1);
+  --ease-ios:          cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-glass:        cubic-bezier(0.22, 1, 0.36, 1);
+
+  --dur-instant: 80ms;
+  --dur-fast:    160ms;
+  --dur-base:    240ms;
+  --dur-slow:    400ms;
+  --dur-cinema:  600ms;
+
+  /* ── Glass shadow system ─────────────────────────────────── */
+  --shadow-glass-sm: 0 2px 8px rgba(0,0,0,0.5), 0 0.5px 0 rgba(255,255,255,0.06);
+  --shadow-glass-md: 0 8px 24px rgba(0,0,0,0.5), 0 0.5px 0 rgba(255,255,255,0.08);
+  --shadow-glass-lg: 0 16px 48px rgba(0,0,0,0.6), 0 0.5px 0 rgba(255,255,255,0.10);
+
+  /* ── Z-index system ──────────────────────────────────────── */
+  --z-glass:   1;
+  --z-content: 2;
+  --z-topbar:  10;
+  --z-tabbar:  15;
+  --z-dropdown: 20;
+  --z-overlay: 30;
+  --z-modal:   40;
+  --z-toast:   50;
+  --z-cmdk:    60;
+
+  /* ── Layout ──────────────────────────────────────────────── */
+  --topbar-h:  52px;
+  --tabbar-h:  64px;
+  --content-max: 1280px;
+  --safe-bottom: 20px;
+}
+
+/* ── Pride Mode ──────────────────────────────────────────── */
+@keyframes pride-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@keyframes pride-ambient {
+  0%   { opacity: .06; transform: scale(1) translate(0, 0); }
+  25%  { opacity: .1;  transform: scale(1.1) translate(2%, -2%); }
+  50%  { opacity: .06; transform: scale(1) translate(0, 0); }
+  75%  { opacity: .1;  transform: scale(1.05) translate(-2%, 2%); }
+  100% { opacity: .06; transform: scale(1) translate(0, 0); }
+}
+html.pride-mode {
+  --accent-grad: repeating-linear-gradient(
+    90deg,
+    #e40303 0%, #e40303 8.33%,
+    #ff8c00 8.33%, #ff8c00 16.66%,
+    #ffed00 16.66%, #ffed00 25%,
+    #008026 25%, #008026 33.33%,
+    #004dff 33.33%, #004dff 41.66%,
+    #750787 41.66%, #750787 50%
+  );
+  --accent-glow: 0 0 24px rgba(228,3,3,0.35), 0 0 48px rgba(255,140,0,0.2);
+  --accent: #750787;
+  --accent-2: #008026;
+  --accent-dim: rgba(117,7,135,0.25);
+}
+/* Ambient rainbow lights behind all pages */
+html.pride-mode::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 40% at 10% 30%, rgba(228,3,3,0.15) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 35% at 25% 60%, rgba(255,140,0,0.12) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 40% at 40% 20%, rgba(255,237,0,0.1) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 35% at 55% 70%, rgba(0,128,38,0.12) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 40% at 70% 25%, rgba(0,77,255,0.12) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 35% at 85% 65%, rgba(117,7,135,0.15) 0%, transparent 55%),
+    radial-gradient(ellipse 40% 30% at 50% 50%, rgba(255,255,255,0.04) 0%, transparent 50%);
+  animation: pride-ambient 12s ease-in-out infinite;
+}
+html.pride-mode .brand-mark::after {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 6s ease infinite;
+}
+html.pride-mode .brand-mark {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 6s ease infinite;
+}
+html.pride-mode .brand-name {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: pride-shift 4s ease infinite;
+}
+html.pride-mode .playing-pill {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 6s ease infinite;
+}
+/* All primary buttons get the rainbow */
+html.pride-mode .btn-primary {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 4s ease infinite;
+  border: none;
+  box-shadow: var(--accent-glow);
+}
+html.pride-mode .btn-primary:hover {
+  filter: brightness(1.15);
+}
+html.pride-mode .btn-primary:active {
+  filter: brightness(.85);
+}
+/* Secondary/accent-tinted buttons */
+html.pride-mode .btn-secondary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+html.pride-mode .btn-secondary:hover {
+  background: var(--accent-dim);
+}
+/* Tab bar active indicator, accent toggles, chips, etc. */
+html.pride-mode .tabbar-item.active .tabbar-label {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: pride-shift 4s ease infinite;
+}
+html.pride-mode .tabbar-item.active .tabbar-icon {
+  color: var(--accent);
+}
+html.pride-mode .chip.accent {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 6s ease infinite;
+}
+html.pride-mode .slider-fill,
+html.pride-mode input[type="checkbox"]:checked + .check-visual {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 6s ease infinite;
+}
+html.pride-mode .accent-text {
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: pride-shift 4s ease infinite;
+}
+/* Animated rainbow border on every surface element */
+html.pride-mode {
+  --glass-stroke: rgba(117,7,135,0.35);
+}
+html.pride-mode .settings-card,
+html.pride-mode .mod-card,
+html.pride-mode .content-item,
+html.pride-mode .instance-card,
+html.pride-mode .discover-filters,
+html.pride-mode .pick-instance,
+html.pride-mode .modal,
+html.pride-mode .glass-panel,
+html.pride-mode .step-progress,
+html.pride-mode .profile-card,
+html.pride-mode .world-card,
+html.pride-mode .modal-header,
+html.pride-mode .modal-body,
+html.pride-mode .modal-footer,
+html.pride-mode .sheet,
+html.pride-mode .sheet-header,
+html.pride-mode .sheet-body,
+html.pride-mode .launch-splash,
+html.pride-mode .instance-hero,
+html.pride-mode .instance-mods-header,
+html.pride-mode .results-header,
+html.pride-mode .empty-state,
+html.pride-mode .color-swatches {
+  position: relative;
+  border: 1px solid transparent !important;
+  background-clip: padding-box !important;
+}
+html.pride-mode .settings-card::after,
+html.pride-mode .mod-card::after,
+html.pride-mode .content-item::after,
+html.pride-mode .instance-card::after,
+html.pride-mode .discover-filters::after,
+html.pride-mode .pick-instance::after,
+html.pride-mode .modal::after,
+html.pride-mode .glass-panel::after,
+html.pride-mode .step-progress::after,
+html.pride-mode .profile-card::after,
+html.pride-mode .world-card::after,
+html.pride-mode .modal-header::after,
+html.pride-mode .modal-body::after,
+html.pride-mode .modal-footer::after,
+html.pride-mode .sheet::after,
+html.pride-mode .sheet-header::after,
+html.pride-mode .sheet-body::after,
+html.pride-mode .launch-splash::after,
+html.pride-mode .instance-hero::after,
+html.pride-mode .instance-mods-header::after,
+html.pride-mode .results-header::after,
+html.pride-mode .empty-state::after,
+html.pride-mode .color-swatches::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: var(--accent-grad);
+  background-size: 600% 100%;
+  animation: pride-shift 4s ease infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+html.pride-mode input.input,
+html.pride-mode select.input,
+html.pride-mode textarea.input {
+  border-color: rgba(117,7,135,0.4);
+}

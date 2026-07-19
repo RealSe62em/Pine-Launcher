@@ -1,0 +1,15 @@
+{
+  "name": "glaunch",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "author": "Pine Launcher",
+  "license": "MIT",
+  "dependencies": {
+    "electron": "^28.0.0",
+    "minecraft-launcher-core": "^3.18.2"
+  }
+}

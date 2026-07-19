@@ -1,0 +1,102 @@
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.4;
+  color: var(--text-hi);
+  background: var(--bg-0);
+  font-feature-settings: 'cv11', 'ss01';
+  user-select: none;
+}
+
+/* ── iOS-style ambient backdrop ───────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -40%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 800px 600px at 20% 10%, rgba(94, 92, 230, 0.08), transparent 60%),
+    radial-gradient(ellipse 600px 500px at 80% 80%, rgba(100, 210, 255, 0.06), transparent 60%),
+    radial-gradient(ellipse 500px 400px at 50% 50%, rgba(255, 159, 10, 0.03), transparent 60%);
+  filter: blur(60px);
+  transition: background 2s var(--ease-glass);
+}
+
+/* ── Grain texture for realism ────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.08 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  mix-blend-mode: overlay;
+}
+
+#app, .app {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  isolation: isolate;
+}
+
+/* ── iOS Dynamic Type Scale ───────────────────────────────── */
+h1 { font-size: var(--text-large); font-weight: 700; letter-spacing: var(--tracking-tight); line-height: 1.1; }
+h2 { font-size: var(--text-title); font-weight: 600; letter-spacing: var(--tracking-tight); line-height: 1.2; }
+h3 { font-size: var(--text-headline); font-weight: 600; }
+h4 { font-size: var(--text-body); font-weight: 500; }
+p  { color: var(--text-md); font-size: var(--text-body); }
+
+small, .caption { color: var(--text-lo); font-size: var(--text-caption); }
+code, kbd, .mono { font-family: var(--font-mono); }
+
+a {
+  color: var(--accent-2);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-ios);
+}
+a:hover { color: var(--accent); }
+
+/* ── Focus ring ──────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* ── Scrollbars ──────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--glass-surface-raised);
+  border-radius: 8px;
+}
+* { scrollbar-width: thin; scrollbar-color: var(--glass-surface-raised) transparent; }
+
+/* ── Selection ────────────────────────────────────────────── */
+::selection { background: var(--accent-dim); color: var(--text-hi); }
+
+[hidden] { display: none !important; }
+
+svg:not([width]):not([height]) { width: 1em; height: 1em; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}

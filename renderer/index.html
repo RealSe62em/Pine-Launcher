@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pine Launcher</title>
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/base.css">
+  <link rel="stylesheet" href="styles/shell.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <link rel="stylesheet" href="styles/animations.css">
+</head>
+<body>
+  <!-- ── Inline SVG sprite (referenced via <use href="#i-...">) ── -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="9 22 9 12 15 12 15 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-discover" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="currentColor"/></symbol>
+      <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-chevron-left" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="7 10 12 15 17 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><line x1="8" y1="21" x2="16" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="17" x2="12" y2="21" stroke="currentColor" stroke-width="2"/></symbol>
+      <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="9" x2="12" y2="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="17" x2="12.01" y2="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    </defs>
+  </svg>
+
+  <div id="app" class="app">
+
+    <!-- ── Top bar ─────────────────────────────────────────── -->
+    <header class="topbar">
+      <div class="brand" id="brand-button" role="button" tabindex="0" aria-label="Pine Launcher home">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-name">Pine Launcher</div>
+      </div>
+      <button class="cmd-k" id="cmdk-button" type="button" aria-label="Search">
+        <svg class="cmd-k-icon" aria-hidden="true"><use href="#i-search"/></svg>
+        <span class="cmd-k-text">Search or jump to instance…</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+      <div class="account" id="account-row" role="button" tabindex="0" aria-label="Account menu">
+        <div id="playing-pill" class="playing-pill" hidden><span id="playing-pill-name">Playing</span></div>
+        <div class="avatar avatar-logged-out" id="account-avatar">G</div>
+        <div class="account-info">
+          <div class="account-name" id="account-name">Sign in</div>
+          <div class="account-caret" aria-hidden="true">▾</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Floating Bottom Tab Bar ────────────────────────── -->
+    <nav class="tabbar" id="tabbar" aria-label="Main navigation">
+      <button class="tabbar-item active" data-view="home" type="button" aria-label="Home">
+        <svg aria-hidden="true"><use href="#i-home"/></svg>
+        <span>Home</span>
+      </button>
+      <button class="tabbar-item" data-view="discover" type="button" aria-label="Discover">
+        <svg aria-hidden="true"><use href="#i-discover"/></svg>
+        <span>Discover</span>
+      </button>
+      <button class="tabbar-item" data-view="library" type="button" aria-label="Library">
+        <svg aria-hidden="true"><use href="#i-library"/></svg>
+        <span>Library</span>
+      </button>
+      <button class="tabbar-item" data-view="instance" type="button" aria-label="Instance" hidden>
+        <svg aria-hidden="true"><use href="#i-monitor"/></svg>
+        <span>Instance</span>
+      </button>
+      <button class="tabbar-item" data-view="settings" type="button" aria-label="Settings">
+        <svg aria-hidden="true"><use href="#i-settings"/></svg>
+        <span>Settings</span>
+      </button>
+      <div class="tabbar-indicator" id="tabbar-indicator"></div>
+    </nav>
+
+    <!-- ── Home indicator ─────────────────────────────────-- -->
+    <div class="home-indicator" aria-hidden="true"></div>
+
+    <!-- ── Main view ───────────────────────────────────────── -->
+    <main id="content" class="main">
+
+      <div id="status-bar" class="status-bar">
+        <span id="status-text">Ready</span>
+      </div>
+
+      <!-- HOME ──────────────────────────────────────────────── -->
+      <section id="view-home" class="view active">
+        <div class="home-hero">
+          <div>
+            <div class="home-greeting" id="home-greeting">Welcome back</div>
+            <div class="home-sub" id="home-sub">Your Minecraft launcher, refined.</div>
+          </div>
+          <div class="home-hero-right">
+            <span class="instance-count">
+              <svg width="14" height="14"><use href="#i-monitor"/></svg>
+              <span id="home-instance-stat">0 instances</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="hero-card card">
+          <div class="hero-badge">Welcome</div>
+          <h1 class="hero-title">Your Minecraft launcher, refined.</h1>
+          <p class="hero-copy">Minimal interface, premium polish, and clear launch feedback for every session.</p>
+          <div class="hero-actions">
+            <button class="btn btn-primary" id="hero-launch-button" type="button">Continue playing</button>
+            <button class="btn" type="button" id="hero-create-btn">New instance</button>
+            <button class="btn btn-ghost" type="button" data-view="discover">Discover mods</button>
+          </div>
+        </div>
+
+        <div class="section-header-row">
+          <div>
+            <h2>Continue playing</h2>
+            <p class="section-copy">Pick up where you left off.</p>
+          </div>
+        </div>
+        <div id="recent-cards" class="card-row"></div>
+
+        <div class="section-header-row">
+          <div>
+            <h2>Your library</h2>
+            <p class="section-copy">All your instances in one place.</p>
+          </div>
+          <a class="section-link" data-view="library">View all</a>
+        </div>
+        <div id="home-instance-grid" class="card-grid"></div>
+      </section>
+
+      <!-- DISCOVER ──────────────────────────────────────────── -->
+      <section id="view-discover" class="view">
+        <div class="page-header">
+          <div>
+            <h1>Discover</h1>
+            <p class="section-copy">Search mods, resource packs, and more.</p>
+          </div>
+        </div>
+
+        <div class="discover-categories" id="discover-categories">
+          <div class="discover-indicator" id="discover-indicator"></div>
+          <button class="chip chip-active" data-category="mod">Mods</button>
+          <button class="chip" data-category="resourcepack">Resource Packs</button>
+          <button class="chip" data-category="modpack">Mod Packs</button>
+          <button class="chip" data-category="datapack">Data Packs</button>
+          <button class="chip" data-category="shader">Shaders</button>
+        </div>
+
+        <div class="discover-toolbar">
+          <div class="search-container">
+            <svg class="search-container-icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input id="search-input" class="search-container-input" placeholder="Search mods..." autocomplete="off">
+            <button class="btn btn-primary btn-sm search-container-btn" id="discover-search-btn" type="button">Search</button>
+          </div>
+          <div class="toolbar-divider"></div>
+          <label for="results-sort" class="toolbar-label">Sort</label>
+          <select id="results-sort" class="input toolbar-select"></select>
+          <span id="results-count" class="results-count">Search results</span>
+        </div>
+
+        <div class="discover-layout">
+          <aside class="filter-panel">
+            <div class="filter-group">
+              <label for="filter-loader">Mod loader</label>
+              <select id="filter-loader" class="input"></select>
+            </div>
+            <div class="filter-group">
+              <label for="filter-version">Minecraft version</label>
+              <select id="filter-version" class="input"></select>
+            </div>
+            <div class="filter-group">
+              <label for="filter-category">Category</label>
+              <input id="filter-category" class="input" placeholder="e.g. performance" autocomplete="off">
+            </div>
+            <button class="btn btn-primary btn-block" id="discover-search-btn-alt" type="button">Search mods</button>
+          </aside>
+          <div class="results-panel">
+            <div id="results-grid" class="mod-grid"></div>
+            <button id="load-more-btn" class="btn btn-secondary btn-block" type="button" hidden>Load more</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- LIBRARY ───────────────────────────────────────────── -->
+      <section id="view-library" class="view">
+        <div class="page-header">
+          <div>
+            <h1>Library</h1>
+            <p class="section-copy">Browse and manage your instances.</p>
+          </div>
+          <button class="btn" type="button" id="library-create-btn">New instance</button>
+        </div>
+        <div id="library-grid" class="card-grid"></div>
+      </section>
+
+      <!-- INSTANCE DETAIL ───────────────────────────────────── -->
+      <section id="view-instance" class="view">
+        <div class="page-header page-header-slim">
+          <button class="btn btn-ghost" type="button" data-view="library">
+            <svg width="16" height="16" aria-hidden="true"><use href="#i-chevron-left"/></svg>
+            Back
+          </button>
+          <div id="instance-header-info" class="instance-header-info"></div>
+          <div class="instance-header-actions">
+            <button id="instance-settings-btn" class="btn btn-ghost btn-icon" type="button" aria-label="Instance settings" title="Instance settings">
+              <svg width="18" height="18" aria-hidden="true"><use href="#i-settings"/></svg>
+            </button>
+            <button id="instance-play-btn" class="btn btn-primary btn-xl" type="button">
+              <svg width="16" height="16" aria-hidden="true"><use href="#i-play"/></svg>
+              Play
+            </button>
+          </div>
+        </div>
+
+        <div id="instance-tabs" class="tab-list">
+          <button class="tab active" data-tab="content" type="button">Content</button>
+          <button class="tab" data-tab="worlds" type="button">Worlds</button>
+          <button class="tab" data-tab="logs" type="button">Logs</button>
+          <button class="tab" data-tab="settings" type="button">Settings</button>
+        </div>
+
+        <div id="instance-tab-content" class="tab-content">
+          <div class="tab-pane active" data-tab="content">
+            <div class="tab-toolbar">
+              <button class="btn btn-secondary" type="button" id="instance-add-content">Add content</button>
+              <input id="content-search" class="input" placeholder="Search installed mods..." autocomplete="off">
+            </div>
+            <div id="content-list" class="content-list"></div>
+          </div>
+          <div class="tab-pane" data-tab="worlds">
+            <div id="worlds-grid" class="card-grid"></div>
+          </div>
+          <div class="tab-pane" data-tab="logs">
+            <div class="log-toolbar">
+              <button class="btn btn-secondary" type="button" id="copy-log-btn">Copy log</button>
+              <button class="btn btn-secondary" type="button" id="clear-log-btn">Clear</button>
+              <span id="log-status" class="text-muted"></span>
+            </div>
+            <pre id="logs-viewer" class="log-viewer">Launch an instance to see live logs here...</pre>
+          </div>
+          <div class="tab-pane" data-tab="settings">
+            <div id="instance-settings-form" class="settings-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS ──────────────────────────────────────────── -->
+      <section id="view-settings" class="view">
+        <div class="page-header">
+          <div>
+            <h1>Settings</h1>
+            <p class="section-copy">Customize your launcher experience.</p>
+          </div>
+        </div>
+        <div id="settings-layout" class="settings-layout"></div>
+      </section>
+
+    </main>
+
+    <!-- ── Docked progress (bottom-center, glass) ──────────── -->
+    <div class="docked-progress" id="docked-progress" hidden>
+      <div class="dp-main">
+        <div class="dp-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24"><use href="#i-download"/></svg>
+        </div>
+        <div class="dp-body">
+          <div class="dp-title">
+            <span class="dp-name" id="dp-instance-name">Preparing</span>
+            <span class="dp-stage" id="dp-stage">Waiting for launch</span>
+          </div>
+          <div class="dp-bar" id="dp-bar">
+            <div class="dp-fill" id="dp-fill"></div>
+          </div>
+        </div>
+        <div class="dp-metrics">
+          <div class="dp-pct" id="dp-pct">0%</div>
+          <div class="dp-sub">
+            <span id="dp-speed">—</span>
+            <span class="sep">·</span>
+            <span id="dp-eta">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="dp-fix" id="dp-fix"></div>
+    </div>
+  </div>
+
+  <!-- ── Modal (overlay + dialog) ──────────────────────────── -->
+  <div id="modal-overlay" class="modal-root" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div id="modal-header" class="modal-header">
+        <div>
+          <h2 id="modal-title" class="modal-title">Create Instance</h2>
+          <p class="modal-sub">Choose a profile and configure the basics.</p>
+        </div>
+        <button class="modal-close" type="button" id="modal-close-btn" aria-label="Close modal">
+          <svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+      <div id="modal-body" class="modal-body">
+        <div class="profile-grid">
+          <button class="profile-card selected" type="button" data-profile="vanilla">
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/></svg></div>
+            <div class="profile-card-name">Vanilla</div>
+            <div class="profile-card-desc">Launch clean Minecraft with default loader.</div>
+          </button>
+          <button class="profile-card" type="button" data-profile="performance">
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/></svg></div>
+            <div class="profile-card-name">Performance</div>
+            <div class="profile-card-desc">Fabric with optimization mods for better FPS.</div>
+          </button>
+          <button class="profile-card" type="button" data-profile="custom">
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83" fill="none" stroke="currentColor" stroke-width="2"/></svg></div>
+            <div class="profile-card-name">Custom</div>
+            <div class="profile-card-desc">Select your own loader and version.</div>
+          </button>
+        </div>
+
+        <div class="modal-form">
+          <div class="form-row">
+            <label for="modal-name">Instance name</label>
+            <input id="modal-name" class="input" placeholder="My Minecraft world" autocomplete="off">
+          </div>
+          <div class="form-row">
+            <label>Loader</label>
+            <div id="loader-segmented" class="segmented"></div>
+          </div>
+          <div class="form-row form-grid-2">
+            <div class="version-picker">
+              <label for="modal-version">Minecraft version</label>
+              <select id="modal-version" class="input"></select>
+              <label class="snapshot-inline">
+                <input type="checkbox" id="show-snapshots" hidden>
+                <span class="check-visual"></span>
+                Show snapshots
+              </label>
+            </div>
+            <div>
+              <label for="modal-loader-version">Loader version</label>
+              <select id="modal-loader-version" class="input" disabled></select>
+            </div>
+          </div>
+          <div class="form-row form-grid-2 upload-grid">
+            <div class="upload-field">
+              <div class="upload-area" id="icon-upload">
+                <input type="file" id="modal-icon" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+                <div class="upload-placeholder">
+                  <svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 0 1 2.828 0L16 16m-2-2l1.586-1.586a2 2 0 0 1 2.828 0L20 14m-6-6h.01M6 20h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                  <span>Icon image</span>
+                </div>
+                <div class="upload-preview" id="icon-preview" hidden></div>
+              </div>
+            </div>
+            <div class="upload-field">
+              <div class="upload-area" id="banner-upload">
+                <input type="file" id="modal-banner" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+                <div class="upload-placeholder">
+                  <svg width="24" height="24" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/></svg>
+                  <span>Banner image</span>
+                </div>
+                <div class="upload-preview" id="banner-preview" hidden></div>
+              </div>
+              <div class="blur-dir" id="blur-dir-wrap" hidden>
+                <label class="blur-dir-label">Blur direction</label>
+                <div class="blur-dir-options">
+                  <label class="blur-dir-opt"><input type="radio" name="blur-dir" value="left" checked><span>Left</span></label>
+                  <label class="blur-dir-opt"><input type="radio" name="blur-dir" value="right"><span>Right</span></label>
+                  <label class="blur-dir-opt"><input type="radio" name="blur-dir" value="none"><span>None</span></label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="perf-mods-wrap" class="collapsible">
+            <div>
+              <div id="perf-mods-container" class="perf-mods">
+                <div class="perf-mods-label">Auto-installing optimization mods</div>
+                <div id="perf-mods-list" class="perf-mods-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" type="button" id="modal-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" type="button" id="modal-create-btn">Create</button>
+      </div>
+      <div id="modal-progress" class="modal-progress" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="modal-progress-fill"></div></div>
+        <span id="modal-progress-text">Creating instance...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONFIRM DIALOG ────────────────────────────────────── -->
+  <div id="confirm-dialog-root" class="modal-root" hidden>
+    <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="confirm-title" class="modal-title">Delete instance</h2>
+          <p class="modal-sub" id="confirm-sub">This action cannot be undone.</p>
+        </div>
+      </div>
+      <div class="modal-body" id="confirm-body">
+        <div class="confirm-warn">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span id="confirm-message">Are you sure you want to delete <strong id="confirm-instance-name"></strong>? All mods, saves, and configuration will be permanently removed.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" type="button" id="confirm-cancel">Cancel</button>
+        <button class="btn btn-danger" type="button" id="confirm-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EDIT INSTANCE SHEET ────────────────────────────────── -->
+  <div id="edit-sheet-root" class="sheet-root" hidden role="dialog" aria-modal="true" aria-labelledby="edit-sheet-title">
+    <div class="sheet">
+      <div class="sheet-header">
+        <h2 id="edit-sheet-title" class="sheet-title">Instance Settings</h2>
+        <button class="modal-close" type="button" id="edit-sheet-close" aria-label="Close">
+          <svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+      <div class="sheet-body" id="edit-sheet-body">
+        <div class="form-row">
+          <label for="edit-name">Instance name</label>
+          <input id="edit-name" class="input" autocomplete="off">
+        </div>
+        <div class="form-row form-grid-2 upload-grid">
+          <div class="upload-field">
+            <div class="upload-area" id="edit-icon-upload">
+              <input type="file" id="edit-icon" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+              <div class="upload-placeholder">
+                <svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 0 1 2.828 0L16 16m-2-2l1.586-1.586a2 2 0 0 1 2.828 0L20 14m-6-6h.01M6 20h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
+                <span>Icon image</span>
+              </div>
+              <div class="upload-preview" id="edit-icon-preview" hidden></div>
+            </div>
+          </div>
+          <div class="upload-field">
+            <div class="upload-area" id="edit-banner-upload">
+              <input type="file" id="edit-banner" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+              <div class="upload-placeholder">
+                <svg width="24" height="24" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"></rect><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"></circle></svg>
+                <span>Banner image</span>
+              </div>
+              <div class="upload-preview" id="edit-banner-preview" hidden></div>
+            </div>
+            <div class="blur-dir" id="edit-blur-dir-wrap" hidden>
+              <label class="blur-dir-label">Blur direction</label>
+              <div class="blur-dir-options">
+                <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="left" checked><span>Left</span></label>
+                <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="right"><span>Right</span></label>
+                <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="none"><span>None</span></label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>Instance folder</label>
+          <div class="sheet-folder-row">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5z"/></svg>
+            <span id="edit-folder-path"></span>
+            <button class="btn-icon" id="edit-copy-path" type="button" title="Copy path">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="sheet-footer">
+        <button class="btn btn-danger" type="button" id="edit-sheet-delete">Delete instance</button>
+        <button class="btn btn-secondary" type="button" id="edit-sheet-cancel">Cancel</button>
+        <button class="btn btn-primary" type="button" id="edit-sheet-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JAVA REQUIRED OVERLAY ──────────────────────────────── -->
+  <div id="java-overlay" class="modal-root" hidden>
+    <div class="modal java-modal">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title">Java not found</h2>
+          <p class="modal-sub">Minecraft requires Java to run. No Java installation was detected on your system.</p>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="java-modal-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+        </div>
+        <p class="java-modal-desc">Click the button below to download and install Java 21 (recommended for modern Minecraft). After installing, restart the launcher.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary btn-lg" type="button" id="java-install-btn">Download Java 21</button>
+        <button class="btn btn-secondary" type="button" id="java-retry-btn">I've installed it — check again</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+  <script type="module" src="script.js"></script>
+</body>
+</html>

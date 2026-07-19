@@ -1,0 +1,22 @@
+# Sensitive data
+auth.json
+
+# Instances (user data)
+instances/
+
+# Cache
+.cache/
+
+# Claude editor personal settings
+.claude/settings.local.json
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
