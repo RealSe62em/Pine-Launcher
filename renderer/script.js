@@ -238,9 +238,7 @@ function toggleAccountMenu() {
   menu.className = 'account-menu';
   const uuid = state.authData?.profile?.uuid;
   const initial = (state.authData?.profile?.name || 'G')[0].toUpperCase();
-  const avatarHtml = uuid
-    ? `<img src="https://mc-heads.net/avatar/${uuid}/36" alt="" style="width:100%;height:100%;object-fit:cover" onerror="this.outerHTML='${escHtml(initial)}'">`
-    : escHtml(initial);
+  const avatarHtml = escHtml(initial);
 
   menu.innerHTML = state.authData ? `
     <div class="account-menu-header">
@@ -894,14 +892,7 @@ function signOut() {
 }
 
 function setAvatarImage(el, uuid, name) {
-  el.innerHTML = '';
-  const img = document.createElement('img');
-  img.alt = name || 'Player';
-  img.style.cssText = 'width:100%;height:100%;object-fit:cover';
-  const fallback = () => { el.textContent = (name || 'G')[0].toUpperCase(); };
-  img.onerror = fallback;
-  img.src = `https://mc-heads.net/avatar/${uuid}/28`;
-  el.appendChild(img);
+  el.textContent = (name || 'G')[0].toUpperCase();
 }
 
 function updateAuthUI() {

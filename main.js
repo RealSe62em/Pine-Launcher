@@ -1,12 +1,11 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, safeStorage } = require('electron');
 const { Client } = require('minecraft-launcher-core');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const http = require('http');
 const https = require('https');
 const os = require('os');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 
 let mainWindow;
 let mcClient = null;
@@ -39,6 +38,24 @@ async function getRequiredJava(mcVersion) {
   return 8;
 }
 
+// ── Security helpers ────────────────────────────────────────────────
+const SAFE_NAME_RE = /^[a-zA-Z0-9_\- .]+$/;
+
+function sanitizeName(name) {
+  if (!name || typeof name !== 'string') throw new Error('Invalid name');
+  if (!SAFE_NAME_RE.test(name)) throw new Error('Name contains invalid characters');
+  if (name.length > 120) throw new Error('Name too long');
+  return name.trim();
+}
+
+function resolveSafePath(base, ...parts) {
+  const resolved = path.resolve(base, ...parts);
+  if (!resolved.startsWith(path.resolve(base))) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 function readJSON(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
@@ -50,6 +67,31 @@ function writeJSON(file, data) {
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+// ── Safe auth storage ───────────────────────────────────────
+function writeAuth(data) {
+  const json = JSON.stringify(data);
+  if (safeStorage.isEncryptionAvailable()) {
+    const encrypted = safeStorage.encryptString(json);
+    fs.writeFileSync(AUTH_FILE, encrypted);
+  } else {
+    fs.writeFileSync(AUTH_FILE, json, 'utf8');
+  }
+}
+
+function readAuth() {
+  try {
+    if (!fs.existsSync(AUTH_FILE)) return null;
+    const raw = fs.readFileSync(AUTH_FILE);
+    if (safeStorage.isEncryptionAvailable()) {
+      const decrypted = safeStorage.decryptString(raw);
+      return JSON.parse(decrypted);
+    }
+    return JSON.parse(raw.toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 function isValidJar(filePath) {
@@ -127,7 +169,8 @@ function fmtBytes(bytes) {
 // ── Java version detection ─────────────────────────────────
 function getJavaVersion(javaPath) {
   try {
-    const out = require('child_process').execSync(`"${javaPath}" -version 2>&1`, { timeout: 5000 }).toString();
+    const spawnResult = require('child_process').spawnSync(javaPath, ['-version'], { timeout: 5000, encoding: 'utf8' });
+    const out = (spawnResult.stderr || '') + (spawnResult.stdout || '');
     const m = out.match(/(?:version\s+["']?)(\d+)/);
     if (m) return parseInt(m[1]);
   } catch {}
@@ -136,7 +179,7 @@ function getJavaVersion(javaPath) {
 
 // ── Fetch with retry + resume ──────────────────────────────
 function fetchAgent(url) {
-  return url.startsWith('https') ? new https.Agent({ keepAlive: true }) : new http.Agent({ keepAlive: true });
+  return new https.Agent({ keepAlive: true });
 }
 
 async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
@@ -344,7 +387,7 @@ async function microsoftLogin() {
           refresh_token: refreshToken,
           profile: { name: profile.name, uuid: profile.id },
         };
-        writeJSON(AUTH_FILE, authData);
+        writeAuth(authData);
         resolve(authData);
       } catch (e) {
         reject(e);
@@ -468,7 +511,7 @@ async function buildLoaderUrl(instance, instanceDir) {
 function setupIPC() {
   ipcMain.handle('check-java', async () => {
     return new Promise((resolve) => {
-      exec('java -version', (err, stdout, stderr) => {
+      execFile('java', ['-version'], (err, stdout, stderr) => {
         if (err) return resolve(false);
         const match = (stderr || stdout).match(/(\d+)\.(\d+)\.(\d+)/);
         if (!match) return resolve(false);
@@ -495,23 +538,24 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-auth', async () => {
-    return readJSON(AUTH_FILE);
+    return readAuth();
   });
 
   ipcMain.handle('create-instance', async (_, data) => {
+    const safeName = sanitizeName(data.name);
     ensureDir(INSTANCES_DIR);
     const registry = readJSON(INSTANCES_FILE) || [];
-    const existing = registry.find(i => i.name === data.name);
-    if (existing) throw new Error(`Instance "${data.name}" already exists`);
+    const existing = registry.find(i => i.name === safeName);
+    if (existing) throw new Error(`Instance "${safeName}" already exists`);
 
-    const instanceDir = path.join(INSTANCES_DIR, data.name);
+    const instanceDir = resolveSafePath(INSTANCES_DIR, safeName);
     ensureDir(instanceDir);
     ensureDir(path.join(instanceDir, 'mods'));
     ensureDir(path.join(instanceDir, 'saves'));
     ensureDir(path.join(instanceDir, 'config'));
 
     const entry = {
-      name: data.name,
+      name: safeName,
       path: instanceDir,
       gameVersion: data.gameVersion,
       loader: data.loader || 'vanilla',
@@ -551,14 +595,16 @@ function setupIPC() {
   });
 
   ipcMain.handle('update-instance', async (_, name, data) => {
+    const safeName = sanitizeName(name);
     const registry = readJSON(INSTANCES_FILE) || [];
-    const idx = registry.findIndex(i => i.name === name);
-    if (idx < 0) throw new Error(`Instance "${name}" not found`);
+    const idx = registry.findIndex(i => i.name === safeName);
+    if (idx < 0) throw new Error(`Instance "${safeName}" not found`);
     const newName = data.name;
-    if (newName && newName !== name) {
-      const oldDir = path.join(INSTANCES_DIR, name);
-      const newDir = path.join(INSTANCES_DIR, newName);
-      if (fs.existsSync(newDir)) throw new Error(`An instance named "${newName}" already exists`);
+    if (newName && newName !== safeName) {
+      const safeNewName = sanitizeName(newName);
+      const oldDir = resolveSafePath(INSTANCES_DIR, safeName);
+      const newDir = resolveSafePath(INSTANCES_DIR, safeNewName);
+      if (fs.existsSync(newDir)) throw new Error(`An instance named "${safeNewName}" already exists`);
       if (fs.existsSync(oldDir)) fs.renameSync(oldDir, newDir);
       registry[idx].path = newDir;
     }
@@ -568,19 +614,24 @@ function setupIPC() {
   });
 
   ipcMain.handle('delete-instance', async (_, name) => {
+    const safeName = sanitizeName(name);
     const registry = readJSON(INSTANCES_FILE) || [];
-    const filtered = registry.filter(i => i.name !== name);
+    const filtered = registry.filter(i => i.name !== safeName);
     writeJSON(INSTANCES_FILE, filtered);
-    fs.rmSync(path.join(INSTANCES_DIR, name), { recursive: true, force: true });
+    const instanceDir = resolveSafePath(INSTANCES_DIR, safeName);
+    if (fs.existsSync(instanceDir)) {
+      fs.rmSync(instanceDir, { recursive: true, force: true });
+    }
     return true;
   });
 
   ipcMain.handle('launch-instance', async (_, name) => {
+    const safeName = sanitizeName(name);
     const registry = readJSON(INSTANCES_FILE) || [];
-    const instance = registry.find(i => i.name === name);
-    if (!instance) throw new Error(`Instance "${name}" not found`);
+    const instance = registry.find(i => i.name === safeName);
+    if (!instance) throw new Error(`Instance "${safeName}" not found`);
 
-    const authData = readJSON(AUTH_FILE);
+    const authData = readAuth();
     if (!authData) throw new Error('Please login with Microsoft account first');
 
     const instanceDir = path.join(INSTANCES_DIR, name);
@@ -928,8 +979,9 @@ function setupIPC() {
 
   // ── Pre-flight install check ──────────────────────────────────────
   ipcMain.handle('check-install-feasibility', async (_, instanceName, projectId, versionId, loaders, gameVersion) => {
+    const safeName = sanitizeName(instanceName);
     const registry = readJSON(INSTANCES_FILE) || [];
-    const instance = registry.find(i => i.name === instanceName);
+    const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error('Instance not found');
 
     const version = await modrinthFetch(`/version/${versionId}`);
@@ -1137,8 +1189,9 @@ function setupIPC() {
   ipcMain.handle('install-mod', async (_, instanceName, options = {}) => {
     const { versionIds, disableFiles } = options;
     if (!versionIds?.length) throw new Error('No versions to install');
+    const safeName = sanitizeName(instanceName);
 
-    const modsDir = path.join(INSTANCES_DIR, instanceName, 'mods');
+    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
     ensureDir(modsDir);
 
     // Batch tracking for rollback
@@ -1257,7 +1310,13 @@ function setupIPC() {
 
   // ── Disable mod (soft delete) ────────────────────────────────────
   ipcMain.handle('disable-mod', async (_, instanceName, filename) => {
-    const filePath = path.join(INSTANCES_DIR, instanceName, 'mods', filename);
+    const safeName = sanitizeName(instanceName);
+    const safeFile = path.basename(filename);
+    if (!safeFile.endsWith('.jar') && !safeFile.endsWith('.jar.disabled')) {
+      throw new Error('Invalid mod filename');
+    }
+    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
+    const filePath = path.join(modsDir, safeFile);
     const disabledPath = filePath + '.disabled';
     if (fs.existsSync(filePath)) {
       fs.renameSync(filePath, disabledPath);
@@ -1270,7 +1329,8 @@ function setupIPC() {
 
   // ── Check for updates ────────────────────────────────────────────
   ipcMain.handle('check-mod-updates', async (_, instanceName) => {
-    const mods = await getInstanceModsList(instanceName);
+    const safeName = sanitizeName(instanceName);
+    const mods = await getInstanceModsList(safeName);
     const updates = [];
     for (const mod of mods) {
       if (!mod.projectId) continue;
@@ -1304,10 +1364,11 @@ function setupIPC() {
 
   // ── Helper: get instance mods list ────────────────────────────────
   async function getInstanceModsList(instanceName) {
-    const modsDir = path.join(INSTANCES_DIR, instanceName, 'mods');
+    const safeName = sanitizeName(instanceName);
+    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
     ensureDir(modsDir);
     const files = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar'));
-    const metaFile = path.join(INSTANCES_DIR, instanceName, 'mods_meta.json');
+    const metaFile = resolveSafePath(INSTANCES_DIR, safeName, 'mods_meta.json');
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
     return files.map(f => ({
@@ -1331,7 +1392,8 @@ function setupIPC() {
 
   // ── get-instance-mods (updated) ───────────────────────────────────
   ipcMain.handle('get-instance-mods', async (_, instanceName) => {
-    return getInstanceModsList(instanceName);
+    const safeName = sanitizeName(instanceName);
+    return getInstanceModsList(safeName);
   });
 
   ipcMain.handle('get-project', async (_, projectId) => {
@@ -1341,14 +1403,20 @@ function setupIPC() {
   });
 
   ipcMain.handle('remove-mod', async (_, instanceName, filename) => {
-    const filePath = path.join(INSTANCES_DIR, instanceName, 'mods', filename);
+    const safeName = sanitizeName(instanceName);
+    const safeFile = path.basename(filename);
+    if (!safeFile.endsWith('.jar') && !safeFile.endsWith('.jar.disabled')) {
+      throw new Error('Invalid mod filename');
+    }
+    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
+    const filePath = path.join(modsDir, safeFile);
     const disabledPath = filePath + '.disabled';
     if (fs.existsSync(filePath)) {
       fs.renameSync(filePath, disabledPath);
     } else if (fs.existsSync(disabledPath)) {
       fs.unlinkSync(disabledPath);
     }
-    const metaFile = path.join(INSTANCES_DIR, instanceName, 'mods_meta.json');
+    const metaFile = resolveSafePath(INSTANCES_DIR, safeName, 'mods_meta.json');
     try {
       const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
       delete meta[filename];
