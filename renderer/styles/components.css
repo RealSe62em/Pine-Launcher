@@ -358,7 +358,59 @@ label, .label {
 .mod-card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
 .mod-card-dls { font-size: 11px; color: var(--text-lo); }
 
-.content-list { display: flex; flex-direction: column; gap: var(--s-2); }
+.content-categories {
+  position: relative;
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+  margin-bottom: var(--s-3);
+  overflow-x: auto;
+  background: var(--glass-surface-base);
+  border-radius: var(--r-sm);
+  box-shadow: var(--glass-inner-shadow);
+}
+.content-category {
+  flex: 1 0 auto;
+  min-width: 110px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: calc(var(--r-sm) - 3px);
+  background: transparent;
+  color: var(--text-md);
+  font: 500 var(--text-caption) var(--font-sans);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-ios), background var(--dur-slow) var(--ease-ios), transform var(--dur-fast) var(--ease-spring);
+}
+.content-category:hover { color: var(--text-hi); background: var(--glass-surface-raised); }
+.content-category:active { transform: scale(0.98); }
+.content-category.active { color: var(--text-hi); background: var(--glass-surface-overlay); box-shadow: var(--glass-inner-shadow); }
+.content-category span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  margin-left: 5px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  color: var(--text-lo);
+  background: var(--glass-surface-base);
+  transition: color var(--dur-fast) var(--ease-ios), background var(--dur-fast) var(--ease-ios);
+}
+.content-category.active span { color: var(--accent); background: var(--accent-dim); }
+.content-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  transform: translateX(0);
+  opacity: 1;
+  transition: opacity 120ms var(--ease-ios), transform 220ms var(--ease-ios);
+}
+.content-list.content-switching { opacity: 0; transform: translateX(-10px); }
+.content-list.content-entering { animation: content-category-in 280ms var(--ease-ios); }
+@keyframes content-category-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
 .content-item {
   display: flex; align-items: center; gap: var(--s-3);
   padding: var(--s-3);
@@ -588,6 +640,7 @@ label, .label {
 }
 .sheet-folder-row svg { flex-shrink: 0; color: var(--text-md); }
 .sheet-folder-row .btn-icon { margin-left: auto; flex-shrink: 0; }
+#edit-folder-path { user-select: text; cursor: text; min-width: 0; }
 
 /* ── Confirm dialog ──────────────────────────────────────── */
 #confirm-dialog-root { z-index: 600; }
@@ -1010,6 +1063,14 @@ label, .label {
   color: var(--accent);
 }
 .settings-form { flex: 1; max-width: 560px; }
+.settings-pane { display: none; }
+.settings-pane.active { display: block; animation: view-enter var(--dur-slow) var(--ease-glass); }
+.settings-pane > .set-save-btn,
+.settings-actions {
+  position: sticky;
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 12px);
+  z-index: 3;
+}
 .settings-card {
   background: var(--glass-surface-raised);
   backdrop-filter: blur(var(--glass-blur-raised)) saturate(180%);
@@ -1025,6 +1086,7 @@ label, .label {
 .settings-row > .input,
 .settings-row > input,
 .settings-row > select { flex: 1; }
+.settings-actions { display: flex; align-items: center; gap: var(--s-2); }
 
 .color-swatches { display: flex; gap: var(--s-2); }
 .color-swatch {
@@ -1053,6 +1115,8 @@ label, .label {
   word-break: break-all;
   color: var(--text-md);
   box-shadow: var(--glass-inner-shadow);
+  user-select: text;
+  cursor: text;
 }
 .log-viewer .log-line,
 #logs-viewer .log-line {
@@ -1442,6 +1506,15 @@ label, .label {
 }
 .blur-none .instance-banner-blur { display: none; }
 .blur-none .instance-banner-sharp { -webkit-mask-image: none; mask-image: none; }
+
+html.reduced-motion *,
+html.reduced-motion *::before,
+html.reduced-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
 
 /* Fade overlay so the banner fades into the glass surface */
 .instance-banner::after {

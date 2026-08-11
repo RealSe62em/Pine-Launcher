@@ -1,0 +1,40 @@
+appId: com.pine.launcher
+productName: Pine Launcher
+electronVersion: 39.8.10
+asar: true
+electronLanguages:
+  - en-US
+directories:
+  output: dist-native
+  buildResources: build
+files:
+  - main.js
+  - preload.js
+  - package.json
+  - renderer/**
+  - lib/**
+  - "!installer/**"
+  - "!test/**"
+  - "!dist*/**"
+  - "!build/**"
+  - "!settings.json"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+  icon: build/icon.ico
+  artifactName: PineLauncherSetup-${arch}.exe
+nsis:
+  include: build/installer.nsh
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Pine Launcher
+  uninstallDisplayName: Pine Launcher
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true

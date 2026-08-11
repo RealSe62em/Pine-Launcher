@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' file: data:; script-src 'self'">
+  <title>Pine Launcher Installer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+
+  <header class="titlebar">
+    <div class="titlebar-brand">
+      <img class="brand-logo" src="../../icon.png" alt="">
+      <span id="tb-title">Pine Launcher</span>
+    </div>
+    <button class="titlebar-close" id="btn-close" type="button" aria-label="Close">
+      <svg width="12" height="12" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </header>
+
+  <main class="screen" id="screen-welcome">
+    <div class="hero">
+      <div class="hero-mark" id="hero-mark" aria-hidden="true">
+        <img src="../../icon.png" alt="Pine Launcher">
+      </div>
+      <h1 class="hero-title">Pine <span class="grad">Launcher</span></h1>
+      <div class="hero-version" id="hero-version">v1.0.0</div>
+      <p class="hero-sub">Your Minecraft launcher, refined. Glass, speed and no clutter.</p>
+    </div>
+
+    <div class="card" id="welcome-card">
+      <div class="card-head" id="welcome-head">
+        <div>
+          <div class="card-title" id="welcome-title">Ready to install</div>
+          <div class="card-sub" id="welcome-sub">Installs to your user folder.</div>
+        </div>
+        <div class="card-badge" id="state-badge" hidden>Installed</div>
+      </div>
+      <div class="field">
+        <label for="install-dir">Install location</label>
+        <div class="field-row">
+          <input id="install-dir" class="input" type="text" readonly spellcheck="false">
+          <button class="btn btn-ghost" id="btn-browse" type="button">Browse…</button>
+        </div>
+      </div>
+      <ul class="feature-list">
+        <li><span class="check">✓</span>Microsoft &amp; offline accounts</li>
+        <li><span class="check">✓</span>Modrinth mod browser built in</li>
+        <li><span class="check">✓</span>Shared downloads across instances</li>
+        <li><span class="check">✓</span>Start menu &amp; desktop shortcuts</li>
+      </ul>
+      <div class="err" id="err" hidden></div>
+      <div class="actions">
+        <button class="btn btn-ghost" id="btn-uninstall" type="button" hidden>Uninstall</button>
+        <button class="btn btn-primary" id="btn-install" type="button">Install</button>
+      </div>
+    </div>
+
+    <div class="card" id="uninstall-card" hidden>
+      <div class="card-head">
+        <div>
+          <div class="card-title">Uninstall Pine Launcher</div>
+          <div class="card-sub" id="uninstall-sub"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost" id="btn-back" type="button">Back</button>
+        <button class="btn btn-danger" id="btn-uninstall-go" type="button">Remove</button>
+      </div>
+    </div>
+  </main>
+
+  <main class="screen" id="screen-progress" hidden>
+    <div class="progress-wrap">
+      <div class="progress-orb" id="progress-orb">
+        <span id="progress-pct">0%</span>
+      </div>
+      <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+      <div class="progress-line" id="progress-line">Preparing…</div>
+      <div class="progress-log" id="progress-log"></div>
+    </div>
+  </main>
+
+  <main class="screen" id="screen-done" hidden>
+    <div class="done-wrap">
+      <div class="done-ring" id="done-ring">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
+          <polyline points="20 6 9 17 4 12" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h2 class="done-title" id="done-title">Installed</h2>
+      <p class="done-sub" id="done-sub">Pine Launcher is ready to play.</p>
+      <div class="actions actions-center">
+        <button class="btn btn-primary" id="btn-launch" type="button">Launch Pine Launcher</button>
+        <button class="btn btn-ghost" id="btn-finish" type="button">Finish</button>
+      </div>
+    </div>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -32,9 +32,29 @@ const state = {
   editBlurDir: 'left',
   showSnapshots: false,
   searchLoading: false,
+  searchRequestId: 0,
+  loaderRequestId: 0,
+  activeSearchKey: '',
   pendingModUpdates: [],
+  contentCategory: 'mod',
+  contentRequestId: 0,
+  contentSwitchTimer: null,
+  settingsDirty: false,
+  settingsSaveTimer: null,
+  instanceSettingsDirty: false,
+  instanceSettingsSaveTimer: null,
 };
 const SEARCH_LIMIT = 20;
+const TERMINAL_BANNER = String.raw`
+          /\
+         /**\
+        /****\
+       /******\
+      /********\
+         ||||
+     PINE LAUNCHER
+  Ready when you are :3`;
+
 
 // ── Boot ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -73,6 +93,8 @@ function setStatus(msg) { const el = $('status-text'); if (el) el.textContent = 
 async function checkJava() {
   const java = await api.checkJavaInstalled();
   if (java !== false) return;
+  setStatus('Java will be installed automatically when an instance is launched');
+  return;
   const overlay = $('java-overlay');
   if (!overlay) return;
   overlay.hidden = false;
@@ -96,6 +118,12 @@ async function checkJava() {
   };
 }
 function fmtNum(n) { return n ? Number(n).toLocaleString('en-US') : '0'; }
+function memoryToGigabytes(value, fallback) {
+  const match = String(value || '').trim().match(/^(\d+)([MG])?$/i);
+  if (!match) return fallback;
+  const amount = Number.parseInt(match[1], 10);
+  return (match[2] || 'G').toUpperCase() === 'M' ? Math.max(1, Math.round(amount / 1024)) : amount;
+}
 function staggerInto(els) { els.forEach((el, i) => el.style.setProperty('--i', i)); }
 
 // ── Top bar ─────────────────────────────────────────────────
@@ -238,20 +266,32 @@ function toggleAccountMenu() {
   menu.className = 'account-menu';
   const uuid = state.authData?.profile?.uuid;
   const initial = (state.authData?.profile?.name || 'G')[0].toUpperCase();
-  const avatarHtml = escHtml(initial);
+  const isOffline = state.authData?.meta?.type === 'offline';
+  const avatarHtml = uuid && !isOffline
+    ? `<img src="https://mc-heads.net/avatar/${uuid}/36" alt="${escHtml(initial)}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">`
+    : escHtml(initial);
 
   menu.innerHTML = state.authData ? `
     <div class="account-menu-header">
       <div class="avatar">${avatarHtml}</div>
       <div class="account-menu-info">
         <div class="account-menu-name">${escHtml(state.authData.profile.name)}</div>
-        <div class="account-menu-sub">Microsoft account</div>
+        <div class="account-menu-sub">${isOffline ? 'Offline account' : 'Microsoft account'}</div>
       </div>
     </div>
     <div class="account-menu-divider"></div>
-    <button class="account-menu-item" data-act="reauth">
-      <svg width="14" height="14" aria-hidden="true"><use href="#i-settings"/></svg>
-      Re-authenticate
+    ${!isOffline ? `
+      <button class="account-menu-item" data-act="reauth">
+        <svg width="14" height="14" aria-hidden="true"><use href="#i-settings"/></svg>
+        Re-authenticate
+      </button>` : `
+      <button class="account-menu-item" data-act="signin">
+        <svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>
+        Sign in with Microsoft
+      </button>`}
+    <button class="account-menu-item" data-act="offline">
+      <svg width="14" height="14" aria-hidden="true"><use href="#i-user"/></svg>
+      Play offline
     </button>
     <button class="account-menu-item danger" data-act="signout">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-trash"/></svg>
@@ -262,6 +302,10 @@ function toggleAccountMenu() {
       <svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>
       Sign in with Microsoft
     </button>
+    <button class="account-menu-item" data-act="offline">
+      <svg width="14" height="14" aria-hidden="true"><use href="#i-user"/></svg>
+      Play offline
+    </button>
   `;
   const row = $('account-row');
   if (!row) return;
@@ -270,6 +314,7 @@ function toggleAccountMenu() {
     e.stopPropagation();
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'signin' || act === 'reauth') handleAuth();
+    if (act === 'offline') openOfflineModal();
     if (act === 'signout') signOut();
     menu.remove();
   });
@@ -297,6 +342,10 @@ function bindTabBar() {
   });
 
   $('content-search')?.addEventListener('input', debounce(renderContentList, 80));
+  $('content-categories')?.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-content-type]');
+    if (button) switchContentCategory(button.dataset.contentType);
+  });
   $('copy-log-btn')?.addEventListener('click', copyLog);
   $('clear-log-btn')?.addEventListener('click', clearLogs);
   $('instance-add-content')?.addEventListener('click', openContentAdder);
@@ -306,7 +355,13 @@ function bindTabBar() {
   $('discover-search-btn')?.addEventListener('click', () => searchMods(false));
   $('discover-search-btn-alt')?.addEventListener('click', () => searchMods(false));
   $('load-more-btn')?.addEventListener('click', () => searchMods(true));
+  const liveSearch = debounce(() => searchMods(false), 220);
+  $('search-input')?.addEventListener('input', liveSearch);
   $('search-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchMods(false); });
+  ['filter-loader', 'filter-version', 'filter-category', 'results-sort'].forEach((id) => {
+    $(id)?.addEventListener(id === 'filter-category' ? 'input' : 'change',
+      id === 'filter-category' ? debounce(() => searchMods(false), 220) : () => searchMods(false));
+  });
   // Infinite scroll
   const moreBtn = $('load-more-btn');
   if (moreBtn) {
@@ -342,6 +397,9 @@ function bindViewLinks() {
 
 // ── View routing ────────────────────────────────────────────
 function switchView(view) {
+  if (state.currentView === 'settings' && view !== 'settings' && state.settingsDirty) {
+    saveAllSettings(null, { silent: true });
+  }
   state.currentView = view;
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   const target = $('view-' + view);
@@ -414,11 +472,11 @@ async function loadVersions() {
     const filterLoader = $('filter-loader');
     if (filterLoader) {
       filterLoader.innerHTML = '<option value="">All loaders</option>' +
-        ['fabric', 'forge', 'quilt', 'neoforge'].map((l) => `<option value="${l}">${l.charAt(0).toUpperCase() + l.slice(1)}</option>`).join('');
+        ['fabric', 'forge', 'quilt'].map((l) => `<option value="${l}">${l.charAt(0).toUpperCase() + l.slice(1)}</option>`).join('');
     }
     const sortSel = $('results-sort');
     if (sortSel) {
-      sortSel.innerHTML = '<option value="relevance">Relevance</option><option value="downloads">Downloads</option><option value="updated">Last Updated</option><option value="name">Name</option>';
+      sortSel.innerHTML = '<option value="relevance">Relevance</option><option value="downloads">Downloads</option><option value="updated">Last Updated</option><option value="newest">Newest</option>';
     }
   } catch (e) {
     setStatus('Failed to load versions: ' + (e.message || e));
@@ -428,6 +486,8 @@ async function loadVersions() {
 async function loadLoaderVersions() {
   const version = $('modal-version')?.value;
   const sel = $('modal-loader-version');
+  const loader = state.selectedLoader;
+  const requestId = ++state.loaderRequestId;
   if (!version || state.selectedLoader === 'vanilla') {
     if (sel) { sel.innerHTML = '<option value="">N/A</option>'; sel.disabled = true; }
     return;
@@ -436,7 +496,8 @@ async function loadLoaderVersions() {
   sel.disabled = false;
   sel.innerHTML = '<option value="">Loading...</option>';
   try {
-    const versions = await api.getLoaderVersions(version, state.selectedLoader);
+    const versions = await api.getLoaderVersions(version, loader);
+    if (requestId !== state.loaderRequestId || loader !== state.selectedLoader || version !== $('modal-version')?.value) return;
     const stableIdx = versions.findIndex((v) => v.stable !== false);
     if (stableIdx >= 0) {
       sel.innerHTML = versions.map((v, i) =>
@@ -447,6 +508,7 @@ async function loadLoaderVersions() {
         versions.map((v) => `<option value="${v.version}">${v.name}</option>`).join('');
     }
   } catch {
+    if (requestId !== state.loaderRequestId) return;
     sel.innerHTML = '<option value="">Failed to load</option>';
   }
 }
@@ -616,7 +678,7 @@ function renderInstanceCard(inst) {
 
 function renderLibrary() {
   const grid = $('library-grid');
-  if (!grid) return;
+  if (!grid) { state.searchLoading = false; return; }
   if (!state.instances.length) {
     grid.innerHTML = `<div class="empty-state">
       <div class="empty-state-icon"><svg width="24" height="24" aria-hidden="true"><use href="#i-library"/></svg></div>
@@ -691,6 +753,10 @@ function openInstanceView() {
 }
 
 function switchInstanceTab(tab) {
+  const activeTab = document.querySelector('#instance-tabs .tab.active')?.dataset.tab;
+  if (activeTab === 'settings' && tab !== 'settings' && state.instanceSettingsDirty) {
+    saveInstanceSettings(null, { silent: true });
+  }
   document.querySelectorAll('#instance-tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('#instance-tab-content .tab-pane').forEach((p) => p.classList.toggle('active', p.dataset.tab === tab));
   if (tab === 'content') loadContentList();
@@ -699,19 +765,64 @@ function switchInstanceTab(tab) {
 }
 
 let cachedMods = [];
+const CONTENT_LABELS = {
+  mod: { singular: 'mod', plural: 'mods' },
+  resourcepack: { singular: 'resource pack', plural: 'resource packs' },
+  shader: { singular: 'shader', plural: 'shaders' },
+  datapack: { singular: 'data pack', plural: 'data packs' },
+};
+
+function switchContentCategory(type) {
+  if (!CONTENT_LABELS[type] || state.contentCategory === type) return;
+  state.contentCategory = type;
+  $('content-categories')?.querySelectorAll('[data-content-type]').forEach(button => {
+    button.classList.toggle('active', button.dataset.contentType === type);
+  });
+  const search = $('content-search');
+  if (search) {
+    search.value = '';
+    search.placeholder = `Filter installed ${CONTENT_LABELS[type].plural}...`;
+  }
+  const list = $('content-list');
+  list?.classList.add('content-switching');
+  clearTimeout(state.contentSwitchTimer);
+  state.contentSwitchTimer = setTimeout(() => loadContentList(), 120);
+}
+
 async function loadContentList() {
   if (!state.currentInstance) return;
   const container = $('content-list');
   if (!container) return;
+  const requestId = ++state.contentRequestId;
+  const category = state.contentCategory;
   container.innerHTML = `<div class="skeleton skeleton-block"></div>`.repeat(3);
   try {
-    cachedMods = await api.getInstanceMods(state.currentInstance.name);
-    // Check for updates in background
-    checkForModUpdates(state.currentInstance.name);
+    cachedMods = await api.getInstanceContent(state.currentInstance.name, category);
+    if (requestId !== state.contentRequestId || category !== state.contentCategory) return;
+    if (category === 'mod') checkForModUpdates(state.currentInstance.name);
+    else state.pendingModUpdates = [];
     renderContentList();
-  } catch {
-    container.innerHTML = `<div class="text-muted" style="text-align:center;padding:24px">Failed to load mods</div>`;
+    container.classList.remove('content-switching');
+    container.classList.add('content-entering');
+    setTimeout(() => container.classList.remove('content-entering'), 280);
+    refreshContentCounts();
+  } catch (error) {
+    if (requestId !== state.contentRequestId) return;
+    container.classList.remove('content-switching');
+    container.innerHTML = `<div class="text-muted" style="text-align:center;padding:24px">Failed to load ${CONTENT_LABELS[category].plural}: ${escHtml(error.message || error)}</div>`;
   }
+}
+
+async function refreshContentCounts() {
+  if (!state.currentInstance) return;
+  const instanceName = state.currentInstance.name;
+  await Promise.all(Object.keys(CONTENT_LABELS).map(async type => {
+    try {
+      const items = type === state.contentCategory ? cachedMods : await api.getInstanceContent(instanceName, type);
+      const count = document.querySelector(`[data-count="${type}"]`);
+      if (count && state.currentInstance?.name === instanceName) count.textContent = items.length;
+    } catch {}
+  }));
 }
 
 async function checkForModUpdates(instanceName) {
@@ -727,28 +838,30 @@ function renderContentList() {
   const container = $('content-list');
   if (!container) return;
   const query = ($('content-search')?.value || '').toLowerCase().trim();
+  const labels = CONTENT_LABELS[state.contentCategory];
   const filtered = query
     ? cachedMods.filter((m) => (m.title || m.filename).toLowerCase().includes(query))
     : cachedMods;
   if (!filtered.length) {
     container.innerHTML = query
-      ? `<div class="text-muted" style="text-align:center;padding:24px">No mods match "${escHtml(query)}"</div>`
-      : `<div class="text-muted" style="text-align:center;padding:24px">No mods installed. Click "Add content" to install some.</div>`;
+      ? `<div class="text-muted" style="text-align:center;padding:24px">No ${labels.plural} match "${escHtml(query)}"</div>`
+      : `<div class="text-muted" style="text-align:center;padding:24px">No ${labels.plural} installed.${state.contentCategory === 'datapack' ? ' Data packs are stored inside individual worlds.' : ' Click "Add content" to install some.'}</div>`;
     return;
   }
   container.innerHTML = filtered.map((m) => {
-    const update = (state.pendingModUpdates || []).find(u => u.projectId === m.projectId);
+    const update = state.contentCategory === 'mod' && (state.pendingModUpdates || []).find(u => u.projectId === m.projectId);
     return `
-    <div class="content-item ${update ? 'has-update' : ''}" data-pid="${escHtml(m.projectId || m.filename)}">
+    <div class="content-item ${update ? 'has-update' : ''}${m.disabled ? ' is-disabled' : ''}" data-pid="${escHtml(m.projectId || m.filename)}">
       <div class="content-item-icon">
-        ${m.iconUrl ? `<img src="${escHtml(m.iconUrl)}" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode('${(m.title || m.filename)[0].toUpperCase()}'))">` : (m.title || m.filename)[0].toUpperCase()}
+        ${m.iconUrl ? `<img src="${escHtml(m.iconUrl)}" alt="" loading="lazy">` : escHtml((m.title || m.filename)[0].toUpperCase())}
       </div>
       <div class="content-item-info">
-        <div class="content-item-name">${escHtml(m.title || m.filename)} ${update ? '<span class="update-badge">Update</span>' : ''}</div>
-        <div class="content-item-version">${update ? escHtml(update.latestVersionName) : escHtml(m.filename)}</div>
+        <div class="content-item-name">${escHtml(m.title || m.filename)} ${m.disabled ? '<span class="update-badge">Disabled</span>' : (update ? '<span class="update-badge">Update</span>' : '')}</div>
+        <div class="content-item-version">${update ? escHtml(update.latestVersionName) : escHtml(m.world ? `${m.world} · ${m.filename}` : m.filename)}</div>
       </div>
       <div class="content-item-actions">
         ${update ? `<button class="btn btn-primary btn-sm" data-act="update">Update</button>` : ''}
+        <button class="btn btn-secondary btn-sm" data-act="toggle">${m.disabled ? 'Enable' : 'Disable'}</button>
         <button class="btn btn-secondary btn-sm" data-act="remove">
           <svg width="12" height="12" aria-hidden="true"><use href="#i-trash"/></svg>
         </button>
@@ -759,12 +872,22 @@ function renderContentList() {
     const pid = row.dataset.pid;
     row.addEventListener('click', (e) => {
       if (e.target.closest('[data-act]')) return;
-      if (pid) showModDetails(pid);
+      if (mProjectId(row, pid)) showModDetails(mProjectId(row, pid));
     });
     row.querySelector('[data-act="remove"]')?.addEventListener('click', (e) => {
       e.stopPropagation();
       const mod = cachedMods.find((m) => (m.projectId || m.filename) === pid);
-      if (mod) removeMod(state.currentInstance.name, mod.filename);
+      if (mod) removeContentItem(mod);
+    });
+    row.querySelector('[data-act="toggle"]')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const mod = cachedMods.find((m) => (m.projectId || m.filename) === pid);
+      if (!mod) return;
+      try {
+        if (state.contentCategory === 'mod') await api.disableMod(state.currentInstance.name, mod.filename);
+        else await api.toggleInstanceContent(state.currentInstance.name, state.contentCategory, mod.key || mod.filename);
+        await loadContentList();
+      } catch (err) { setStatus('Toggle failed: ' + (err.message || err)); }
     });
     row.querySelector('[data-act="update"]')?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -772,6 +895,22 @@ function renderContentList() {
       if (mod && mod.projectId) updateMod(state.currentInstance, mod);
     });
   });
+}
+
+function mProjectId(_row, pid) {
+  return cachedMods.find(item => (item.projectId || item.filename) === pid)?.projectId || null;
+}
+
+async function removeContentItem(item) {
+  try {
+    if (state.contentCategory === 'mod') await api.removeMod(state.currentInstance.name, item.filename);
+    else await api.removeInstanceContent(state.currentInstance.name, state.contentCategory, item.key || item.filename);
+    setStatus(`Removed ${item.title || item.filename}`);
+    await loadContentList();
+  } catch (error) {
+    setStatus('Remove failed: ' + (error.message || error));
+    toast('Remove failed: ' + (error.message || error), 'error', 4000);
+  }
 }
 
 async function removeMod(name, filename) {
@@ -807,9 +946,21 @@ async function updateMod(inst, mod) {
 
 async function openContentAdder() {
   if (!state.currentInstance) return;
+  if (state.contentCategory === 'datapack') {
+    toast('Data packs belong to a specific world. Add them from that world’s datapacks folder.', 'info', 5000);
+    return;
+  }
+  state.discoverCategory = state.contentCategory;
+  $('discover-categories')?.querySelectorAll('[data-category]').forEach(chip => {
+    chip.classList.toggle('chip-active', chip.dataset.category === state.discoverCategory);
+  });
+  const search = $('search-input');
+  if (search) search.placeholder = `Search ${CONTENT_LABELS[state.contentCategory].plural}...`;
   const loaderSel = $('filter-loader');
   if (loaderSel) loaderSel.value = state.currentInstance.loader === 'vanilla' ? '' : state.currentInstance.loader;
   switchView('discover');
+  moveDiscoverIndicator();
+  searchMods(false);
 }
 
 async function loadWorlds() {
@@ -830,8 +981,8 @@ function loadInstanceSettings() {
   form.innerHTML = `
     <div class="settings-card">
       <div class="settings-card-title">Memory</div>
-      <div class="settings-row"><label>Min memory</label><input id="inst-min-mem" class="input" value="${escHtml(inst.minMemory || '2G')}"></div>
-      <div class="settings-row"><label>Max memory</label><input id="inst-max-mem" class="input" value="${escHtml(inst.maxMemory || '4G')}"></div>
+      <div class="settings-row"><label>Min memory (GB)</label><input id="inst-min-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(inst.minMemory, 2)}"></div>
+      <div class="settings-row"><label>Max memory (GB)</label><input id="inst-max-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(inst.maxMemory, 4)}"></div>
     </div>
     <div class="settings-card">
       <div class="settings-card-title">Java</div>
@@ -846,13 +997,20 @@ function loadInstanceSettings() {
     <button class="btn btn-primary" id="inst-save-btn">Save settings</button>
   `;
   $('inst-save-btn')?.addEventListener('click', saveInstanceSettings);
+  state.instanceSettingsDirty = false;
+  form.querySelectorAll('input').forEach(input => input.addEventListener('input', () => {
+    state.instanceSettingsDirty = true;
+    clearTimeout(state.instanceSettingsSaveTimer);
+    state.instanceSettingsSaveTimer = setTimeout(() => saveInstanceSettings(null, { silent: true }), 500);
+  }));
 }
 
-async function saveInstanceSettings() {
+async function saveInstanceSettings(button = null, { silent = false } = {}) {
   if (!state.currentInstance) return;
+  clearTimeout(state.instanceSettingsSaveTimer);
   const data = {
-    minMemory: $('inst-min-mem')?.value,
-    maxMemory: $('inst-max-mem')?.value,
+    minMemory: `${parseInt($('inst-min-mem')?.value, 10) || 2}G`,
+    maxMemory: `${parseInt($('inst-max-mem')?.value, 10) || 4}G`,
     javaPath: $('inst-java-path')?.value,
     jvmArgs: $('inst-jvm-args')?.value,
     windowWidth: parseInt($('inst-res-w')?.value) || 1280,
@@ -861,10 +1019,16 @@ async function saveInstanceSettings() {
   try {
     const updated = await api.updateInstance(state.currentInstance.name, data);
     state.currentInstance = updated;
+    const index = state.instances.findIndex(instance => instance.name === updated.name);
+    if (index >= 0) state.instances[index] = updated;
+    state.instanceSettingsDirty = false;
     setStatus('Settings saved');
-    successRing($('inst-save-btn'));
+    if (!silent) toast(`Memory saved: ${updated.minMemory}–${updated.maxMemory}`, 'success');
+    successRing(button || (!silent ? $('inst-save-btn') : null));
   } catch (e) {
+    state.instanceSettingsDirty = true;
     setStatus('Save failed: ' + (e.message || e));
+    if (!silent) toast('Could not save instance settings: ' + (e.message || e), 'error', 4500);
   }
 }
 
@@ -883,16 +1047,79 @@ async function handleAuth() {
   }
 }
 
-function signOut() {
-  state.authData = null;
-  api.getAuth().then(() => {}); // noop; sign-out isn't a backend call here
-  // Best-effort local reset: remove the file via a one-shot IPC if exposed; here we just clear UI
-  updateAuthUI();
-  setStatus('Signed out');
+async function signOut() {
+  try {
+    await api.signOut();
+    state.authData = null;
+    updateAuthUI();
+    setStatus('Signed out');
+    toast('Signed out', 'success');
+  } catch (e) {
+    setStatus('Sign out failed: ' + (e.message || e));
+  }
+}
+
+// ── Offline (username-only) login ─────────────────────────
+function openOfflineModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  overlay.style.zIndex = '300';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:420px">
+      <div class="modal-header">
+        <div><h2 class="modal-title">Play offline</h2><p class="modal-sub">Choose a username to play without a Microsoft account.</p></div>
+        <button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <input id="offline-name-input" class="input" placeholder="Steve" autocomplete="off" maxlength="16" spellcheck="false">
+        <div id="offline-name-error" class="modal-error text-muted" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-cancel type="button">Cancel</button>
+        <button class="btn btn-primary" data-ok type="button">Play</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const input = overlay.querySelector('#offline-name-input');
+  const err = overlay.querySelector('#offline-name-error');
+  const close = () => overlay.remove();
+  const submit = async () => {
+    const name = input.value.trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(name)) {
+      err.textContent = 'Use 3-16 characters: letters, numbers, underscores';
+      err.hidden = false;
+      input.focus();
+      return;
+    }
+    const okBtn = overlay.querySelector('[data-ok]');
+    okBtn.disabled = true;
+    try {
+      state.authData = await api.offlineLogin(name);
+      updateAuthUI(); updatePride();
+      setStatus(`Playing offline as ${name}`);
+      toast('Offline account set', 'success');
+      close();
+    } catch (e) {
+      err.textContent = e.message || 'Invalid username';
+      err.hidden = false;
+      okBtn.disabled = false;
+    }
+  };
+  overlay.querySelector('[data-ok]').addEventListener('click', submit);
+  overlay.querySelector('[data-cancel]').addEventListener('click', close);
+  overlay.querySelector('[data-close]').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  setTimeout(() => input.focus(), 50);
 }
 
 function setAvatarImage(el, uuid, name) {
-  el.textContent = (name || 'G')[0].toUpperCase();
+  if (!uuid) { el.textContent = (name || 'G')[0].toUpperCase(); return; }
+  const img = document.createElement('img');
+  img.alt = (name || 'G')[0].toUpperCase();
+  img.onload = function () { el.textContent = ''; el.appendChild(this); };
+  img.onerror = function () { el.textContent = (name || 'G')[0].toUpperCase(); };
+  img.src = `https://mc-heads.net/avatar/${uuid}/64`;
 }
 
 function updateAuthUI() {
@@ -903,7 +1130,8 @@ function updateAuthUI() {
     el.textContent = state.authData.profile.name;
     av.classList.remove('avatar-logged-out');
     const uuid = state.authData.profile.uuid;
-    if (uuid) {
+    const isOffline = state.authData.meta?.type === 'offline';
+    if (uuid && !isOffline) {
       setAvatarImage(av, uuid, state.authData.profile.name);
     } else {
       av.textContent = (state.authData.profile.name || 'G')[0].toUpperCase();
@@ -913,11 +1141,15 @@ function updateAuthUI() {
     av.classList.add('avatar-logged-out');
     av.textContent = 'G';
   }
+  const greeting = $('home-greeting');
+  if (greeting) {
+    greeting.textContent = `Welcome back, ${state.authData?.profile?.name || 'back'}`;
+  }
 }
 
 function updatePride() {
   const name = state.authData?.profile?.name || '';
-  const eligible = name === 'undrrwrldd' || name === 'Se62em';
+  const eligible = name === 'undrrwrldd' || name === 'Se62em' || name === 'Shemes' || name === 'Exobeast';
   const enabled = eligible && state.settings.gayMode !== false;
   document.documentElement.classList.toggle('pride-mode', !!enabled);
   const row = $('gay-mode-row');
@@ -928,6 +1160,14 @@ function updatePride() {
 // ── Settings ────────────────────────────────────────────────
 async function loadSettings() {
   try { state.settings = await api.getSettings() || {}; } catch { state.settings = {}; }
+  applyAppearanceSettings();
+}
+
+function applyAppearanceSettings() {
+  const accent = /^#[0-9a-f]{6}$/i.test(state.settings.accentColor || '') ? state.settings.accentColor : '#ff5cb9';
+  document.documentElement.style.setProperty('--accent', accent);
+  document.documentElement.classList.toggle('reduced-motion', state.settings.reducedMotion === true);
+  updatePride();
 }
 
 function renderSettingsLayout() {
@@ -951,9 +1191,10 @@ function renderSettingsLayout() {
             </select>
           </div>
           <div class="settings-row"><label>Download limit (concurrent)</label>
-            <input id="set-dl-limit" class="input" type="number" value="${s.dlLimit || 4}">
+            <input id="set-dl-limit" class="input" type="number" min="2" max="16" step="1" value="${s.dlLimit || 4}">
           </div>
         </div>
+        <button class="btn btn-primary set-save-btn">Save settings</button>
       </div>
       <div class="settings-pane" data-cat="java">
         <div class="settings-card">
@@ -961,13 +1202,26 @@ function renderSettingsLayout() {
           <div class="settings-row"><label>Default Java path</label>
             <input id="set-java-path" class="input" value="${escHtml(s.javaPath || '')}" placeholder="(use system default)">
           </div>
-          <div class="settings-row"><label>Default min memory</label>
-            <input id="set-min-mem" class="input" value="${escHtml(s.minMemory || '2G')}">
+          <div class="settings-row"><label>Default min memory (GB)</label>
+            <input id="set-min-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.minMemory, 2)}">
           </div>
-          <div class="settings-row"><label>Default max memory</label>
-            <input id="set-max-mem" class="input" value="${escHtml(s.maxMemory || '4G')}">
+          <div class="settings-row"><label>Default max memory (GB)</label>
+            <input id="set-max-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.maxMemory, 4)}">
+          </div>
+          <div class="settings-row"><label>Default JVM args</label>
+            <input id="set-jvm-args" class="input" value="${escHtml(s.jvmArgs || '')}" placeholder="Optional, e.g. -XX:+UseG1GC">
           </div>
         </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Default game window</div>
+          <div class="settings-row"><label>Width</label>
+            <input id="set-window-width" class="input" type="number" min="320" max="7680" value="${s.windowWidth || 1280}">
+          </div>
+          <div class="settings-row"><label>Height</label>
+            <input id="set-window-height" class="input" type="number" min="240" max="4320" value="${s.windowHeight || 720}">
+          </div>
+        </div>
+        <button class="btn btn-primary set-save-btn">Save settings</button>
       </div>
       <div class="settings-pane" data-cat="appearance">
         <div class="settings-card">
@@ -986,8 +1240,17 @@ function renderSettingsLayout() {
               <span class="check-visual"></span>
             </label>
           </div>
+          <div class="settings-row"><label>Reduce animations</label>
+            <label class="snapshot-inline" style="position:static;padding:0">
+              <input type="checkbox" id="set-reduced-motion" ${s.reducedMotion ? 'checked' : ''}>
+              <span class="check-visual"></span>
+            </label>
+          </div>
         </div>
-        <button class="btn btn-primary" id="set-save-btn">Save settings</button>
+        <div class="settings-actions">
+          <button class="btn btn-primary set-save-btn">Save settings</button>
+          <button class="btn btn-ghost" id="set-reset-btn">Reset defaults</button>
+        </div>
       </div>
     </div>
   `;
@@ -1008,7 +1271,13 @@ function renderSettingsLayout() {
       state.settings.accentColor = color;
     });
   });
-  $('set-save-btn')?.addEventListener('click', saveAllSettings);
+  layout.querySelectorAll('.set-save-btn').forEach((button) => button.addEventListener('click', () => saveAllSettings(button)));
+  const headerSave = $('settings-header-save');
+  if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
+  $('set-reset-btn')?.addEventListener('click', resetSettings);
+  $('set-reduced-motion')?.addEventListener('change', (e) => {
+    document.documentElement.classList.toggle('reduced-motion', e.target.checked);
+  });
   const gayToggle = $('gay-mode-toggle');
   if (gayToggle) {
     gayToggle.addEventListener('change', () => {
@@ -1017,34 +1286,73 @@ function renderSettingsLayout() {
       saveAllSettings();
     });
   }
+  state.settingsDirty = false;
+  layout.querySelectorAll('input, select').forEach(control => {
+    control.addEventListener('input', () => {
+      state.settingsDirty = true;
+      clearTimeout(state.settingsSaveTimer);
+      state.settingsSaveTimer = setTimeout(() => saveAllSettings(null, { silent: true }), 500);
+    });
+    control.addEventListener('change', () => {
+      state.settingsDirty = true;
+      saveAllSettings(null, { silent: true });
+    });
+  });
 }
 
-async function saveAllSettings() {
+async function saveAllSettings(button = null, { silent = false } = {}) {
+  clearTimeout(state.settingsSaveTimer);
   state.settings = {
     ...state.settings,
     javaPath: $('set-java-path')?.value || '',
-    minMemory: $('set-min-mem')?.value || '2G',
-    maxMemory: $('set-max-mem')?.value || '4G',
+    minMemory: `${parseInt($('set-min-mem')?.value, 10) || 2}G`,
+    maxMemory: `${parseInt($('set-max-mem')?.value, 10) || 4}G`,
     launchBehavior: $('set-launch-behavior')?.value || 'Keep open',
     dlLimit: parseInt($('set-dl-limit')?.value) || 4,
     gayMode: $('gay-mode-toggle')?.checked !== false,
+    windowWidth: parseInt($('set-window-width')?.value) || 1280,
+    windowHeight: parseInt($('set-window-height')?.value) || 720,
+    jvmArgs: $('set-jvm-args')?.value || '',
+    reducedMotion: $('set-reduced-motion')?.checked === true,
   };
   try {
-    await api.saveSettings(state.settings);
+    state.settings = await api.saveSettings(state.settings);
+    state.settingsDirty = false;
+    applyAppearanceSettings();
     setStatus('Settings saved');
-    successRing($('set-save-btn'));
+    if (!silent) toast('Settings saved', 'success');
+    successRing(button);
   } catch (e) {
+    state.settingsDirty = true;
     setStatus('Save failed: ' + (e.message || e));
+    if (!silent) toast('Could not save settings: ' + (e.message || e), 'error', 4500);
+  }
+}
+
+async function resetSettings() {
+  state.settings = {
+    launchBehavior: 'Keep open', dlLimit: 4, javaPath: '', minMemory: '2G', maxMemory: '4G',
+    jvmArgs: '', windowWidth: 1280, windowHeight: 720, accentColor: '#ff5cb9',
+    reducedMotion: false, gayMode: true,
+  };
+  try {
+    state.settings = await api.saveSettings(state.settings);
+    applyAppearanceSettings();
+    renderSettingsLayout();
+    setStatus('Settings reset');
+    toast('Settings reset to defaults', 'success');
+  } catch (e) {
+    toast('Could not reset settings: ' + (e.message || e), 'error', 4500);
   }
 }
 
 // ── Modal: create instance ──────────────────────────────────
 const PERFORMANCE_MODS = [
-  'sodium', 'lithium', 'entityculling', 'ferrite-core', 'krypton', 'modernfix',
+  'sodium', 'entityculling', 'ferrite-core', 'krypton', 'modernfix',
   'no-chat-reports', 'memoryleakfix', 'lazydfu', 'smoothboot', 'ebe', 'immediatelyfast',
   'alternate-current', 'dynamic-fps', 'fastload', 'moreculling', 'fastanim',
   'vmp-fabric', 'reeses-sodium-options', 'skip-transitions',
-  'c2me-fabric', 'indium', 'fabric-api', 'cloth-config', 'modmenu',
+  'indium', 'fabric-api', 'cloth-config', 'modmenu',
 ];
 
 function openCreateModal() {
@@ -1061,7 +1369,7 @@ function openCreateModal() {
   $('modal-create-btn').innerHTML = 'Create';
   $('modal-progress-fill').style.width = '0%';
   $('modal-progress-text').textContent = 'Creating instance…';
-  state.chosenProfile = null;
+  state.chosenProfile = 'vanilla';
   state.performanceMods = [];
   state.removedPerfMods = new Set();
   state.selectedLoader = 'vanilla';
@@ -1249,11 +1557,15 @@ function closeEditSheet() {
   root.setAttribute('hidden', '');
 }
 
-function copyInstancePath() {
+async function copyInstancePath() {
   const path = $('edit-folder-path')?.textContent;
-  if (path) {
-    navigator.clipboard.writeText(path).catch(() => {});
+  if (!path) return;
+  try {
+    await api.copyText(path);
     setStatus('Path copied');
+    successRing($('edit-copy-path'));
+  } catch (error) {
+    setStatus('Could not copy path: ' + (error.message || error));
   }
 }
 
@@ -1290,7 +1602,6 @@ function buildLoaderSegmented() {
     { id: 'fabric', label: 'Fabric' },
     { id: 'quilt', label: 'Quilt' },
     { id: 'forge', label: 'Forge' },
-    { id: 'neoforge', label: 'NeoForge' },
   ];
   seg.innerHTML = loaders.map((l) => `<button type="button" data-loader="${l.id}" class="${l.id === state.selectedLoader ? 'active' : ''}">${l.label}</button>`).join('');
 
@@ -1478,23 +1789,8 @@ function updatePerfModsList() {
 }
 
 async function findCompatibleVersion(projectId, loaders, gameVersion) {
-  let versions = await api.getProjectVersions(projectId, loaders, [gameVersion]);
+  const versions = await api.getProjectVersions(projectId, loaders, [gameVersion]);
   if (versions && versions.length) return versions;
-  const parts = (gameVersion || '').split('.');
-  if (parts.length >= 3) {
-    const broad = parts.slice(0, 2).join('.');
-    versions = await api.getProjectVersions(projectId, loaders, [broad]);
-    if (versions && versions.length) return versions;
-  }
-  versions = await api.getProjectVersions(projectId, loaders, []);
-  if (versions && versions.length) {
-    const verMatch = versions.filter((v) => {
-      const gv = v.game_versions || [];
-      return gv.some((g) => g.startsWith(parts.slice(0, 2).join('.') + '.') || g === gameVersion);
-    });
-    if (verMatch.length) return verMatch;
-    return versions.slice(0, 1);
-  }
   return [];
 }
 
@@ -1512,41 +1808,35 @@ async function createInstance() {
   $('modal-progress').removeAttribute('hidden');
   $('modal-progress-fill').style.width = '0%';
 
+  let createdThisAttempt = false;
   try {
-    await api.createInstance({ name, gameVersion: version, loader: state.selectedLoader, loaderVersion: loaderVer || null, iconData: state.pendingIcon || null, bannerData: state.pendingBanner || null, bannerBlurDir: state.bannerBlurDir || 'left' });
+    await api.createInstance({ name, gameVersion: version, profile: state.chosenProfile || 'custom', loader: state.selectedLoader, loaderVersion: loaderVer || null, iconData: state.pendingIcon || null, bannerData: state.pendingBanner || null, bannerBlurDir: state.bannerBlurDir || 'left' });
+    createdThisAttempt = true;
     setProgress($('modal-progress-fill'), $('modal-progress-text'), 40, 'Instance created');
 
     if (state.chosenProfile === 'performance' && state.performanceMods.length) {
       const perfLoaders = state.selectedLoader === 'vanilla' ? ['fabric'] : [state.selectedLoader];
       const selectedMods = state.performanceMods.filter((id) => !state.removedPerfMods.has(id));
       if (!selectedMods.length) { setProgress($('modal-progress-fill'), $('modal-progress-text'), 95, 'Skipping — no mods selected'); }
-      let installed = 0;
+      const versionIds = [];
+      const versionSizes = {};
+      const disableFiles = new Set();
       for (let i = 0; i < selectedMods.length; i++) {
         const modId = selectedMods[i];
-        try {
-          const pVersions = await findCompatibleVersion(modId, perfLoaders, version);
-          if (pVersions && pVersions.length) {
-            const v = pVersions.find((pv) => pv.loaders?.some(l => perfLoaders.includes(l))) || pVersions[0];
-            if (v) {
-              const check = await api.checkInstallFeasibility(name, modId, v.id, perfLoaders, version).catch(() => null);
-              if (check && !check.feasible) {
-                const err = check.errors?.[0];
-                console.warn(`Skipping ${modId}: ${err?.message || 'incompatible'}`);
-              } else {
-                const disableFiles = (check?.warnings || []).filter(w => w.existingFile).map(w => w.existingFile);
-                await api.installMod(name, { versionIds: [v.id], disableFiles });
-                installed++;
-              }
-            }
-          } else {
-            console.warn(`No compatible version for ${modId} with ${perfLoaders.join('/')} ${version}`);
-          }
-        } catch (e) {
-          console.warn('Failed to install ' + modId + ':', e.message);
-        }
+        const pVersions = await findCompatibleVersion(modId, perfLoaders, version);
+        if (!pVersions?.length) throw new Error(`${modId} has no compatible ${version} ${perfLoaders.join('/')} release`);
+        const v = pVersions.find((pv) => pv.loaders?.some(l => perfLoaders.includes(l)));
+        if (!v) throw new Error(`${modId} has no compatible loader release`);
+        const check = await api.checkInstallFeasibility(name, modId, v.id, perfLoaders, version);
+        if (!check?.feasible) throw new Error(check?.errors?.[0]?.message || `${modId} cannot be installed`);
+        versionIds.push(v.id, ...(check.requiredDepVersionIds || []));
+        versionSizes[v.id] = check.file?.size || 0;
+        Object.assign(versionSizes, check.requiredDepSizes || {});
+        for (const warning of check.warnings || []) if (warning.existingFile) disableFiles.add(warning.existingFile);
         const pct = 40 + ((i + 1) / selectedMods.length) * 55;
-        setProgress($('modal-progress-fill'), $('modal-progress-text'), pct, `Installing ${modId} (${i + 1}/${selectedMods.length})`);
+        setProgress($('modal-progress-fill'), $('modal-progress-text'), pct, `Checking ${modId} (${i + 1}/${selectedMods.length})`);
       }
+      if (versionIds.length) await api.installMod(name, { versionIds: [...new Set(versionIds)], versionSizes, disableFiles: [...disableFiles] });
       burstConfetti();
     }
 
@@ -1559,6 +1849,9 @@ async function createInstance() {
       toast('Instance created', 'success');
     }, 400);
   } catch (e) {
+    if (createdThisAttempt) {
+      try { await api.deleteInstance(name); } catch {}
+    }
     showModalError(e.message || e);
     btn.disabled = false;
     btn.innerHTML = 'Create';
@@ -1597,21 +1890,24 @@ function appendLog(line) {
   if (status) status.textContent = state.logLines.length + ' lines';
 }
 
-function clearLogs() {
+function clearLogs({ showBanner = true } = {}) {
   state.logLines = [];
   const viewer = $('logs-viewer');
-  if (viewer) viewer.textContent = 'Log cleared.';
+  if (viewer) viewer.textContent = showBanner ? TERMINAL_BANNER : '';
   const status = $('log-status');
   if (status) status.textContent = '';
 }
 
-function copyLog() {
+async function copyLog() {
   const viewer = $('logs-viewer');
   if (!viewer) return;
-  navigator.clipboard.writeText(viewer.textContent).then(() => {
+  try {
+    await api.copyText(viewer.textContent);
     setStatus('Log copied');
     successRing($('copy-log-btn'));
-  }).catch(() => {});
+  } catch (error) {
+    setStatus('Could not copy log: ' + (error.message || error));
+  }
 }
 
 // ── Launch flow ─────────────────────────────────────────────
@@ -1635,6 +1931,7 @@ function bindLaunchEvents() {
     toast('Launch failed', 'error');
   });
   api.onLaunchClose(() => {
+    clearLogs();
     setStatus('Minecraft closed');
     setDockedProgressVisible(false);
     setPlayingPill(null);
@@ -1655,6 +1952,7 @@ function bindLaunchEvents() {
 
 function launchInstance(name) {
   if (state.launchingName) return;
+  clearLogs({ showBanner: false });
   state.launchingName = name;
   setStatus(`Launching ${name}…`);
   renderAllInstanceCards();
@@ -1663,8 +1961,19 @@ function launchInstance(name) {
   setDockedStage('Preparing', 'authenticating');
   setDockedMetrics({ stage: 'authenticating' });
   setPlayingPill(name);
-  // Fire and forget — onLaunchClose / onLaunchError handle cleanup
-  api.launchInstance(name).catch(() => {});
+  // Event handlers cover failures after a launcher client exists. Rejections
+  // before that point (auth refresh, missing account, registry errors) must
+  // also reset the UI.
+  api.launchInstance(name).catch((e) => {
+    if (state.launchingName !== name) return;
+    state.launchingName = null;
+    setPlayingPill(null);
+    setDockedProgressVisible(false);
+    $('instance-play-btn')?.removeAttribute('disabled');
+    renderAllInstanceCards();
+    setStatus('Launch failed: ' + (e.message || e));
+    toast('Launch failed', 'error');
+  });
 }
 
 function renderAllInstanceCards() {
@@ -1794,17 +2103,21 @@ function burstConfetti() {
 
 // ── Discover / Modrinth ─────────────────────────────────────
 async function searchMods(append = false) {
-  if (state.searchLoading) return;
+  if (append && state.searchLoading) return;
   if (!append) state.searchOffset = 0;
-  state.searchLoading = true;
   const query = $('search-input')?.value.trim() || '';
   const loader = $('filter-loader')?.value || '';
   const version = $('filter-version')?.value || '';
   const category = $('filter-category')?.value.trim() || '';
+  const sort = $('results-sort')?.value || 'relevance';
   const facets = [['project_type:' + (state.discoverCategory || 'mod')]];
   if (loader) facets.push(['categories:' + loader]);
   if (version) facets.push(['versions:' + version]);
   if (category) facets.push(['categories:' + category]);
+  const searchKey = JSON.stringify({ query, loader, version, category, sort, type: state.discoverCategory });
+  const requestId = ++state.searchRequestId;
+  state.activeSearchKey = searchKey;
+  state.searchLoading = true;
 
   const grid = $('results-grid');
   const count = $('results-count');
@@ -1819,7 +2132,8 @@ async function searchMods(append = false) {
   }
 
   try {
-    const result = await api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT);
+    const result = await api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort);
+    if (requestId !== state.searchRequestId || searchKey !== state.activeSearchKey) return;
     const hits = result.hits || [];
     state.searchOffset += hits.length;
     const total = result.total_hits || hits.length;
@@ -1838,9 +2152,9 @@ async function searchMods(append = false) {
     count.textContent = `${fmtNum(total)} results · ${took} ms`;
 
     const html = hits.map((mod) => `
-      <div class="mod-card" data-pid="${mod.project_id}">
+      <div class="mod-card" data-pid="${escHtml(mod.project_id || '')}">
         <div class="mod-card-icon">
-          ${mod.icon_url ? `<img src="${escHtml(mod.icon_url)}" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode('${(mod.title || '?')[0]}'))">` : (mod.title || '?')[0].toUpperCase()}
+          ${mod.icon_url ? `<img src="${escHtml(mod.icon_url)}" alt="" loading="lazy">` : escHtml((mod.title || '?')[0].toUpperCase())}
         </div>
         <div class="mod-card-body">
           <div class="mod-card-title">${escHtml(mod.title || mod.name)}</div>
@@ -1859,6 +2173,7 @@ async function searchMods(append = false) {
       if (cards.length) {
         cards.forEach((c) => c.classList.add('leaving'));
         await new Promise((r) => setTimeout(r, 300));
+        if (requestId !== state.searchRequestId) return;
       }
       grid.innerHTML = html;
     }
@@ -1876,9 +2191,11 @@ async function searchMods(append = false) {
     else loadMoreBtn?.setAttribute('hidden', '');
     state.searchLoading = false;
   } catch (e) {
+    if (requestId !== state.searchRequestId) return;
     count.textContent = 'Error';
     grid.innerHTML = `<div class="text-muted" style="text-align:center;padding:24px">Search failed: ${escHtml(e.message || e)}</div>`;
-    state.searchLoading = false;
+  } finally {
+    if (requestId === state.searchRequestId) state.searchLoading = false;
   }
 }
 
@@ -1938,7 +2255,16 @@ async function installModFromSearch(projectId) {
 }
 
 async function doInstallMod(inst, projectId) {
-  const loaders = inst.loader === 'vanilla' ? [] : [inst.loader];
+  let project;
+  try { project = await api.getProject(projectId); } catch (e) {
+    setStatus('Could not load project details: ' + (e.message || e));
+    return;
+  }
+  const ptype = project?.project_type || 'mod';
+  // Resource packs / shaders / datapacks don't declare loaders, so
+  // filtering by the instance's loader would exclude them all.
+  const noLoaderFilter = ptype === 'resourcepack' || ptype === 'shader' || ptype === 'datapack';
+  const loaders = (inst.loader === 'vanilla' || noLoaderFilter) ? [] : [inst.loader];
   let versions;
   try {
     versions = await findCompatibleVersion(projectId, loaders, inst.gameVersion);
@@ -1947,7 +2273,8 @@ async function doInstallMod(inst, projectId) {
     return;
   }
   if (!versions || !versions.length) {
-    setStatus('No compatible version found for ' + inst.gameVersion);
+    setStatus(`No compatible ${inst.gameVersion}${loaders.length ? ` ${loaders[0]}` : ''} version exists for this project`);
+    toast('No compatible version found', 'error', 5000);
     return;
   }
   const version = versions[0];
@@ -2040,6 +2367,43 @@ async function doInstallMod(inst, projectId) {
     toast('Install failed: ' + (e.message || e), 'error', 5000);
     setStatus('Install failed');
   }
+}
+
+function confirmInstallAnyway(project, inst) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-root visible';
+    overlay.style.zIndex = '300';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:440px">
+        <div class="modal-header">
+          <div><h2 class="modal-title">No compatible version found</h2>
+            <p class="modal-sub">This content isn't marked for the instance's version</p></div>
+          <button class="modal-close" data-close><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="modal-body">
+          <p style="color:var(--text-md);line-height:1.6;margin-bottom:12px">
+            <strong>${escHtml(project?.title || 'This item')}</strong> has no version marked compatible with
+            <strong>${escHtml(inst.name)}</strong> (${escHtml(inst.loader || 'vanilla')} · MC ${escHtml(inst.gameVersion || '?')}).
+            It may not work correctly. Install it anyway?
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" data-cancel>Cancel</button>
+          <button class="btn btn-primary" data-ok>Install anyway</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.closest('[data-close]') || e.target.closest('[data-cancel]')) {
+        overlay.remove();
+        resolve(false);
+      } else if (e.target.closest('[data-ok]')) {
+        overlay.remove();
+        resolve(true);
+      }
+    });
+  });
 }
 
 function showManualInstallDialog(err) {

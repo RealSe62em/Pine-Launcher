@@ -1,0 +1,15 @@
+{
+  "name": "pine-installer",
+  "productName": "Pine Launcher Installer",
+  "version": "1.0.0",
+  "description": "Installer and uninstaller for Pine Launcher",
+  "author": "Pine Launcher",
+  "main": "main.js",
+  "private": true,
+  "dependencies": {
+    "pine-installer-core": "file:./stub"
+  },
+  "devDependencies": {
+    "electron": "28.3.3"
+  }
+}

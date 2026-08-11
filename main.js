@@ -1,25 +1,63 @@
-const { app, BrowserWindow, ipcMain, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, safeStorage, session, clipboard, net } = require('electron');
 const { Client } = require('minecraft-launcher-core');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const https = require('https');
 const os = require('os');
+const AdmZip = require('adm-zip');
 const { execFile } = require('child_process');
+const { resolveSafePath, safeRemoteFilename, safeInstanceName } = require('./lib/safety');
+const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion } = require('./lib/compat');
+const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
+const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
+const portableFetch = (...args) => net.fetch(...args);
+installMclReliabilityPatches({ fetchImpl: portableFetch });
 
 let mainWindow;
 let mcClient = null;
+let minecraftProcessStarted = false;
+let activeInstanceName = null;
+let sharedSeedPromise = null;
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+app.on('second-instance', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 // ── Paths ──────────────────────────────────────────────────────────
-const INSTANCES_DIR = path.join(__dirname, 'instances');
+const INSTANCES_DIR = path.join(app.getPath('userData'), 'instances');
+const LEGACY_INSTANCES_DIR = path.join(__dirname, 'instances');
+const GLOBAL_DIR = path.join(app.getPath('userData'), 'shared');
+const GLOBAL_ASSETS_DIR = path.join(GLOBAL_DIR, 'assets');
+const GLOBAL_LIBRARIES_DIR = path.join(GLOBAL_DIR, 'libraries');
+const GLOBAL_VERSIONS_DIR = path.join(GLOBAL_DIR, 'versions');
 const INSTANCES_FILE = path.join(INSTANCES_DIR, 'registry.json');
-const SETTINGS_FILE = path.join(__dirname, 'settings.json');
-const AUTH_FILE = path.join(__dirname, 'auth.json');
-const MOD_CACHE_DIR = path.join(__dirname, '.cache', 'mods');
+const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
+function getAuthFile() { return path.join(app.getPath('userData'), 'auth.json'); }
+const MOD_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'mods');
+const LOG_DIR = path.join(app.getPath('userData'), 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'latest.log');
+
+function diagnosticLog(level, message) {
+  ensureDir(LOG_DIR);
+  try {
+    if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > 5 * 1024 * 1024) {
+      const oldLog = path.join(LOG_DIR, 'previous.log');
+      fs.rmSync(oldLog, { force: true });
+      fs.renameSync(LOG_FILE, oldLog);
+    }
+  } catch {}
+  const line = `[${new Date().toISOString()}] [${level}] ${String(message).replace(/[\r\n]+/g, ' ')}\n`;
+  fs.appendFile(LOG_FILE, line, () => {});
+}
 
 // ── MC version → Java version map (fallback) ──────────────
 const MC_JAVA_MAP_FALLBACK = [
-  { min: '1.20', java: 21 }, { min: '1.17', java: 16 }, { min: '1.16.5', java: 8 },
+  { min: '1.20.5', java: 21 }, { min: '1.18', java: 17 }, { min: '1.17', java: 16 }, { min: '1.16.5', java: 8 },
   { min: '1.12', java: 8 }, { min: '1.7.10', java: 8 },
 ];
 
@@ -28,7 +66,9 @@ async function getRequiredJava(mcVersion) {
     const manifest = await fetchMinecraftVersions();
     const entry = manifest.versions?.find(v => v.id === mcVersion);
     if (entry?.url) {
-      const verJson = await (await fetch(entry.url)).json();
+      const response = await portableFetch(entry.url, { signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error(`Minecraft metadata returned HTTP ${response.status}`);
+      const verJson = await response.json();
       if (verJson.javaVersion?.majorVersion) return verJson.javaVersion.majorVersion;
     }
   } catch {}
@@ -39,21 +79,8 @@ async function getRequiredJava(mcVersion) {
 }
 
 // ── Security helpers ────────────────────────────────────────────────
-const SAFE_NAME_RE = /^[a-zA-Z0-9_\- .]+$/;
-
 function sanitizeName(name) {
-  if (!name || typeof name !== 'string') throw new Error('Invalid name');
-  if (!SAFE_NAME_RE.test(name)) throw new Error('Name contains invalid characters');
-  if (name.length > 120) throw new Error('Name too long');
-  return name.trim();
-}
-
-function resolveSafePath(base, ...parts) {
-  const resolved = path.resolve(base, ...parts);
-  if (!resolved.startsWith(path.resolve(base))) {
-    throw new Error('Path traversal detected');
-  }
-  return resolved;
+  return safeInstanceName(name);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -69,21 +96,35 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function safeImageData(value) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length > 8 * 1024 * 1024) return undefined;
+  return /^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(value) ? value : undefined;
+}
+
+function parseJvmArgs(value) {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  const args = value.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  return args.slice(0, 64).map(arg => arg.replace(/^"|"$/g, '')).filter(Boolean);
+}
+
 // ── Safe auth storage ───────────────────────────────────────
 function writeAuth(data) {
   const json = JSON.stringify(data);
+  const file = getAuthFile();
   if (safeStorage.isEncryptionAvailable()) {
     const encrypted = safeStorage.encryptString(json);
-    fs.writeFileSync(AUTH_FILE, encrypted);
+    fs.writeFileSync(file, encrypted);
   } else {
-    fs.writeFileSync(AUTH_FILE, json, 'utf8');
+    fs.writeFileSync(file, json, 'utf8');
   }
 }
 
 function readAuth() {
   try {
-    if (!fs.existsSync(AUTH_FILE)) return null;
-    const raw = fs.readFileSync(AUTH_FILE);
+    const file = getAuthFile();
+    if (!fs.existsSync(file)) return null;
+    const raw = fs.readFileSync(file);
     if (safeStorage.isEncryptionAvailable()) {
       const decrypted = safeStorage.decryptString(raw);
       return JSON.parse(decrypted);
@@ -94,6 +135,28 @@ function readAuth() {
   }
 }
 
+// ── Offline (username-only) auth ────────────────────────────
+const OFFLINE_NAME_RE = /^[A-Za-z0-9_]{3,16}$/;
+
+function sanitizeOfflineUsername(username) {
+  if (typeof username !== 'string') throw new Error('Username is required');
+  const name = username.trim();
+  if (!OFFLINE_NAME_RE.test(name)) {
+    throw new Error('Username must be 3-16 characters using letters, numbers, or underscores');
+  }
+  return name;
+}
+
+// Deterministic UUID matching the official launcher's offline UUID
+// (MD5 of "OfflinePlayer:<name>", version 3, RFC 4122 variant).
+function offlineUUID(name) {
+  const md5 = crypto.createHash('md5').update('OfflinePlayer:' + name).digest();
+  md5[6] = (md5[6] & 0x0f) | 0x30; // version 3
+  md5[8] = (md5[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = md5.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function isValidJar(filePath) {
   try {
     const stat = fs.statSync(filePath);
@@ -102,7 +165,9 @@ function isValidJar(filePath) {
     const magic = Buffer.alloc(2);
     fs.readSync(fd, magic, 0, 2, 0);
     if (magic[0] !== 0x50 || magic[1] !== 0x4B) { fs.closeSync(fd); return false; }
-    const searchSize = Math.min(256, stat.size);
+    // ZIP comments may be up to 65,535 bytes, so the end record can be
+    // much farther from EOF than the common 22-byte case.
+    const searchSize = Math.min(65557, stat.size);
     const tail = Buffer.alloc(searchSize);
     fs.readSync(fd, tail, 0, searchSize, stat.size - searchSize);
     fs.closeSync(fd);
@@ -167,22 +232,198 @@ function fmtBytes(bytes) {
 }
 
 // ── Java version detection ─────────────────────────────────
-function getJavaVersion(javaPath) {
-  try {
-    const spawnResult = require('child_process').spawnSync(javaPath, ['-version'], { timeout: 5000, encoding: 'utf8' });
-    const out = (spawnResult.stderr || '') + (spawnResult.stdout || '');
-    const m = out.match(/(?:version\s+["']?)(\d+)/);
-    if (m) return parseInt(m[1]);
-  } catch {}
+function getJavaVersionAsync(javaPath) {
+  return new Promise(resolve => {
+    execFile(javaPath, ['-version'], { timeout: 3000, windowsHide: true, encoding: 'utf8' }, (error, stdout, stderr) => {
+      // Java normally writes its version to stderr and may still return usable
+      // output alongside a nonzero exit status.
+      resolve(parseJavaMajor(`${stderr || ''}${stdout || ''}`));
+    });
+  });
+}
+
+// ── Windows Java discovery ────────────────────────────────
+const WINDOWS_JAVA_ROOTS = (() => {
+  const roots = [];
+  const pf = process.env['ProgramFiles'];
+  const pfx = process.env['ProgramFiles(x86)'];
+  const lapp = process.env['LOCALAPPDATA'];
+  const appData = process.env['APPDATA'];
+  const vendors = ['Java', 'Eclipse Adoptium', 'Adoptium', 'Microsoft', 'Amazon Corretto', 'BellSoft', 'Zulu', 'AdoptOpenJDK'];
+  for (const base of [pf, pfx].filter(Boolean)) {
+    for (const vendor of vendors) roots.push(path.join(base, vendor));
+    roots.push(path.join(base, 'Minecraft Launcher', 'runtime'));
+  }
+  if (lapp) {
+    const programs = path.join(lapp, 'Programs');
+    for (const vendor of vendors) roots.push(path.join(programs, vendor));
+    roots.push(path.join(programs, 'Minecraft Launcher', 'runtime'));
+  }
+  // The official Minecraft Launcher commonly keeps its managed runtimes here.
+  if (appData) roots.push(path.join(appData, '.minecraft', 'runtime'));
+  return roots;
+})();
+
+function findJavaOnWindows() {
+  if (process.platform !== 'win32') return [];
+  const found = [];
+  const seen = new Set();
+  const add = (p) => { if (!seen.has(p)) { seen.add(p); found.push(p); } };
+  if (process.env['JAVA_HOME']) {
+    add(path.join(process.env['JAVA_HOME'], 'bin', 'java.exe'));
+  }
+  const scan = (dir, depth) => {
+    if (found.length > 15) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const p = path.join(dir, e.name);
+      const bin = path.join(p, 'bin', 'java.exe');
+      if (fs.existsSync(bin)) { add(bin); continue; }
+      if (depth > 1) scan(p, depth - 1);
+    }
+  };
+  for (const root of WINDOWS_JAVA_ROOTS) scan(root, 5);
+  return found;
+}
+
+
+const MANAGED_JAVA_DIR = path.join(app.getPath('userData'), 'runtimes');
+
+function findJavaExecutable(root, depth = 4) {
+  if (depth < 0) return null;
+  const direct = path.join(root, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+  if (fs.existsSync(direct)) return direct;
+  let entries = [];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return null; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findJavaExecutable(path.join(root, entry.name), depth - 1);
+    if (found) return found;
+  }
   return null;
 }
 
-// ── Fetch with retry + resume ──────────────────────────────
-function fetchAgent(url) {
-  return new https.Agent({ keepAlive: true });
+async function fetchAdoptiumAsset(javaMajor, imageType) {
+  const architecture = process.arch === 'arm64' ? 'aarch64' : 'x64';
+  const url = `https://api.adoptium.net/v3/assets/latest/${javaMajor}/hotspot?architecture=${architecture}`
+    + `&image_type=${imageType}&os=windows&vendor=eclipse`;
+  const response = await portableFetch(url, { signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error(`Java runtime service returned HTTP ${response.status}`);
+  const assets = await response.json();
+  return assets.find(asset => asset?.binary?.package?.link && asset?.binary?.package?.checksum)?.binary?.package || null;
 }
 
+async function provisionManagedJava(javaMajor, onProgress) {
+  if (process.platform !== 'win32') throw new Error('Automatic Java installation is currently available on Windows only');
+  ensureDir(MANAGED_JAVA_DIR);
+  const runtimeDir = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.arch}`);
+  const existing = findJavaExecutable(runtimeDir);
+  if (existing && await getJavaVersionAsync(existing) === javaMajor) return { path: existing, major: javaMajor, managed: true };
+
+  const runtimePackage = await fetchAdoptiumAsset(javaMajor, 'jre') || await fetchAdoptiumAsset(javaMajor, 'jdk');
+  if (!runtimePackage) throw new Error(`No Eclipse Temurin Java ${javaMajor} runtime is available for this PC`);
+  const archive = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.arch}.zip`);
+  const staging = `${runtimeDir}.installing-${process.pid}`;
+  fs.rmSync(staging, { recursive: true, force: true });
+  onProgress?.({ percent: 0, label: `Downloading Java ${javaMajor}` });
+  try {
+    await fetchWithRetry(runtimePackage.link, archive, progress => onProgress?.({ ...progress, label: `Downloading Java ${javaMajor}` }));
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+    if (actual.toLowerCase() !== runtimePackage.checksum.toLowerCase()) throw new Error('The Java runtime checksum did not match');
+    ensureDir(staging);
+    new AdmZip(archive).extractAllTo(staging, true);
+    const stagedJava = findJavaExecutable(staging);
+    if (!stagedJava || await getJavaVersionAsync(stagedJava) !== javaMajor) throw new Error(`Downloaded runtime is not Java ${javaMajor}`);
+    fs.rmSync(runtimeDir, { recursive: true, force: true });
+    fs.renameSync(staging, runtimeDir);
+    const installed = findJavaExecutable(runtimeDir);
+    if (!installed) throw new Error('Java runtime extraction did not produce an executable');
+    return { path: installed, major: javaMajor, managed: true };
+  } finally {
+    fs.rmSync(archive, { force: true });
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+let javaDiscoveryCache = null;
+let javaDiscoveryCachedAt = 0;
+function getJavaCandidates() {
+  if (!javaDiscoveryCache || Date.now() - javaDiscoveryCachedAt > 5 * 60 * 1000) {
+    javaDiscoveryCache = findJavaOnWindows();
+    javaDiscoveryCachedAt = Date.now();
+  }
+  return javaDiscoveryCache;
+}
+
+async function findCompatibleJava(requiredMajor, preferredPath = '') {
+  const candidates = [preferredPath, 'java', ...getJavaCandidates()].filter(Boolean);
+  const seen = new Set();
+  const unique = [];
+  for (const javaPath of candidates) {
+    const key = javaPath.toLowerCase?.() || javaPath;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (javaPath !== 'java' && !(fs.existsSync(javaPath) && fs.statSync(javaPath).isFile())) continue;
+    unique.push(javaPath);
+  }
+  const results = await Promise.all(unique.map(async javaPath => ({
+    path: javaPath,
+    major: await getJavaVersionAsync(javaPath),
+    preferred: javaPath === preferredPath,
+  })));
+  const checked = results.filter(java => java.major);
+
+  return { java: chooseCompatibleJava(checked, requiredMajor), checked };
+}
+
+
+async function resolveJavaForLaunch(requiredMajor, preferredPath, onProgress) {
+  const result = await findCompatibleJava(requiredMajor, preferredPath);
+  const exact = chooseCompatibleJava(result.checked.filter(java => java.major === requiredMajor), requiredMajor);
+  if (exact) return { java: exact, checked: result.checked };
+  try {
+    const managed = await provisionManagedJava(requiredMajor, onProgress);
+    return { java: managed, checked: [...result.checked, managed] };
+  } catch (error) {
+    if (result.java) {
+      diagnosticLog('WARN', `Could not install exact Java ${requiredMajor}; using Java ${result.java.major}: ${error.message}`);
+      return result;
+    }
+    const detected = result.checked.length
+      ? ` Detected: ${result.checked.map(java => `Java ${java.major}`).join(', ')}.`
+      : ' No Java installation was detected.';
+    throw new Error(`Minecraft requires Java ${requiredMajor}. Pine could not install it automatically: ${error.message}.${detected}`);
+  }
+}
+
+function getModJavaRequirement(instanceDir) {
+  const modsDir = path.join(instanceDir, 'mods');
+  let required = 0;
+  const sources = [];
+  let files = [];
+  try { files = fs.readdirSync(modsDir).filter(f => f.toLowerCase().endsWith('.jar')); } catch { return { required, sources }; }
+  for (const filename of files) {
+    try {
+      const zip = new AdmZip(path.join(modsDir, filename));
+      const entry = zip.getEntry('fabric.mod.json');
+      if (!entry) continue;
+      const metadata = JSON.parse(entry.getData().toString('utf8'));
+      const minimum = javaMinimumFromRange(metadata?.depends?.java);
+      if (minimum > required) required = minimum;
+      if (minimum) sources.push({ name: metadata.name || metadata.id || filename, required: minimum });
+    } catch (e) {
+      console.warn(`[Java] Could not inspect ${filename}:`, e.message);
+    }
+  }
+  return { required, sources };
+}
+
+// ── Fetch with retry + resume ──────────────────────────────
 async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
+  const parsedUrl = new URL(fileUrl);
+  if (parsedUrl.protocol !== 'https:') throw new Error('Refusing an insecure download URL');
   const tmpPath = destPath + '.part';
   let downloaded = 0;
 
@@ -196,7 +437,7 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
     }
 
     try {
-      const res = await fetch(fileUrl, { headers, agent: fetchAgent(fileUrl) });
+      const res = await portableFetch(fileUrl, { headers, signal: AbortSignal.timeout(5 * 60 * 1000) });
       const total = parseInt(res.headers.get('content-length') || '0') + (res.status === 206 ? downloaded : 0);
 
       if (res.status === 416) {
@@ -204,6 +445,7 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
         downloaded = 0;
         continue;
       }
+      if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
 
       const isPartial = res.status === 206;
       if (!isPartial && downloaded > 0) {
@@ -217,7 +459,12 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          stream.write(Buffer.from(value));
+          if (!stream.write(Buffer.from(value))) {
+            await new Promise((resolve, reject) => {
+              stream.once('drain', resolve);
+              stream.once('error', reject);
+            });
+          }
           downloaded += value.length;
           if (onProgress && total) {
             const pct = Math.min(100, Math.round((downloaded / total) * 100));
@@ -231,6 +478,7 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
 
       if (total > 0 && downloaded < total) throw new Error(`Incomplete download: ${downloaded} / ${total} bytes`);
 
+      if (fs.existsSync(destPath)) fs.rmSync(destPath, { force: true });
       fs.renameSync(tmpPath, destPath);
       return;
     } catch (e) {
@@ -245,8 +493,15 @@ function getCachedPath(versionId, hash, hashType) {
   ensureDir(MOD_CACHE_DIR);
   const cacheFile = path.join(MOD_CACHE_DIR, `${hash}.jar`);
   if (fs.existsSync(cacheFile)) {
-    const stat = fs.statSync(cacheFile);
-    if (stat.size > 0) return cacheFile;
+    try {
+      const stat = fs.statSync(cacheFile);
+      if (stat.size > 0 && isValidJar(cacheFile)) {
+        const actual = crypto.createHash(hashType).update(fs.readFileSync(cacheFile)).digest('hex');
+        if (actual === hash) return cacheFile;
+      }
+      console.warn('[Cache] Removing invalid cached mod:', cacheFile);
+      fs.rmSync(cacheFile, { force: true });
+    } catch { try { fs.rmSync(cacheFile, { force: true }); } catch {} }
   }
   return null;
 }
@@ -256,7 +511,9 @@ function writeToCache(versionId, hash, hashType, srcPath) {
   ensureDir(MOD_CACHE_DIR);
   const cacheFile = path.join(MOD_CACHE_DIR, `${hash}.jar`);
   if (!fs.existsSync(cacheFile)) {
-    fs.copyFileSync(srcPath, cacheFile);
+    const tmp = `${cacheFile}.${process.pid}.tmp`;
+    fs.copyFileSync(srcPath, tmp);
+    fs.renameSync(tmp, cacheFile);
   }
 }
 
@@ -277,28 +534,136 @@ function cleanCorruptedJars(dir) {
   return removed;
 }
 
+function validateSharedVersionCache(versionId) {
+  const jsonPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.json`);
+  const jarPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.jar`);
+  if (!fs.existsSync(jsonPath)) return;
+  const metadata = readJSON(jsonPath);
+  if (!metadata || metadata.id !== versionId || metadata.inheritsFrom) {
+    fs.rmSync(jsonPath, { force: true });
+    fs.rmSync(jarPath, { force: true });
+    return;
+  }
+  if (fs.existsSync(jarPath)) {
+    const expected = metadata.downloads?.client?.sha1;
+    const validZip = isValidJar(jarPath);
+    const validHash = !expected || crypto.createHash('sha1').update(fs.readFileSync(jarPath)).digest('hex') === expected;
+    if (!validZip || !validHash) fs.rmSync(jarPath, { force: true });
+  }
+}
+
 // ── Create Window ───────────────────────────────────────────────────
+
+async function ensureSharedMinecraftVersion(versionId, onProgress) {
+  ensureDir(GLOBAL_VERSIONS_DIR);
+  const manifest = await fetchMinecraftVersions();
+  const entry = manifest.versions?.find(version => version.id === versionId);
+  if (!entry?.url) throw new Error(`Minecraft ${versionId} is missing from the official version manifest`);
+  const metadataResponse = await portableFetch(entry.url, { signal: AbortSignal.timeout(30000) });
+  if (!metadataResponse.ok) throw new Error(`Minecraft ${versionId} metadata returned HTTP ${metadataResponse.status}`);
+  const metadata = await metadataResponse.json();
+  const jsonPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.json`);
+  const jarPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.jar`);
+  writeJSON(jsonPath, metadata);
+  const expected = metadata.downloads?.client?.sha1;
+  let valid = fs.existsSync(jarPath) && isValidJar(jarPath);
+  if (valid && expected) valid = crypto.createHash('sha1').update(fs.readFileSync(jarPath)).digest('hex') === expected;
+  if (!valid) {
+    fs.rmSync(jarPath, { force: true });
+    const url = metadata.downloads?.client?.url;
+    if (!url) throw new Error(`Minecraft ${versionId} has no client download`);
+    await fetchWithRetry(url, jarPath, progress => onProgress?.({ ...progress, label: `Downloading Minecraft ${versionId}` }));
+    if (!isValidJar(jarPath)) throw new Error(`Minecraft ${versionId} downloaded an invalid client file`);
+    if (expected && crypto.createHash('sha1').update(fs.readFileSync(jarPath)).digest('hex') !== expected) throw new Error(`Minecraft ${versionId} client checksum did not match`);
+  }
+  return metadata;
+}
+
 function createWindow() {
+  const { Menu } = require('electron');
+  Menu.setApplicationMenu(null);
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 900,
-    minHeight: 600,
+    width: 1400,
+    height: 920,
+    minWidth: 1000,
+    minHeight: 700,
+    show: false,
     title: 'Pine Launcher',
-    icon: path.join(__dirname, 'renderer', 'icon.png'),
+    icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
+
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:' && (parsed.hostname === 'modrinth.com' || parsed.hostname.endsWith('.modrinth.com'))) shell.openExternal(url);
+    } catch {}
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) event.preventDefault();
+  });
+  mainWindow.once('ready-to-show', () => mainWindow.show());
+  setTimeout(() => { if (mainWindow && !mainWindow.isVisible()) mainWindow.show(); }, 3000);
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools();
 }
 
 // ── Auth (Microsoft OAuth) ─────────────────────────────────────────
 const CLIENT_ID = '00000000402b5328'; // Minecraft for Windows
 const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
+
+async function jsonResponse(res, label) {
+  let data;
+  try { data = await res.json(); } catch { throw new Error(`${label} returned an invalid response`); }
+  if (!res.ok) throw new Error(`${label} failed (${res.status}): ${data.error_description || data.errorMessage || data.error || 'Unknown error'}`);
+  return data;
+}
+
+async function minecraftAuthFromMicrosoft(msaToken, refreshToken) {
+  const xblData = await jsonResponse(await portableFetch('https://user.auth.xboxlive.com/user/authenticate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${msaToken}` }, RelyingParty: 'http://auth.xboxlive.com', TokenType: 'JWT' }),
+    signal: AbortSignal.timeout(15000),
+  }), 'Xbox Live authentication');
+  const xstsData = await jsonResponse(await portableFetch('https://xsts.auth.xboxlive.com/xsts/authorize', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ Properties: { SandboxId: 'RETAIL', UserTokens: [xblData.Token] }, RelyingParty: 'rp://api.minecraftservices.com/', TokenType: 'JWT' }),
+    signal: AbortSignal.timeout(15000),
+  }), 'Xbox security authentication');
+  const userHash = xstsData.DisplayClaims?.xui?.[0]?.uhs;
+  if (!userHash || !xstsData.Token) throw new Error('Xbox authentication response was incomplete');
+  const mcData = await jsonResponse(await portableFetch('https://api.minecraftservices.com/authentication/login_with_xbox', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsData.Token}` }),
+    signal: AbortSignal.timeout(15000),
+  }), 'Minecraft authentication');
+  const profile = await jsonResponse(await portableFetch('https://api.minecraftservices.com/minecraft/profile', {
+    headers: { Authorization: `Bearer ${mcData.access_token}` }, signal: AbortSignal.timeout(15000),
+  }), 'Minecraft profile');
+  if (!profile.name || !profile.id) throw new Error('This account does not have a usable Minecraft profile');
+  return { access_token: mcData.access_token, refresh_token: refreshToken, profile: { name: profile.name, uuid: profile.id }, refreshedAt: Date.now() };
+}
+
+async function refreshMicrosoftAuth(authData) {
+  if (!authData?.refresh_token || authData.meta?.type === 'offline') return authData;
+  // Refresh proactively after 20 minutes; Minecraft access tokens are short-lived.
+  if (authData.refreshedAt && Date.now() - authData.refreshedAt < 20 * 60 * 1000) return authData;
+  const tokenData = await jsonResponse(await portableFetch('https://login.live.com/oauth20_token.srf', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: CLIENT_ID, refresh_token: authData.refresh_token, redirect_uri: REDIRECT_URI, grant_type: 'refresh_token', scope: 'XboxLive.signin offline_access' }),
+    signal: AbortSignal.timeout(15000),
+  }), 'Microsoft token refresh');
+  const refreshed = await minecraftAuthFromMicrosoft(tokenData.access_token, tokenData.refresh_token || authData.refresh_token);
+  writeAuth(refreshed);
+  return refreshed;
+}
 
 async function microsoftLogin() {
   // Step 1: Get auth code via browser
@@ -314,7 +679,11 @@ async function microsoftLogin() {
     + `&code_challenge_method=S256`;
 
   return new Promise((resolve, reject) => {
-    const authWindow = new BrowserWindow({ width: 600, height: 700, title: 'Microsoft Login' });
+    const authWindow = new BrowserWindow({
+      width: 600, height: 700, title: 'Microsoft Login',
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+    });
+    authWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     authWindow.loadURL(authUrl);
 
     let authHandled = false;
@@ -325,7 +694,7 @@ async function microsoftLogin() {
       authWindow.close();
 
       try {
-        const tokenRes = await fetch('https://login.live.com/oauth20_token.srf', {
+        const tokenRes = await portableFetch('https://login.live.com/oauth20_token.srf', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({
@@ -335,58 +704,10 @@ async function microsoftLogin() {
             redirect_uri: REDIRECT_URI,
             grant_type: 'authorization_code',
           }),
+          signal: AbortSignal.timeout(30000),
         });
-        const tokenData = await tokenRes.json();
-        if (!tokenData.access_token) throw new Error('No access token: ' + JSON.stringify(tokenData));
-        const msaToken = tokenData.access_token;
-        const refreshToken = tokenData.refresh_token;
-
-        // Step 2: XBL auth
-        const xblRes = await fetch('https://user.auth.xboxlive.com/user/authenticate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${msaToken}` },
-            RelyingParty: 'http://auth.xboxlive.com',
-            TokenType: 'JWT',
-          }),
-        });
-        const xblData = await xblRes.json();
-        const xblToken = xblData.Token;
-
-        // Step 3: XSTS auth
-        const xstsRes = await fetch('https://xsts.auth.xboxlive.com/xsts/authorize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            Properties: { SandboxId: 'RETAIL', UserTokens: [xblToken] },
-            RelyingParty: 'rp://api.minecraftservices.com/',
-            TokenType: 'JWT',
-          }),
-        });
-        const xstsData = await xstsRes.json();
-        const userHash = xstsData.DisplayClaims.xui[0].uhs;
-
-        // Step 4: Minecraft auth
-        const mcRes = await fetch('https://api.minecraftservices.com/authentication/login_with_xbox', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsData.Token}` }),
-        });
-        const mcData = await mcRes.json();
-        const mcAccessToken = mcData.access_token;
-
-        // Step 5: Profile
-        const profileRes = await fetch('https://api.minecraftservices.com/minecraft/profile', {
-          headers: { Authorization: `Bearer ${mcAccessToken}` },
-        });
-        const profile = await profileRes.json();
-
-        const authData = {
-          access_token: mcAccessToken,
-          refresh_token: refreshToken,
-          profile: { name: profile.name, uuid: profile.id },
-        };
+        const tokenData = await jsonResponse(tokenRes, 'Microsoft login');
+        const authData = await minecraftAuthFromMicrosoft(tokenData.access_token, tokenData.refresh_token);
         writeAuth(authData);
         resolve(authData);
       } catch (e) {
@@ -423,7 +744,8 @@ async function microsoftLogin() {
 let versionCache = null;
 async function fetchMinecraftVersions() {
   if (versionCache) return versionCache;
-  const res = await fetch('https://launchermeta.mojang.com/mc/game/version_manifest.json');
+  const res = await portableFetch('https://launchermeta.mojang.com/mc/game/version_manifest.json', { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`Minecraft version service returned HTTP ${res.status}`);
   versionCache = await res.json();
   return versionCache;
 }
@@ -431,9 +753,10 @@ async function fetchMinecraftVersions() {
 // ── Loader Version Fetching ─────────────────────────────────────────
 async function fetchLoaderVersions(gameVersion, loader) {
   switch (loader) {
-    case 'fabric': case 'quilt': {
+    case 'fabric': {
       const url = `https://meta.fabricmc.net/v2/versions/loader/${gameVersion}`;
-      const res = await fetch(url);
+      const res = await portableFetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`Fabric metadata returned HTTP ${res.status}`);
       const data = await res.json();
       return data.map(v => ({
         version: v.loader.version,
@@ -441,17 +764,29 @@ async function fetchLoaderVersions(gameVersion, loader) {
         stable: v.loader.stable,
       }));
     }
-    case 'forge': {
-      const res = await fetch(`https://meta.minecraftforge.net/v2/versions/${gameVersion}`);
+    case 'quilt': {
+      const res = await portableFetch(`https://meta.quiltmc.org/v3/versions/loader/${gameVersion}`, {
+        headers: { 'User-Agent': 'PineLauncher/1.1' }, signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`Quilt metadata returned HTTP ${res.status}`);
       const data = await res.json();
-      return (data.versions || []).map(v => ({
-        version: v.version,
-        name: `Forge ${v.version}`,
-        stable: true,
-      }));
+      return data.map(v => {
+        const version = v.loader?.version || v.version;
+        return { version, name: `Quilt Loader ${version}`, stable: !String(version).includes('beta') };
+      }).filter(v => v.version);
+    }
+    case 'forge': {
+      const res = await portableFetch('https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml', { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`Forge metadata returned HTTP ${res.status}`);
+      const xml = await res.text();
+      const prefix = `${gameVersion}-`;
+      return [...xml.matchAll(/<version>([^<]+)<\/version>/g)]
+        .map(m => m[1]).filter(v => v.startsWith(prefix)).reverse()
+        .map(v => ({ version: v.slice(prefix.length), name: `Forge ${v.slice(prefix.length)}`, stable: true }));
     }
     case 'neoforge': {
-      const res = await fetch('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+      const res = await portableFetch('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml', { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`NeoForge metadata returned HTTP ${res.status}`);
       const xml = await res.text();
       const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
       const prefix = gameVersion.replace(/^1\./, '') + '.';
@@ -465,12 +800,27 @@ async function fetchLoaderVersions(gameVersion, loader) {
 
 // ── Modrinth API ────────────────────────────────────────────────────
 const MODRINTH_API = 'https://api.modrinth.com/v2';
+const modrinthResponseCache = new Map();
 async function modrinthFetch(path) {
-  const res = await fetch(`${MODRINTH_API}${path}`, {
-    headers: { 'User-Agent': 'PineLauncher/1.0' },
-  });
-  if (!res.ok) throw new Error(`Modrinth ${res.status}: ${res.statusText}`);
-  return res.json();
+  const now = Date.now();
+  const cached = modrinthResponseCache.get(path);
+  if (cached && cached.expires > now) return cached.promise;
+  const promise = (async () => {
+    const res = await portableFetch(`${MODRINTH_API}${path}`, {
+      headers: { 'User-Agent': 'PineLauncher/1.1' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`Modrinth ${res.status}: ${res.statusText}`);
+    return res.json();
+  })();
+  modrinthResponseCache.set(path, { expires: now + (path.startsWith('/search?') ? 10000 : 60000), promise });
+  if (modrinthResponseCache.size > 500) modrinthResponseCache.delete(modrinthResponseCache.keys().next().value);
+  try {
+    return await promise;
+  } catch (e) {
+    modrinthResponseCache.delete(path);
+    throw e;
+  }
 }
 
 // ── Build MCLC Loader Profile ───────────────────────────────────────
@@ -492,32 +842,114 @@ async function buildLoaderUrl(instance, instanceDir) {
       return null;
   }
 
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const profile = await res.json();
-    const profileId = profile.id;
-    if (!profileId) return null;
+  const writeProfile = (profile, profileId) => {
     const verDir = path.join(instanceDir, 'versions', profileId);
     ensureDir(verDir);
-    fs.writeFileSync(path.join(verDir, `${profileId}.json`), JSON.stringify(profile, null, 2));
-    return profileId;
-  } catch {
-    return null;
+    const serializedProfile = JSON.stringify(profile, null, 2);
+    const instanceProfile = path.join(verDir, `${profileId}.json`);
+    fs.writeFileSync(instanceProfile, serializedProfile);
+    // Seed the client jar + vanilla version json from the shared cache so
+    // custom-loader instances don't re-download the ~25MB client jar.
+    const srcJar = path.join(GLOBAL_VERSIONS_DIR, `${mv}.jar`);
+    const srcJson = path.join(GLOBAL_VERSIONS_DIR, `${mv}.json`);
+    if (fs.existsSync(srcJar) && !fs.existsSync(path.join(verDir, `${profileId}.jar`))) {
+      fs.copyFileSync(srcJar, path.join(verDir, `${profileId}.jar`));
+    }
+    if (fs.existsSync(srcJson) && !fs.existsSync(path.join(verDir, `${mv}.json`))) {
+      fs.copyFileSync(srcJson, path.join(verDir, `${mv}.json`));
+    }
+    // Mirror the profile into the shared cache for offline fallback later.
+    // Write from memory instead of copying the just-created instance file.
+    // A cache failure is non-fatal: the instance profile above is the only
+    // file required to launch, and antivirus/indexing software can briefly
+    // interfere with newly created files on some Windows systems.
+    const sharedProf = path.join(GLOBAL_VERSIONS_DIR, `${profileId}.json`);
+    try {
+      ensureDir(GLOBAL_VERSIONS_DIR);
+      fs.writeFileSync(sharedProf, serializedProfile);
+    } catch (e) {
+      console.warn(`[Loader] Could not cache ${profileId} globally:`, e.message);
+    }
+  };
+
+  // Reuse an already-downloaded loader profile for this loader + game version
+  // if the network is unavailable: per-instance first, then shared cache.
+  const findCached = () => {
+    const scanDir = (dir, sub) => {
+      let entries = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return null;
+      }
+      for (const e of entries) {
+        let jf = null;
+        if (sub) {
+          if (!e.isDirectory()) continue;
+          jf = path.join(dir, e.name, `${e.name}.json`);
+        } else {
+          if (e.isDirectory() || !e.name.endsWith('.json')) continue;
+          jf = path.join(dir, e.name);
+        }
+        try {
+          if (!fs.existsSync(jf)) continue;
+          const j = JSON.parse(fs.readFileSync(jf, 'utf8'));
+          if (j && j.id && j.id.includes(l) && j.inheritsFrom === mv && j.mainClass) return j;
+        } catch {}
+      }
+      return null;
+    };
+    return scanDir(path.join(instanceDir, 'versions'), true) || scanDir(GLOBAL_VERSIONS_DIR, false);
+  };
+
+  try {
+    const res = await portableFetch(url, { headers: { 'User-Agent': 'PineLauncher/1.1' }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const profile = await res.json();
+    if (!profile || !profile.id) throw new Error('Profile has no id');
+    writeProfile(profile, profile.id);
+    return profile.id;
+  } catch (e) {
+    console.warn(`[Loader] Failed to fetch ${l} profile (${lv} on ${mv}):`, e.message);
+    const cached = findCached();
+    if (cached) {
+      console.warn('[Loader] Using cached loader profile:', cached.id);
+      writeProfile(cached, cached.id);
+      return cached.id;
+    }
+    throw new Error(
+      `Couldn't download the ${l} loader profile for Minecraft ${mv} (${lv}). ` +
+      `Check your internet connection and try again.`
+    );
   }
+}
+
+async function prepareForge(instance, instanceDir, onProgress) {
+  if (instance.loader !== 'forge') return null;
+  const artifact = `${instance.gameVersion}-${instance.loaderVersion}`;
+  const forgeDir = resolveSafePath(instanceDir, 'installers');
+  ensureDir(forgeDir);
+  const installerPath = resolveSafePath(forgeDir, `forge-${artifact}-installer.jar`);
+  if (!isValidJar(installerPath)) {
+    const url = `https://maven.minecraftforge.net/net/minecraftforge/forge/${artifact}/forge-${artifact}-installer.jar`;
+    await fetchWithRetry(url, installerPath, (p) => onProgress?.(p));
+    if (!isValidJar(installerPath)) throw new Error('The Forge installer download is invalid');
+  }
+  return installerPath;
 }
 
 // ── IPC Handlers ────────────────────────────────────────────────────
 function setupIPC() {
+  ipcMain.handle('copy-text', async (_, value) => {
+    if (typeof value !== 'string' || value.length > 10 * 1024 * 1024) throw new Error('Invalid clipboard text');
+    clipboard.writeText(value);
+    return true;
+  });
+
   ipcMain.handle('check-java', async () => {
-    return new Promise((resolve) => {
-      execFile('java', ['-version'], (err, stdout, stderr) => {
-        if (err) return resolve(false);
-        const match = (stderr || stdout).match(/(\d+)\.(\d+)\.(\d+)/);
-        if (!match) return resolve(false);
-        resolve({ major: parseInt(match[1]), minor: parseInt(match[2]), patch: parseInt(match[3]) });
-      });
-    });
+    const { checked } = await findCompatibleJava(1);
+    const best = checked.sort((a, b) => b.major - a.major)[0];
+    return best ? { major: best.major, path: best.path } : false;
   });
 
   ipcMain.handle('open-java-download', async () => {
@@ -537,12 +969,44 @@ function setupIPC() {
     return microsoftLogin();
   });
 
+  ipcMain.handle('offline-login', async (_, username) => {
+    const name = sanitizeOfflineUsername(username);
+    const authData = {
+      access_token: '',
+      profile: { name, uuid: offlineUUID(name) },
+      meta: { type: 'offline', demo: false },
+    };
+    writeAuth(authData);
+    return authData;
+  });
+
   ipcMain.handle('get-auth', async () => {
     return readAuth();
   });
 
+  ipcMain.handle('sign-out', async () => {
+    const file = getAuthFile();
+    if (fs.existsSync(file)) fs.rmSync(file, { force: true });
+    return true;
+  });
+
   ipcMain.handle('create-instance', async (_, data) => {
     const safeName = sanitizeName(data.name);
+    const normalized = normalizeProfileLoader(data.profile, data.loader, data.loaderVersion);
+    const requestedProfile = normalized.profile;
+    const loader = normalized.loader;
+    const loaderVersion = normalized.loaderVersion;
+    if (loader !== 'vanilla' && !loaderVersion) throw new Error(`Select a ${loader} loader version`);
+    const manifest = await fetchMinecraftVersions();
+    if (!manifest.versions?.some(v => v.id === data.gameVersion)) throw new Error('Select a valid Minecraft version');
+    if (loader !== 'vanilla') {
+      const available = await fetchLoaderVersions(data.gameVersion, loader);
+      if (!available.some(v => v.version === loaderVersion)) throw new Error(`The selected ${loader} version is not compatible with Minecraft ${data.gameVersion}`);
+    }
+    const defaults = readJSON(SETTINGS_FILE) || {};
+    const minMemory = sanitizeMemory(data.minMemory, sanitizeMemory(defaults.minMemory, '2G'));
+    const maxMemory = sanitizeMemory(data.maxMemory, sanitizeMemory(defaults.maxMemory, '4G'));
+    if (memoryMegabytes(minMemory) > memoryMegabytes(maxMemory)) throw new Error('Minimum memory cannot exceed maximum memory');
     ensureDir(INSTANCES_DIR);
     const registry = readJSON(INSTANCES_FILE) || [];
     const existing = registry.find(i => i.name === safeName);
@@ -558,21 +1022,25 @@ function setupIPC() {
       name: safeName,
       path: instanceDir,
       gameVersion: data.gameVersion,
-      loader: data.loader || 'vanilla',
-      loaderVersion: data.loaderVersion || null,
+      profile: requestedProfile,
+      loader,
+      loaderVersion,
       created: new Date().toISOString(),
       lastPlayed: null,
-      javaPath: data.javaPath || null,
-      minMemory: data.minMemory || '2G',
-      maxMemory: data.maxMemory || '4G',
+      javaPath: typeof data.javaPath === 'string' ? data.javaPath.slice(0, 1024) : null,
+      minMemory,
+      maxMemory,
+      memoryOverride: false,
       iconData: null,
       bannerData: null,
       bannerBlurDir: 'left',
     };
 
-    if (data.iconData) entry.iconData = data.iconData;
-    if (data.bannerData) entry.bannerData = data.bannerData;
-    entry.bannerBlurDir = data.bannerBlurDir || 'left';
+    const iconData = safeImageData(data.iconData);
+    const bannerData = safeImageData(data.bannerData);
+    if (iconData) entry.iconData = iconData;
+    if (bannerData) entry.bannerData = bannerData;
+    entry.bannerBlurDir = ['left', 'right', 'center', 'none'].includes(data.bannerBlurDir) ? data.bannerBlurDir : 'left';
 
     registry.push(entry);
     writeJSON(INSTANCES_FILE, registry);
@@ -582,11 +1050,15 @@ function setupIPC() {
   ipcMain.handle('get-instances-dir', async () => INSTANCES_DIR);
 
   ipcMain.handle('list-instances', async () => {
-    const registry = readJSON(INSTANCES_FILE) || [];
+    let registry = readJSON(INSTANCES_FILE) || [];
     let changed = false;
+    registry = registry.filter(inst => {
+      try { sanitizeName(inst?.name); return true; } catch { changed = true; return false; }
+    });
     for (const inst of registry) {
-      if (!inst.path) {
-        inst.path = path.join(INSTANCES_DIR, inst.name);
+      const canonicalPath = resolveSafePath(INSTANCES_DIR, inst.name);
+      if (inst.path !== canonicalPath) {
+        inst.path = canonicalPath;
         changed = true;
       }
     }
@@ -599,22 +1071,44 @@ function setupIPC() {
     const registry = readJSON(INSTANCES_FILE) || [];
     const idx = registry.findIndex(i => i.name === safeName);
     if (idx < 0) throw new Error(`Instance "${safeName}" not found`);
-    const newName = data.name;
-    if (newName && newName !== safeName) {
+    const clean = {};
+    const newName = typeof data?.name === 'string' ? data.name : null;
+    if (newName) {
       const safeNewName = sanitizeName(newName);
-      const oldDir = resolveSafePath(INSTANCES_DIR, safeName);
-      const newDir = resolveSafePath(INSTANCES_DIR, safeNewName);
-      if (fs.existsSync(newDir)) throw new Error(`An instance named "${safeNewName}" already exists`);
-      if (fs.existsSync(oldDir)) fs.renameSync(oldDir, newDir);
-      registry[idx].path = newDir;
+      if (safeNewName !== safeName) {
+        if (activeInstanceName === safeName) throw new Error('Stop Minecraft before renaming this instance');
+        const oldDir = resolveSafePath(INSTANCES_DIR, safeName);
+        const newDir = resolveSafePath(INSTANCES_DIR, safeNewName);
+        if (fs.existsSync(newDir)) throw new Error(`An instance named "${safeNewName}" already exists`);
+        if (fs.existsSync(oldDir)) fs.renameSync(oldDir, newDir);
+        registry[idx].path = newDir;
+      }
+      clean.name = safeNewName;
     }
-    registry[idx] = { ...registry[idx], ...data };
+    if (typeof data?.lastOpened === 'string') clean.lastOpened = data.lastOpened.slice(0, 64);
+    if (typeof data?.javaPath === 'string') clean.javaPath = data.javaPath.slice(0, 1024);
+    if (data?.minMemory !== undefined) clean.minMemory = sanitizeMemory(data.minMemory, registry[idx].minMemory || '2G');
+    if (data?.maxMemory !== undefined) clean.maxMemory = sanitizeMemory(data.maxMemory, registry[idx].maxMemory || '4G');
+    if (data?.minMemory !== undefined || data?.maxMemory !== undefined) clean.memoryOverride = true;
+    if (typeof data?.jvmArgs === 'string') clean.jvmArgs = data.jvmArgs.slice(0, 4096);
+    if (Number.isFinite(data?.windowWidth)) clean.windowWidth = Math.min(7680, Math.max(320, Math.round(data.windowWidth)));
+    if (Number.isFinite(data?.windowHeight)) clean.windowHeight = Math.min(4320, Math.max(240, Math.round(data.windowHeight)));
+    const iconData = safeImageData(data?.iconData);
+    const bannerData = safeImageData(data?.bannerData);
+    if (iconData !== undefined) clean.iconData = iconData;
+    if (bannerData !== undefined) clean.bannerData = bannerData;
+    if (['left', 'right', 'center', 'none'].includes(data?.bannerBlurDir)) clean.bannerBlurDir = data.bannerBlurDir;
+    if (memoryMegabytes(clean.minMemory || registry[idx].minMemory || '2G') > memoryMegabytes(clean.maxMemory || registry[idx].maxMemory || '4G')) {
+      throw new Error('Minimum memory cannot exceed maximum memory');
+    }
+    registry[idx] = { ...registry[idx], ...clean };
     writeJSON(INSTANCES_FILE, registry);
     return registry[idx];
   });
 
   ipcMain.handle('delete-instance', async (_, name) => {
     const safeName = sanitizeName(name);
+    if (activeInstanceName === safeName) throw new Error('Stop Minecraft before deleting this instance');
     const registry = readJSON(INSTANCES_FILE) || [];
     const filtered = registry.filter(i => i.name !== safeName);
     writeJSON(INSTANCES_FILE, filtered);
@@ -626,29 +1120,73 @@ function setupIPC() {
   });
 
   ipcMain.handle('launch-instance', async (_, name) => {
+    if (mcClient) throw new Error('Minecraft is already launching or running');
     const safeName = sanitizeName(name);
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error(`Instance "${safeName}" not found`);
 
-    const authData = readAuth();
-    if (!authData) throw new Error('Please login with Microsoft account first');
+    let authData = readAuth();
+    if (!authData || !authData.profile) throw new Error('Please sign in with Microsoft or set up an offline account first');
+    const isOffline = authData.meta?.type === 'offline';
+    activeInstanceName = safeName;
+    try {
+      if (!isOffline) authData = await refreshMicrosoftAuth(authData);
+    } catch (e) {
+      activeInstanceName = null;
+      throw e;
+    }
 
-    const instanceDir = path.join(INSTANCES_DIR, name);
+    const instanceDir = resolveSafePath(INSTANCES_DIR, safeName);
     const settings = readJSON(SETTINGS_FILE) || {};
 
     mcClient = new Client();
+    minecraftProcessStarted = false;
 
-    const customLoader = await buildLoaderUrl(instance, instanceDir);
+    let customLoader;
+    let forgeInstaller;
+    let selectedJava;
+    try {
+      const reportPreparation = update => mainWindow?.webContents.send('launch-metrics', { stage: 'downloading', progress: Math.min(20, Math.round((update.percent || 0) * 0.2)), currentFile: update.label });
+      if (sharedSeedPromise) await sharedSeedPromise;
+      validateSharedVersionCache(instance.gameVersion);
+      const minecraftJava = await getRequiredJava(instance.gameVersion);
+      const modJava = getModJavaRequirement(instanceDir);
+      const requiredJava = Math.max(minecraftJava, modJava.required || 0);
+      const configuredJava = instance.javaPath || settings.javaPath || '';
+      const result = await resolveJavaForLaunch(requiredJava, configuredJava, reportPreparation);
+      selectedJava = result.java;
+      const verifiedMajor = await getJavaVersionAsync(selectedJava.path);
+      if (verifiedMajor !== selectedJava.major || verifiedMajor < requiredJava) throw new Error(`Selected Java runtime failed verification (needed ${requiredJava}, got ${verifiedMajor || 'unknown'})`);
+      if (configuredJava && selectedJava.path !== configuredJava) {
+        console.warn(`[Java] Configured runtime is incompatible; using Java ${selectedJava.major} at ${selectedJava.path}`);
+      }
+      await ensureSharedMinecraftVersion(instance.gameVersion, reportPreparation);
+      if (instance.loader === 'neoforge') {
+        throw new Error('NeoForge launching is not available in this build yet. Create a Fabric, Quilt, Forge, or Vanilla instance.');
+      }
+      customLoader = await buildLoaderUrl(instance, instanceDir);
+      forgeInstaller = await prepareForge(instance, instanceDir, (p) => {
+        mainWindow?.webContents.send('launch-metrics', { stage: 'downloading', progress: Math.min(20, Math.round((p.percent || 0) * 0.2)), currentFile: 'Forge installer' });
+      });
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      mainWindow?.webContents.send('launch-error', new Error(msg));
+      mainWindow?.webContents.send('launch-log', '[ERROR] ' + msg);
+      mainWindow?.webContents.send('launch-metrics', { stage: 'error', progress: 0 });
+      mcClient = null;
+      activeInstanceName = null;
+      throw e;
+    }
 
     const opts = {
       authorization: {
-        access_token: authData.access_token,
+        access_token: isOffline ? '' : authData.access_token,
         client_token: crypto.randomUUID(),
         uuid: authData.profile.uuid,
         name: authData.profile.name,
         user_properties: '{}',
-        meta: { type: 'msa', demo: false },
+        meta: isOffline ? { type: 'offline', demo: false } : { type: 'msa', demo: false },
       },
       root: instanceDir,
       version: {
@@ -656,19 +1194,31 @@ function setupIPC() {
         type: 'release',
         custom: customLoader,
       },
-      memory: {
-        max: instance.maxMemory || settings.maxMemory || '4G',
-        min: instance.minMemory || settings.minMemory || '2G',
-      },
-      javaPath: instance.javaPath || settings.javaPath || '',
+      memory: resolveLaunchMemory(instance, settings),
+      javaPath: selectedJava.path,
       window: {
-        width: settings.windowWidth || 1280,
-        height: settings.windowHeight || 720,
+        width: instance.windowWidth || settings.windowWidth || 1280,
+        height: instance.windowHeight || settings.windowHeight || 720,
       },
-      overrides: {},
+      overrides: {
+        assetRoot: GLOBAL_ASSETS_DIR,
+        libraryRoot: GLOBAL_LIBRARIES_DIR,
+        maxSockets: Math.max(2, parseInt(settings.dlLimit, 10) || 4),
+      },
     };
+    const customArgs = parseJvmArgs(instance.jvmArgs || settings.jvmArgs);
+    if (customArgs.length) opts.customArgs = customArgs;
+    if (forgeInstaller) opts.forge = forgeInstaller;
+
+    // Vanilla versions share a global versions dir too; custom loader
+    // profiles stay per-instance (MCLC resolves those against the
+    // instance root).
+    if (!customLoader) opts.overrides.directory = GLOBAL_VERSIONS_DIR;
 
     return new Promise((resolve, reject) => {
+      let terminalEventHandled = false;
+      let lastLauncherFailure = '';
+      let runtimeMismatchMessage = '';
       // ── Launch metrics tracker ────────────────────────────────
       const metrics = {
         stage: 'preparing',
@@ -682,6 +1232,7 @@ function setupIPC() {
         progressLabel: null,
       };
       let lastEmit = 0;
+      let launchBehaviorApplied = false;
       const emitMetrics = (force = false) => {
         const now = Date.now();
         if (!force && now - lastEmit < 250) return;
@@ -757,6 +1308,8 @@ function setupIPC() {
       // ── debug: MCLC internal log — stage transitions ──────
       mcClient.on('debug', (e) => {
         console.log('[MCLC]', e);
+        diagnosticLog('DEBUG', e);
+        if (typeof e === 'string' && /failed|couldn't start/i.test(e)) lastLauncherFailure = e.replace(/^\[MCLC\]:?\s*/i, '');
         if (typeof e !== 'string') return;
         const t = e.toLowerCase();
         if (t.includes('launching with arguments')) {
@@ -834,8 +1387,14 @@ function setupIPC() {
 
       // ── data: Minecraft stdout/stderr (post-Java-launch) ───
       mcClient.on('data', (e) => {
+        minecraftProcessStarted = true;
+        diagnosticLog('GAME', e);
         mainWindow?.webContents.send('launch-data', e);
-        mainWindow?.webContents.send('launch-log', e);
+        if (typeof e === 'string') {
+          const classVersion = e.match(/class file version\s+(\d+(?:\.\d+)?)/i)?.[1];
+          const needed = javaMajorFromClassVersion(classVersion);
+          if (needed && needed > selectedJava.major) runtimeMismatchMessage = `Minecraft requires Java ${needed}, but Java ${selectedJava.major} was started. Pine will install the correct runtime on the next launch.`;
+        }
         if (typeof e === 'string') {
           metrics.eventsSeen++;
           if (metrics.stage === 'launching') {
@@ -843,6 +1402,10 @@ function setupIPC() {
             advanceStage('done');
             metrics.progress = 100;
             emitMetrics(true);
+            if (!launchBehaviorApplied && settings.launchBehavior === 'Close on launch') {
+              launchBehaviorApplied = true;
+              mainWindow?.close();
+            }
             return;
           }
           if (/Launching|Client thread|GL info|Loading native/i.test(e)) {
@@ -855,69 +1418,103 @@ function setupIPC() {
 
       // ── error / close ──────────────────────────────────────
       mcClient.on('error', (e) => {
+        if (terminalEventHandled) return;
+        terminalEventHandled = true;
+        diagnosticLog('ERROR', e?.stack || e);
         mainWindow?.webContents.send('launch-error', e);
         mainWindow?.webContents.send('launch-log', '[ERROR] ' + (e.message || e));
         mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'error' });
-        const fixed = cleanCorruptedJars(path.join(INSTANCES_DIR, instance.name, 'libraries'))
+        const fixed = cleanCorruptedJars(GLOBAL_LIBRARIES_DIR)
+                   + cleanCorruptedJars(GLOBAL_VERSIONS_DIR)
                    + cleanCorruptedJars(path.join(INSTANCES_DIR, instance.name, 'mods'));
         if (fixed > 0) mainWindow?.webContents.send('launch-fixed', fixed);
+        mcClient = null;
+        minecraftProcessStarted = false;
+        activeInstanceName = null;
         reject(e);
       });
-      mcClient.on('close', () => {
-        mainWindow?.webContents.send('launch-close');
-        mainWindow?.webContents.send('launch-log', '[Minecraft closed]');
-        mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'closed' });
+      mcClient.on('close', (code) => {
+        if (terminalEventHandled) return;
+        terminalEventHandled = true;
         mcClient = null;
-        resolve(true);
+        minecraftProcessStarted = false;
+        activeInstanceName = null;
+        if (Number.isInteger(code) && code !== 0) {
+          const error = new Error(runtimeMismatchMessage || `Minecraft crashed with exit code ${code}. Open Logs for the details.`);
+          diagnosticLog('ERROR', error.message);
+          mainWindow?.webContents.send('launch-error', { message: error.message, exitCode: code });
+          mainWindow?.webContents.send('launch-log', `[ERROR] ${error.message}`);
+          mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'error' });
+          reject(error);
+        } else {
+          mainWindow?.webContents.send('launch-log', '[Minecraft closed]');
+          mainWindow?.webContents.send('launch-close');
+          mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'closed' });
+          resolve(true);
+        }
       });
 
-      instance.lastPlayed = new Date().toISOString();
-      writeJSON(INSTANCES_FILE, registry);
-      const cleaned = cleanCorruptedJars(path.join(INSTANCES_DIR, instance.name, 'libraries'))
+      const latestRegistry = readJSON(INSTANCES_FILE) || [];
+      const latestInstance = latestRegistry.find(item => item.name === safeName);
+      if (latestInstance) {
+        latestInstance.lastPlayed = new Date().toISOString();
+        try { writeJSON(INSTANCES_FILE, latestRegistry); } catch (e) { diagnosticLog('WARN', `Could not save last-played time: ${e.message}`); }
+      }
+      const cleaned = cleanCorruptedJars(GLOBAL_LIBRARIES_DIR)
+                   + cleanCorruptedJars(GLOBAL_VERSIONS_DIR)
                    + cleanCorruptedJars(path.join(INSTANCES_DIR, instance.name, 'mods'));
       if (cleaned > 0) mainWindow?.webContents.send('launch-fixed', cleaned);
-      mcClient.launch(opts);
+      Promise.resolve(mcClient.launch(opts)).then((processHandle) => {
+        if (!processHandle && !terminalEventHandled) {
+          throw new Error(lastLauncherFailure || 'Minecraft preparation stopped before Java could start. Check the network and try again.');
+        }
+      }).catch((e) => {
+        if (terminalEventHandled) return;
+        terminalEventHandled = true;
+        diagnosticLog('ERROR', e?.stack || e);
+        mainWindow?.webContents.send('launch-error', e);
+        mainWindow?.webContents.send('launch-log', '[ERROR] ' + (e.message || e));
+        mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'error' });
+        mcClient = null;
+        minecraftProcessStarted = false;
+        activeInstanceName = null;
+        reject(e);
+      });
     });
   });
 
   // ── Modrinth IPC ──────────────────────────────────────────────────
-  ipcMain.handle('search-mods', async (_, query, facets, offset, limit) => {
-    try {
-      const facetStr = facets ? `&facets=${encodeURIComponent(JSON.stringify(facets))}` : '';
-      return await modrinthFetch(`/search?query=${encodeURIComponent(query || '')}&offset=${offset || 0}&limit=${limit || 20}${facetStr}`);
-    } catch { return { hits: [], total_hits: 0 }; }
+  ipcMain.handle('search-mods', async (_, query, facets, offset, limit, sort) => {
+    const facetStr = facets ? `&facets=${encodeURIComponent(JSON.stringify(facets))}` : '';
+    const allowedSorts = new Set(['relevance', 'downloads', 'updated', 'newest']);
+    const index = sort === 'name' ? 'relevance' : (allowedSorts.has(sort) ? sort : 'relevance');
+    return modrinthFetch(`/search?query=${encodeURIComponent(query || '')}&offset=${Math.max(0, Number(offset) || 0)}&limit=${Math.min(100, Math.max(1, Number(limit) || 20))}&index=${index}${facetStr}`);
   });
 
   ipcMain.handle('get-project-versions', async (_, projectId, loaders, gameVersions) => {
-    try {
-      const params = new URLSearchParams();
-      if (loaders?.length) params.set('loaders', JSON.stringify(loaders));
-      if (gameVersions?.length) params.set('game_versions', JSON.stringify(gameVersions));
-      return await modrinthFetch(`/project/${projectId}/version?${params}`);
-    } catch { return []; }
+    const params = new URLSearchParams();
+    if (loaders?.length) params.set('loaders', JSON.stringify(loaders));
+    if (gameVersions?.length) params.set('game_versions', JSON.stringify(gameVersions));
+    return modrinthFetch(`/project/${encodeURIComponent(projectId)}/version?${params}`);
   });
 
   // ── Helper: resolve a dependency to its version ────────────────────
   async function resolveDepVersion(dep, loaders, gameVersion) {
     if (dep.version_id) {
-      try { return await modrinthFetch(`/version/${dep.version_id}`); } catch {}
+      const version = await modrinthFetch(`/version/${dep.version_id}`);
+      if (versionSupports(version, gameVersion, loaders)) return version;
+      return null;
     }
     if (dep.project_id) {
-      try {
-        const versions = await modrinthFetch(`/project/${dep.project_id}/version`);
-        const compatible = versions.filter(v => {
-          const gv = v.game_versions || [];
-          const lv = v.loaders || [];
-          return gv.includes(gameVersion) && (!loaders.length || loaders.some(l => lv.includes(l)));
-        });
-        return compatible[0] || versions[0];
-      } catch {}
+      const versions = await modrinthFetch(`/project/${dep.project_id}/version`);
+      const compatible = versions.filter(v => versionSupports(v, gameVersion, loaders));
+      return compatible[0] || null;
     }
     return null;
   }
 
   // ── Helper: recursively resolve deps (N levels, dedup, cycle guard) ──
-  async function resolveDepsRecursive(deps, loaders, gameVersion, visited = new Set(), results = []) {
+  async function resolveDepsRecursive(deps, loaders, gameVersion, visited = new Set(), results = [], unresolved = []) {
     for (const dep of deps) {
       if (!dep.project_id || visited.has(dep.project_id)) continue;
       visited.add(dep.project_id);
@@ -927,9 +1524,9 @@ function setupIPC() {
         const subDeps = (depVer.dependencies || [])
           .filter(d => d.dependency_type === 'required' && d.project_id);
         if (subDeps.length) {
-          await resolveDepsRecursive(subDeps, loaders, gameVersion, visited, results);
+          await resolveDepsRecursive(subDeps, loaders, gameVersion, visited, results, unresolved);
         }
-      }
+      } else unresolved.push(dep);
     }
     return results;
   }
@@ -940,36 +1537,36 @@ function setupIPC() {
     switch (loader) {
       case 'fabric': {
         const url = `https://meta.fabricmc.net/v2/versions/loader/${gameVersion}/${loaderVersion}`;
-        try { const r = await fetch(url); if (!r.ok) return 'Installed Fabric Loader ' + loaderVersion + ' may not be compatible with MC ' + gameVersion; } catch {}
+        try { const r = await portableFetch(url, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return 'Installed Fabric Loader ' + loaderVersion + ' may not be compatible with MC ' + gameVersion; } catch { return 'Could not verify the Fabric loader version because the metadata service is unavailable'; }
         return null;
       }
       case 'quilt': {
         const url = `https://meta.quiltmc.org/v3/versions/loader/${gameVersion}/${loaderVersion}`;
-        try { const r = await fetch(url); if (!r.ok) return 'Installed Quilt Loader ' + loaderVersion + ' may not be compatible with MC ' + gameVersion; } catch {}
+        try { const r = await portableFetch(url, { headers: { 'User-Agent': 'PineLauncher/1.1' }, signal: AbortSignal.timeout(15000) }); if (!r.ok) return 'Installed Quilt Loader ' + loaderVersion + ' may not be compatible with MC ' + gameVersion; } catch { return 'Could not verify the Quilt loader version because the metadata service is unavailable'; }
         return null;
       }
       case 'forge': {
         try {
-          const r = await fetch(`https://meta.minecraftforge.net/v2/versions/${gameVersion}`);
+          const r = await portableFetch('https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml', { signal: AbortSignal.timeout(15000) });
           if (r.ok) {
-            const data = await r.json();
-            const known = (data.versions || []).some(v => v.version === loaderVersion);
+            const xml = await r.text();
+            const known = xml.includes(`<version>${gameVersion}-${loaderVersion}</version>`);
             if (!known) return 'Installed Forge ' + loaderVersion + ' may not be compatible with MC ' + gameVersion;
-          }
-        } catch {}
+          } else return `Forge metadata returned HTTP ${r.status}`;
+        } catch { return 'Could not verify the Forge loader version because the metadata service is unavailable'; }
         return null;
       }
       case 'neoforge': {
         try {
-          const r = await fetch('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+          const r = await portableFetch('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml', { signal: AbortSignal.timeout(15000) });
           if (r.ok) {
             const xml = await r.text();
             const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
             const prefix = gameVersion.replace(/^1\./, '') + '.';
             const known = versions.some(v => v.startsWith(prefix) && v === loaderVersion);
             if (!known && !versions.some(v => v.startsWith(prefix))) return 'Installed NeoForge ' + loaderVersion + ' may not be compatible with MC ' + gameVersion;
-          }
-        } catch {}
+          } else return `NeoForge metadata returned HTTP ${r.status}`;
+        } catch { return 'Could not verify the NeoForge loader version because the metadata service is unavailable'; }
         return null;
       }
       default:
@@ -986,9 +1583,30 @@ function setupIPC() {
 
     const version = await modrinthFetch(`/version/${versionId}`);
     const project = await modrinthFetch(`/project/${projectId}`);
+    gameVersion = instance.gameVersion;
+    loaders = instance.loader && instance.loader !== 'vanilla' ? [instance.loader] : [];
 
     const warnings = [];
     const errors = [];
+
+    if (project.project_type === 'modpack') {
+      errors.push({ code: 'UNSUPPORTED_PROJECT_TYPE', message: 'Modpack importing is not supported yet; installing an .mrpack file as a mod would break the instance.' });
+    }
+    if (project.project_type === 'datapack') {
+      errors.push({ code: 'UNSUPPORTED_PROJECT_TYPE', message: 'Data packs must be installed into a specific world and cannot be installed at the instance level.' });
+    }
+
+    const versionGames = version.game_versions || [];
+    const versionLoaders = version.loaders || [];
+    if (!versionGames.includes(gameVersion)) {
+      errors.push({ code: 'GAME_VERSION_MISMATCH', message: `${version.name || project.title} does not support Minecraft ${gameVersion}` });
+    }
+    if (project.project_type === 'mod' && instance.loader === 'vanilla') {
+      errors.push({ code: 'LOADER_REQUIRED', message: 'Mods require a Fabric, Quilt, or Forge instance. Vanilla instances cannot load mod JARs.' });
+    } else if (loaders.length && project.project_type === 'mod' && !loaders.some(l => versionLoaders.includes(l))) {
+      errors.push({ code: 'LOADER_MISMATCH', message: `${version.name || project.title} does not support ${instance.loader}` });
+    }
+    if (errors.length) return { feasible: false, errors, warnings, version, project, instance };
 
     // 1. CurseForge distribution-disabled check
     const validFiles = (version.files || []).filter(f => f.url);
@@ -1010,14 +1628,14 @@ function setupIPC() {
     }
 
     // 3. Java version check (from piston-meta, fallback to hardcoded map)
-    const javaPath = instance.javaPath || readJSON(SETTINGS_FILE)?.javaPath || 'java';
-    const javaVer = getJavaVersion(javaPath);
     const requiredJava = await getRequiredJava(gameVersion);
-    if (javaVer && requiredJava && javaVer < requiredJava) {
+    const javaResult = await findCompatibleJava(requiredJava, instance.javaPath || readJSON(SETTINGS_FILE)?.javaPath || '');
+    if (!javaResult.java) {
+      const detected = javaResult.checked.map(java => java.major).join(', ') || 'none';
       warnings.push({
         code: 'OLD_JAVA',
-        message: `Instance uses Java ${javaVer}, but MC ${gameVersion} needs Java ${requiredJava}+`,
-        detail: 'Install the correct Java version in Settings',
+        message: `MC ${gameVersion} needs Java ${requiredJava}+; detected Java versions: ${detected}`,
+        detail: 'Install a compatible Java version or select it in Settings',
       });
     }
 
@@ -1028,7 +1646,16 @@ function setupIPC() {
     const incompatibleDeps = deps.filter(d => d.dependency_type === 'incompatible' && d.project_id);
 
     const visitedDeps = new Set([projectId]); // prevent self-reference
-    const resolvedRequired = await resolveDepsRecursive(requiredDeps, loaders, gameVersion, visitedDeps);
+    const unresolvedRequired = [];
+    const resolvedRequired = await resolveDepsRecursive(requiredDeps, loaders, gameVersion, visitedDeps, [], unresolvedRequired);
+    if (unresolvedRequired.length) {
+      errors.push({
+        code: 'INCOMPATIBLE_DEPENDENCY',
+        message: `${project.title || version.name} has ${unresolvedRequired.length} required dependency that is unavailable for Minecraft ${gameVersion} and ${instance.loader}`,
+        detail: 'Pine refused to install an incompatible fallback version.',
+      });
+      return { feasible: false, errors, warnings, version, project, instance };
+    }
 
     // 5. Disk space check (after dep resolution)
     const primarySize = validFiles[0].size || 0;
@@ -1125,7 +1752,7 @@ function setupIPC() {
       requiredDepVersionIds: Object.keys(requiredDepSizes),
       requiredDepSizes,
       incompatibleDeps: incompatibleDeps.map(d => d.project_id),
-      file: validFiles[0],
+      file: validFiles.find(f => f.primary) || validFiles[0],
       version,
       project,
       instance,
@@ -1133,15 +1760,41 @@ function setupIPC() {
   });
 
   // ── Helper: process a single version file through verify pipeline ──
-  async function processSingleVersion(instanceName, versionId, modsDir, writtenFiles) {
+  async function processSingleVersion(instance, versionId, writtenFiles) {
+    const instanceName = instance.name;
     const version = await modrinthFetch(`/version/${versionId}`);
-    const file = version.files?.[0];
+    const file = version.files?.find(f => f.primary) || version.files?.[0];
     if (!file) throw new Error(`No files in version ${versionId}`);
 
-    const filePath = path.join(modsDir, file.filename);
+    // Route by project type: resource packs / shaders / datapacks go to
+    // their own folders; everything else (mods, modpacks) goes to mods/.
+    const project = await modrinthFetch(`/project/${version.project_id}`);
+    const projectType = project.project_type || 'mod';
+    if (projectType === 'modpack' || projectType === 'datapack') {
+      throw new Error(`${projectType === 'modpack' ? 'Modpack importing' : 'Data-pack installation'} is not supported by this installer`);
+    }
 
-    // Already written by a prior iteration — skip
-    if (fs.existsSync(filePath) && writtenFiles.includes(filePath)) return null;
+    if (!(version.game_versions || []).includes(instance.gameVersion)) {
+      throw new Error(`${version.name || file.filename} does not support Minecraft ${instance.gameVersion}`);
+    }
+    if (projectType === 'mod') {
+      if (instance.loader === 'vanilla') throw new Error('Vanilla instances cannot install mod JARs');
+      if (!(version.loaders || []).includes(instance.loader)) {
+        throw new Error(`${version.name || file.filename} does not support ${instance.loader}`);
+      }
+    }
+
+    const sub = projectType === 'resourcepack' ? 'resourcepacks'
+      : projectType === 'shader' ? 'shaderpacks'
+      : projectType === 'datapack' ? 'datapacks' : 'mods';
+    const targetDir = resolveSafePath(INSTANCES_DIR, instanceName, sub);
+    ensureDir(targetDir);
+    const safeFilename = safeRemoteFilename(file.filename);
+    const filePath = resolveSafePath(targetDir, safeFilename);
+
+    // Never overwrite an existing user file. Updates explicitly disable the
+    // previous file before this point; dependencies already present are kept.
+    if (fs.existsSync(filePath)) return null;
 
     // Phase: try cache
     sendInstallProgress(instanceName, 'caching', `Checking cache for ${file.filename}…`, 0);
@@ -1173,7 +1826,7 @@ function setupIPC() {
       }
     }
 
-    // Validate JAR
+    // Validate ZIP
     if (!isValidJar(filePath)) {
       throw new Error(`Downloaded file ${file.filename} is corrupted`);
     }
@@ -1182,7 +1835,7 @@ function setupIPC() {
     writeToCache(versionId, file.hashes?.sha512 || file.hashes?.sha1,
       file.hashes?.sha512 ? 'sha512' : 'sha1', filePath);
 
-    return { version, file, filePath };
+    return { version, file, filePath, projectType, project };
   }
 
   // ── Install mod (download + verify + save) with batch rollback ────
@@ -1190,6 +1843,9 @@ function setupIPC() {
     const { versionIds, disableFiles } = options;
     if (!versionIds?.length) throw new Error('No versions to install');
     const safeName = sanitizeName(instanceName);
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instance = registry.find(item => item.name === safeName);
+    if (!instance) throw new Error('Instance not found');
 
     const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
     ensureDir(modsDir);
@@ -1225,8 +1881,9 @@ function setupIPC() {
     try {
       // Disable conflicting files before starting
       if (disableFiles?.length) {
-        for (const f of disableFiles) {
-          const fullPath = path.join(modsDir, f);
+      for (const f of disableFiles) {
+          const safeFile = safeRemoteFilename(f);
+          const fullPath = resolveSafePath(modsDir, safeFile);
           if (fs.existsSync(fullPath) && !fullPath.endsWith('.disabled')) {
             const backup = fullPath + '.disabled';
             fs.renameSync(fullPath, backup);
@@ -1242,27 +1899,41 @@ function setupIPC() {
         sendInstallProgress(instanceName, 'downloading',
           `Installing ${i + 1} of ${versionIds.length}…`, Math.round((i / versionIds.length) * 80));
 
-        const result = await processSingleVersion(instanceName, vid, modsDir, writtenFiles);
+        const result = await processSingleVersion(instance, vid, writtenFiles);
         if (result === null) continue; // already existed
 
-        // Save metadata
-        const metaFile = path.join(INSTANCES_DIR, instanceName, 'mods_meta.json');
-        let meta = {};
-        try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
-        meta[result.file.filename] = {
+        // Save metadata (mods only — resource packs etc. live in their own folders)
+        const contentMetaFile = path.join(INSTANCES_DIR, instanceName, 'content_meta.json');
+        let contentMeta = {};
+        try { contentMeta = JSON.parse(fs.readFileSync(contentMetaFile, 'utf8')); } catch {}
+        contentMeta[`${result.projectType}:${result.file.filename}`] = {
           projectId: result.version.project_id,
-          title: result.version.name || result.file.filename,
-          iconUrl: null,
+          title: result.project?.title || result.version.name || result.file.filename,
+          iconUrl: result.project?.icon_url || null,
           installedVersion: vid,
           installedAt: new Date().toISOString(),
-          depData: result.version.dependencies || [],
+          projectType: result.projectType,
         };
-        try {
-          const project = await modrinthFetch(`/project/${result.version.project_id}`);
-          meta[result.file.filename].iconUrl = project.icon_url || null;
-          meta[result.file.filename].title = project.title || result.version.name || result.file.filename;
-        } catch {}
-        fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+        fs.writeFileSync(contentMetaFile, JSON.stringify(contentMeta, null, 2));
+
+        if (result.projectType === 'mod') {
+          const metaFile = path.join(INSTANCES_DIR, instanceName, 'mods_meta.json');
+          let meta = {};
+          try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
+          meta[result.file.filename] = {
+            projectId: result.version.project_id,
+            title: result.version.name || result.file.filename,
+            iconUrl: null,
+            installedVersion: vid,
+            installedAt: new Date().toISOString(),
+            depData: result.version.dependencies || [],
+          };
+          if (result.project) {
+            meta[result.file.filename].iconUrl = result.project.icon_url || null;
+            meta[result.file.filename].title = result.project.title || result.version.name || result.file.filename;
+          }
+          fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+        }
 
         installed.push({ filename: result.file.filename, projectId: result.version.project_id });
       }
@@ -1316,13 +1987,14 @@ function setupIPC() {
       throw new Error('Invalid mod filename');
     }
     const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
-    const filePath = path.join(modsDir, safeFile);
-    const disabledPath = filePath + '.disabled';
-    if (fs.existsSync(filePath)) {
-      fs.renameSync(filePath, disabledPath);
+    const suppliedPath = resolveSafePath(modsDir, safeFile);
+    const enabledPath = suppliedPath.endsWith('.disabled') ? suppliedPath.slice(0, -9) : suppliedPath;
+    const disabledPath = `${enabledPath}.disabled`;
+    if (fs.existsSync(enabledPath)) {
+      fs.renameSync(enabledPath, disabledPath);
     } else if (fs.existsSync(disabledPath)) {
       // Already disabled — re-enable
-      fs.renameSync(disabledPath, filePath);
+      fs.renameSync(disabledPath, enabledPath);
     }
     return true;
   });
@@ -1367,20 +2039,24 @@ function setupIPC() {
     const safeName = sanitizeName(instanceName);
     const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
     ensureDir(modsDir);
-    const files = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar'));
+    const files = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'));
     const metaFile = resolveSafePath(INSTANCES_DIR, safeName, 'mods_meta.json');
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
-    return files.map(f => ({
+    return files.map(f => {
+      const metaKey = f.endsWith('.disabled') ? f.slice(0, -9) : f;
+      const info = meta[f] || meta[metaKey] || {};
+      return ({
       filename: f,
       path: path.join(modsDir, f),
-      projectId: meta[f]?.projectId || null,
-      title: meta[f]?.title || f.replace(/\.jar$/, ''),
-      iconUrl: meta[f]?.iconUrl || null,
-      installedVersion: meta[f]?.installedVersion || null,
-      installedAt: meta[f]?.installedAt || null,
-      depData: meta[f]?.depData || null,
-    }));
+      projectId: info.projectId || null,
+      title: info.title || f.replace(/\.jar(?:\.disabled)?$/, ''),
+      iconUrl: info.iconUrl || null,
+      installedVersion: info.installedVersion || null,
+      installedAt: info.installedAt || null,
+      depData: info.depData || null,
+      disabled: f.endsWith('.disabled'),
+    }); });
   }
 
   // ── Helper: send install progress to renderer ────────────────────
@@ -1396,10 +2072,92 @@ function setupIPC() {
     return getInstanceModsList(safeName);
   });
 
-  ipcMain.handle('get-project', async (_, projectId) => {
+  const CONTENT_DIRS = Object.freeze({ resourcepack: 'resourcepacks', shader: 'shaderpacks' });
+  function validateContentType(type) {
+    if (type !== 'mod' && type !== 'datapack' && !Object.prototype.hasOwnProperty.call(CONTENT_DIRS, type)) {
+      throw new Error('Invalid content type');
+    }
+    return type;
+  }
+  async function getInstanceContentList(instanceName, type) {
+    const safeName = sanitizeName(instanceName);
+    validateContentType(type);
+    if (type === 'mod') return getInstanceModsList(safeName);
+    const base = resolveSafePath(INSTANCES_DIR, safeName);
+    const metaFile = resolveSafePath(base, 'content_meta.json');
+    let meta = {};
+    try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
+    const mapFile = (dir, filename, world = null, isDirectory = false) => {
+      const enabledName = filename.endsWith('.disabled') ? filename.slice(0, -9) : filename;
+      const info = meta[`${type}:${enabledName}`] || meta[`${type}:${filename}`] || {};
+      return {
+        key: world ? `${world}/${filename}` : filename,
+        filename,
+        path: path.join(dir, filename),
+        projectId: info.projectId || null,
+        title: info.title || enabledName.replace(/\.(?:zip|jar)$/i, ''),
+        iconUrl: info.iconUrl || null,
+        installedVersion: info.installedVersion || null,
+        installedAt: info.installedAt || null,
+        disabled: filename.endsWith('.disabled'),
+        isDirectory,
+        world,
+        type,
+      };
+    };
+    if (type === 'datapack') {
+      const savesDir = resolveSafePath(base, 'saves');
+      let worlds = [];
+      try { worlds = fs.readdirSync(savesDir, { withFileTypes: true }).filter(entry => entry.isDirectory()); } catch {}
+      return worlds.flatMap(world => {
+        const dir = resolveSafePath(savesDir, world.name, 'datapacks');
+        let entries = [];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }).filter(entry => entry.isDirectory() || /\.zip(?:\.disabled)?$/i.test(entry.name)); } catch {}
+        return entries.map(entry => mapFile(dir, entry.name, world.name, entry.isDirectory()));
+      });
+    }
+    const dir = resolveSafePath(base, CONTENT_DIRS[type]);
+    ensureDir(dir);
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() || /\.(?:zip|jar)(?:\.disabled)?$/i.test(entry.name))
+      .map(entry => mapFile(dir, entry.name, null, entry.isDirectory()));
+  }
+  ipcMain.handle('get-instance-content', async (_, instanceName, type) => {
+    return getInstanceContentList(instanceName, validateContentType(type));
+  });
+  ipcMain.handle('toggle-instance-content', async (_, instanceName, type, key) => {
+    validateContentType(type);
+    if (type === 'mod') throw new Error('Use the mod toggle action');
+    const item = (await getInstanceContentList(instanceName, type)).find(entry => entry.key === key);
+    if (!item) throw new Error('Content file not found');
+    const enabledPath = item.path.endsWith('.disabled') ? item.path.slice(0, -9) : item.path;
+    const disabledPath = `${enabledPath}.disabled`;
+    if (fs.existsSync(enabledPath)) fs.renameSync(enabledPath, disabledPath);
+    else if (fs.existsSync(disabledPath)) fs.renameSync(disabledPath, enabledPath);
+    return true;
+  });
+  ipcMain.handle('remove-instance-content', async (_, instanceName, type, key) => {
+    validateContentType(type);
+    if (type === 'mod') throw new Error('Use the mod removal action');
+    const item = (await getInstanceContentList(instanceName, type)).find(entry => entry.key === key);
+    if (!item) throw new Error('Content file not found');
+    const enabledPath = item.path.endsWith('.disabled') ? item.path.slice(0, -9) : item.path;
+    const disabledPath = `${enabledPath}.disabled`;
+    if (fs.existsSync(enabledPath)) fs.rmSync(enabledPath, { force: true, recursive: item.isDirectory });
+    if (fs.existsSync(disabledPath)) fs.rmSync(disabledPath, { force: true, recursive: item.isDirectory });
+    const metaFile = resolveSafePath(INSTANCES_DIR, sanitizeName(instanceName), 'content_meta.json');
     try {
-      return await modrinthFetch(`/project/${projectId}`);
-    } catch { return null; }
+      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      const enabledName = item.filename.endsWith('.disabled') ? item.filename.slice(0, -9) : item.filename;
+      delete meta[`${type}:${enabledName}`];
+      delete meta[`${type}:${item.filename}`];
+      fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+    } catch {}
+    return true;
+  });
+
+  ipcMain.handle('get-project', async (_, projectId) => {
+    return modrinthFetch(`/project/${encodeURIComponent(projectId)}`);
   });
 
   ipcMain.handle('remove-mod', async (_, instanceName, filename) => {
@@ -1409,18 +2167,17 @@ function setupIPC() {
       throw new Error('Invalid mod filename');
     }
     const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
-    const filePath = path.join(modsDir, safeFile);
-    const disabledPath = filePath + '.disabled';
-    if (fs.existsSync(filePath)) {
-      fs.renameSync(filePath, disabledPath);
-    } else if (fs.existsSync(disabledPath)) {
-      fs.unlinkSync(disabledPath);
-    }
+    const filePath = resolveSafePath(modsDir, safeFile);
+    const enabledPath = filePath.endsWith('.disabled') ? filePath.slice(0, -9) : filePath;
+    const disabledPath = `${enabledPath}.disabled`;
+    if (fs.existsSync(enabledPath)) fs.unlinkSync(enabledPath);
+    if (fs.existsSync(disabledPath)) fs.unlinkSync(disabledPath);
     const metaFile = resolveSafePath(INSTANCES_DIR, safeName, 'mods_meta.json');
     try {
       const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
-      delete meta[filename];
-      delete meta[filename + '.disabled'];
+      const enabledName = safeFile.endsWith('.disabled') ? safeFile.slice(0, -9) : safeFile;
+      delete meta[enabledName];
+      delete meta[`${enabledName}.disabled`];
       fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
     } catch {}
     return true;
@@ -1428,8 +2185,25 @@ function setupIPC() {
 
   // ── Settings ──────────────────────────────────────────────────────
   ipcMain.handle('save-settings', async (_, settings) => {
-    writeJSON(SETTINGS_FILE, settings);
-    return true;
+    const allowedBehaviors = new Set(['Keep open', 'Close on launch']);
+    const minMemory = sanitizeMemory(settings?.minMemory, '2G');
+    const maxMemory = sanitizeMemory(settings?.maxMemory, '4G');
+    if (memoryMegabytes(minMemory) > memoryMegabytes(maxMemory)) throw new Error('Minimum memory cannot exceed maximum memory');
+    const clean = {
+      gayMode: Boolean(settings?.gayMode),
+      javaPath: typeof settings?.javaPath === 'string' ? settings.javaPath.slice(0, 1024) : '',
+      minMemory,
+      maxMemory,
+      launchBehavior: allowedBehaviors.has(settings?.launchBehavior) ? settings.launchBehavior : 'Keep open',
+      dlLimit: Math.min(16, Math.max(2, Number.parseInt(settings?.dlLimit, 10) || 4)),
+      accentColor: /^#[0-9a-f]{6}$/i.test(settings?.accentColor || '') ? settings.accentColor : '#ff5cb9',
+      windowWidth: Math.min(7680, Math.max(320, Number.parseInt(settings?.windowWidth, 10) || 1280)),
+      windowHeight: Math.min(4320, Math.max(240, Number.parseInt(settings?.windowHeight, 10) || 720)),
+      jvmArgs: typeof settings?.jvmArgs === 'string' ? settings.jvmArgs.slice(0, 4096) : '',
+      reducedMotion: Boolean(settings?.reducedMotion),
+    };
+    writeJSON(SETTINGS_FILE, clean);
+    return clean;
   });
 
   ipcMain.handle('get-settings', async () => {
@@ -1437,10 +2211,177 @@ function setupIPC() {
   });
 }
 
+function migrateSettings() {
+  const legacy = path.join(__dirname, 'settings.json');
+  if (!fs.existsSync(SETTINGS_FILE) && fs.existsSync(legacy)) {
+    const settings = readJSON(legacy);
+    if (settings) writeJSON(SETTINGS_FILE, settings);
+  }
+}
+
 // ── App Lifecycle ───────────────────────────────────────────────────
+// ── Migrate instances out of the app folder (e.g. OneDrive) ────────
+function migrateInstances() {
+  if (!fs.existsSync(LEGACY_INSTANCES_DIR)) return;
+  const migrationMarker = path.join(LEGACY_INSTANCES_DIR, '.pine-migration-complete');
+  if (fs.existsSync(migrationMarker)) return;
+  try {
+    ensureDir(INSTANCES_DIR);
+    const legacyRegistryFile = path.join(LEGACY_INSTANCES_DIR, 'registry.json');
+    const legacyRegistry = readJSON(legacyRegistryFile) || [];
+
+    let changed = false;
+    for (const inst of legacyRegistry) {
+      let safeName;
+      try { safeName = sanitizeName(inst.name); } catch { continue; }
+      const source = resolveSafePath(LEGACY_INSTANCES_DIR, safeName);
+      const target = resolveSafePath(INSTANCES_DIR, safeName);
+      if (fs.existsSync(source) && !fs.existsSync(target)) {
+        fs.cpSync(source, target, { recursive: true });
+        inst.path = target;
+        changed = true;
+      } else if (fs.existsSync(target)) {
+        inst.path = target;
+        changed = true;
+      }
+    }
+    if (changed) writeJSON(path.join(INSTANCES_DIR, 'registry.json'), legacyRegistry);
+
+    // Orphan folders not present in the registry (e.g. empty registry)
+    let entries;
+    try { entries = fs.readdirSync(LEGACY_INSTANCES_DIR, { withFileTypes: true }); } catch { entries = []; }
+    for (const e of entries) {
+      if (e.name === 'registry.json' || !e.isDirectory()) continue;
+      let safeName;
+      try { safeName = sanitizeName(e.name); } catch { continue; }
+      const target = resolveSafePath(INSTANCES_DIR, safeName);
+      if (!fs.existsSync(target)) {
+        fs.cpSync(resolveSafePath(LEGACY_INSTANCES_DIR, safeName), target, { recursive: true });
+      }
+    }
+
+    if (!fs.existsSync(path.join(INSTANCES_DIR, 'registry.json')) && fs.existsSync(legacyRegistryFile)) {
+      fs.copyFileSync(legacyRegistryFile, path.join(INSTANCES_DIR, 'registry.json'));
+    }
+
+    fs.writeFileSync(migrationMarker, new Date().toISOString());
+    console.log('[Migration] Instances copied to', INSTANCES_DIR, '(source retained as backup)');
+  } catch (e) {
+    console.warn('[Migration] Failed to migrate instances:', e.message);
+  }
+}
+
+// ── Migrate userData dir renamed from "glaunch" to "Pine Launcher" ──
+function migrateUserDataDir() {
+  const oldUserData = path.join(app.getPath('appData'), 'glaunch');
+  const newUserData = app.getPath('userData');
+  if (oldUserData === newUserData) return;
+  if (!fs.existsSync(oldUserData)) return;
+  const migrationMarker = path.join(oldUserData, '.pine-migration-v2-complete');
+  if (fs.existsSync(migrationMarker)) return;
+  try {
+    // Only meaningful data is copied; Chromium cache dirs regenerate
+    // (and may be locked by the fresh session in the new dir).
+    const items = ['instances', 'auth.json', 'settings.json'];
+    for (const item of items) {
+      const src = path.join(oldUserData, item);
+      const dst = path.join(newUserData, item);
+      if (fs.existsSync(src)) {
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) fs.cpSync(src, dst, { recursive: true, force: false, errorOnExist: false });
+        else if (!fs.existsSync(dst)) fs.copyFileSync(src, dst);
+      }
+    }
+    fs.writeFileSync(migrationMarker, new Date().toISOString());
+    console.log('[Migration] User data copied to', newUserData, '(source retained as backup)');
+  } catch (e) {
+    console.warn('[Migration] Failed to migrate user data:', e.message);
+  }
+}
+
+// ── Shared libraries/assets/versions cache ─────────────────────────
+// Every instance launches against these shared dirs (via MCLC overrides),
+// so downloads happen once per Minecraft version, not once per instance.
+async function seedSharedDirs() {
+  try {
+    const registry = readJSON(INSTANCES_FILE) || [];
+    let needAssets = !fs.existsSync(path.join(GLOBAL_ASSETS_DIR, 'objects'));
+    let needLibs = true;
+    try { needLibs = fs.readdirSync(GLOBAL_LIBRARIES_DIR).length === 0; } catch {}
+    let needVersions = true;
+    try {
+      needVersions = !fs.readdirSync(GLOBAL_VERSIONS_DIR)
+        .filter(f => f.endsWith('.json'))
+        .some(f => {
+          const metadata = readJSON(path.join(GLOBAL_VERSIONS_DIR, f));
+          return metadata && !metadata.inheritsFrom && `${metadata.id}.json` === f;
+        });
+    } catch {}
+    if (!needAssets && !needLibs && !needVersions) return;
+
+    for (const inst of registry) {
+      let instancePath;
+      try { instancePath = resolveSafePath(INSTANCES_DIR, sanitizeName(inst?.name)); } catch { continue; }
+      try {
+        if (needAssets && fs.existsSync(path.join(instancePath, 'assets', 'objects'))) {
+          await fs.promises.cp(path.join(instancePath, 'assets'), GLOBAL_ASSETS_DIR, { recursive: true });
+          needAssets = false;
+        }
+        if (needLibs && fs.existsSync(path.join(instancePath, 'libraries'))) {
+          await fs.promises.cp(path.join(instancePath, 'libraries'), GLOBAL_LIBRARIES_DIR, { recursive: true });
+          needLibs = false;
+        }
+        if (needVersions && fs.existsSync(path.join(instancePath, 'versions'))) {
+          ensureDir(GLOBAL_VERSIONS_DIR);
+          const versionsRoot = path.join(instancePath, 'versions');
+          let copiedVanilla = false;
+          for (const entry of fs.readdirSync(versionsRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const jsonPath = path.join(versionsRoot, entry.name, `${entry.name}.json`);
+            const jarPath = path.join(versionsRoot, entry.name, `${entry.name}.jar`);
+            const metadata = readJSON(jsonPath);
+            // Only seed true Vanilla versions. Loader profiles have
+            // inheritsFrom and must remain instance-specific.
+            if (!metadata || metadata.inheritsFrom || metadata.id !== entry.name) continue;
+            const sharedJson = path.join(GLOBAL_VERSIONS_DIR, `${entry.name}.json`);
+            const sharedJar = path.join(GLOBAL_VERSIONS_DIR, `${entry.name}.jar`);
+            if (!fs.existsSync(sharedJson)) await fs.promises.copyFile(jsonPath, sharedJson);
+            if (isValidJar(jarPath) && !fs.existsSync(sharedJar)) await fs.promises.copyFile(jarPath, sharedJar);
+            copiedVanilla = true;
+          }
+          if (copiedVanilla) needVersions = false;
+        }
+      } catch {}
+      if (!needAssets && !needLibs && !needVersions) break;
+    }
+    console.log('[Shared] assets:', fs.existsSync(path.join(GLOBAL_ASSETS_DIR, 'objects')),
+      '| libraries:', fs.existsSync(GLOBAL_LIBRARIES_DIR),
+      '| versions:', fs.existsSync(GLOBAL_VERSIONS_DIR));
+  } catch (e) {
+    console.warn('[Shared] Seeding failed:', e.message);
+  }
+}
+
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  migrateSettings();
+  migrateUserDataDir();
+  migrateInstances();
   createWindow();
   setupIPC();
+  sharedSeedPromise = seedSharedDirs();
+  if (process.argv.includes('--smoke-test')) {
+    mainWindow.webContents.once('did-finish-load', async () => {
+      try {
+        const healthy = await mainWindow.webContents.executeJavaScript(
+          `document.title === 'Pine Launcher' && typeof window.electronAPI?.listInstances === 'function'`
+        );
+        app.exit(healthy ? 0 : 2);
+      } catch {
+        app.exit(2);
+      }
+    });
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -1452,5 +2393,7 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
-  if (mcClient) { try { mcClient.stop(); } catch {} }
+  // The game process is intentionally detached. Only cancel a launch that has
+  // not started Java yet; closing Pine must never close a running game.
+  if (mcClient && !minecraftProcessStarted) { try { mcClient.stop(); } catch {} }
 });

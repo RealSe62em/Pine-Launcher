@@ -1,15 +1,35 @@
 {
   "name": "glaunch",
-  "version": "1.0.0",
+  "productName": "Pine Launcher",
+  "description": "A polished multi-instance Minecraft launcher with Modrinth integration",
+  "version": "1.1.6",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev"
+    "dev": "electron . --dev",
+    "test": "node --test test/*.test.js test/*.test.mjs",
+    "build:installer": "electron-builder --config electron-builder.yml",
+    "build": "npm run build:installer"
   },
   "author": "Pine Launcher",
   "license": "MIT",
   "dependencies": {
-    "electron": "^28.0.0",
-    "minecraft-launcher-core": "^3.18.2"
+    "adm-zip": "0.6.0",
+    "minecraft-launcher-core": "3.18.2"
+  },
+  "devDependencies": {
+    "electron": "39.8.10",
+    "electron-builder": "^26.15.3"
+  },
+  "overrides": {
+    "request": "npm:@cypress/request@4.0.1",
+    "uuid": "11.1.1",
+    "adm-zip": "0.6.0",
+    "form-data": "4.0.6",
+    "qs": "6.15.2",
+    "tough-cookie": "4.1.4"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

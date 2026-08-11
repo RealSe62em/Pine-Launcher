@@ -1,8 +1,16 @@
 auth.json
+start.sh
+*.desktop
+build/*
+!build/icon.ico
+!build/installer.nsh
+*.deb
 instances/
 .cache/
 .claude/settings.local.json
 node_modules/
+dist/
+dist-native/
 .DS_Store
 Thumbs.db
 .vscode/

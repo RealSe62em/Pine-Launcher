@@ -26,6 +26,7 @@
       <symbol id="i-chevron-left" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
       <symbol id="i-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="7" r="4" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
       <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="7 10 12 15 17 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
       <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><line x1="8" y1="21" x2="16" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="17" x2="12" y2="21" stroke="currentColor" stroke-width="2"/></symbol>
@@ -228,11 +229,17 @@
 
         <div id="instance-tab-content" class="tab-content">
           <div class="tab-pane active" data-tab="content">
+            <div id="content-categories" class="content-categories" role="tablist" aria-label="Installed content type">
+              <button class="content-category active" data-content-type="mod" type="button">Mods <span data-count="mod">0</span></button>
+              <button class="content-category" data-content-type="resourcepack" type="button">Resource Packs <span data-count="resourcepack">0</span></button>
+              <button class="content-category" data-content-type="shader" type="button">Shaders <span data-count="shader">0</span></button>
+              <button class="content-category" data-content-type="datapack" type="button">Data Packs <span data-count="datapack">0</span></button>
+            </div>
             <div class="tab-toolbar">
               <button class="btn btn-secondary" type="button" id="instance-add-content">Add content</button>
-              <input id="content-search" class="input" placeholder="Search installed mods..." autocomplete="off">
+              <input id="content-search" class="input" placeholder="Filter installed mods..." autocomplete="off">
             </div>
-            <div id="content-list" class="content-list"></div>
+            <div id="content-list" class="content-list" aria-live="polite"></div>
           </div>
           <div class="tab-pane" data-tab="worlds">
             <div id="worlds-grid" class="card-grid"></div>
@@ -243,7 +250,14 @@
               <button class="btn btn-secondary" type="button" id="clear-log-btn">Clear</button>
               <span id="log-status" class="text-muted"></span>
             </div>
-            <pre id="logs-viewer" class="log-viewer">Launch an instance to see live logs here...</pre>
+            <pre id="logs-viewer" class="log-viewer">          /\
+         /**\
+        /****\
+       /******\
+      /********\
+         ||||
+     PINE LAUNCHER
+  Ready when you are :3</pre>
           </div>
           <div class="tab-pane" data-tab="settings">
             <div id="instance-settings-form" class="settings-grid"></div>
@@ -258,6 +272,7 @@
             <h1>Settings</h1>
             <p class="section-copy">Customize your launcher experience.</p>
           </div>
+          <button class="btn btn-primary" id="settings-header-save" type="button">Save settings</button>
         </div>
         <div id="settings-layout" class="settings-layout"></div>
       </section>
