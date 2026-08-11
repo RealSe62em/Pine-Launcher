@@ -1,4 +1,8 @@
-const RELEASES = { universal: '../dist-native/PineLauncherSetup.exe', x64: '../dist-native/PineLauncherSetup-x64.exe', arm64: '../dist-native/PineLauncherSetup-arm64.exe' };
+const RELEASES = {
+  universal: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup.exe',
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup-arm64.exe'
+};
 document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.universal; });
 const observer = new IntersectionObserver((entries) => entries.forEach((entry) => { if (entry.isIntersecting) { entry.target.classList.add('visible'); observer.unobserve(entry.target); } }), { threshold: 0.12 });
 document.querySelectorAll('.reveal').forEach((element) => observer.observe(element));
