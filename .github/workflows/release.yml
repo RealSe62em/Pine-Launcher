@@ -41,7 +41,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Build x64, ARM64, and universal installers
-        run: npm run build:installer -- --publish never
+        run: npm run build:installer
 
       - name: Verify packaged source and create checksums
         shell: pwsh
