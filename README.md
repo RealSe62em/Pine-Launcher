@@ -1,56 +1,67 @@
 # Pine Launcher
 
-Pine Launcher is an Electron desktop launcher for Minecraft with isolated instances, Microsoft and offline accounts, Modrinth content management, shared game assets, and an iOS-inspired glass interface.
+Pine Launcher is a Windows Minecraft launcher with isolated instances, Microsoft and offline accounts, Modrinth content management, verified shared caching, and an iOS-inspired glass interface.
 
-## Supported instances
+> **Windows only for now.** Linux support is planned and coming soon.
 
-- Vanilla
-- Fabric
-- Quilt
-- Forge
+## Download and install
 
-NeoForge is intentionally not offered until its installer/profile flow is implemented and tested. Existing NeoForge entries show a clear launch error instead of silently starting Vanilla.
+1. Download the newest installer from the [Releases](https://github.com/RealSe62em/Pine-Launcher/releases) page.
+2. Run the installer that matches your Windows PC:
+   - `PineLauncherSetup.exe` — universal installer; recommended for most people.
+   - `PineLauncherSetup-x64.exe` — Intel or AMD 64-bit PCs.
+   - `PineLauncherSetup-arm64.exe` — Windows on ARM PCs.
+3. Follow the installer prompts, then open Pine Launcher from the Start menu or desktop shortcut.
 
-## Development
+Pine supports Windows 10 and Windows 11. The launcher downloads and verifies the Java runtime required by the selected Minecraft version, so manual Java installation should not normally be needed.
 
-Requirements for development: Node.js 22.12 or newer. Release builds automatically download and verify the exact Eclipse Temurin Java runtime required by each Minecraft version.
+## Features
 
-```text
+- Separate Vanilla, Fabric, Quilt, and Forge instances.
+- Microsoft login with secure operating-system-backed token storage when available.
+- Offline accounts for servers that allow offline authentication.
+- Modrinth discovery for mods, resource packs, shaders, data packs, and mod packs.
+- Shared verified caches for game assets, libraries, versions, and mods—so matching files are reused instead of downloaded again for every new instance.
+- Clear launch stages and selectable, copyable logs for troubleshooting.
+
+NeoForge is not currently offered until its installer/profile flow is implemented and tested.
+
+## Privacy and safety
+
+Microsoft login uses OAuth with PKCE. Account tokens are encrypted through Electron secure storage when it is available. Modrinth downloads use HTTPS, verify available hashes, reject unsafe filenames, resolve required dependencies, and roll back partial installations.
+
+Instances, encrypted account data, settings, caches, and diagnostic logs are stored in Pine Launcher's per-user Windows application-data directory. Uninstalling Pine removes the application files but keeps worlds and other user data.
+
+The current installer is unsigned. Windows may therefore show an "Unknown publisher" notice. Verify the installer checksum published with each release and never disable antivirus protection globally.
+
+## Troubleshooting
+
+- **Java error:** Pine installs the Java runtime required by the Minecraft version. You can also choose a custom Java executable in Settings.
+- **Launch failure:** Open the instance **Logs** tab and copy the selectable log text when asking for help.
+- **Installer problem:** Download the newest installer again and choose the x64 or ARM64 build if the universal installer does not suit your PC.
+- **Uninstall:** Use **Installed apps** in Windows Settings or Control Panel. Worlds and other user data are retained.
+
+## Building from source on Windows
+
+Install Node.js 22.12 or newer, then run from Command Prompt or PowerShell:
+
+```powershell
 npm.cmd install
 npm.cmd test
 npm.cmd start
 ```
 
-Use `npm run dev` to open Electron developer tools. Build the Windows installer with `npm run build:installer`.
+Use `npm run dev` to open Electron developer tools. Build Windows installers with:
 
-## User data
-
-Instances, encrypted account data, settings, caches, and diagnostic logs are stored in Electron's per-user application-data directory. Removing the application does not remove worlds or other user data.
-
-## Accounts and privacy
-
-Microsoft login uses OAuth with PKCE. Tokens are encrypted with the operating system when Electron secure storage is available and refreshed before launch. Offline accounts work only where offline authentication is accepted and do not grant ownership or access to online-mode servers.
-
-## Modrinth
-
-Discover supports mods, resource packs, shaders, data packs, and mod packs. Downloads use HTTPS, verify available hashes, reject unsafe filenames, resolve required dependencies, and roll back partial installations.
-
-## Troubleshooting
-
-- Java errors: Pine automatically installs the exact required Java runtime. A custom Java executable can still be selected in Settings.
-- Launch failures: use the in-app log; persistent diagnostics are written under the user-data `logs` directory.
-- Installer problems: rerun the newest architecture-matched `PineLauncherSetup-x64.exe` or `PineLauncherSetup-arm64.exe`. Installation and update detection are handled by the native Windows NSIS installer.
-- Uninstall: use Windows Installed Apps/Control Panel. The native uninstaller removes application files without opening a terminal; worlds and other user data are retained.
+```powershell
+npm run build:installer
+```
 
 ## Release checklist
 
 1. Run `npm test` and `npm audit`.
 2. Smoke-test Vanilla, Fabric, Quilt, and Forge with fresh instances.
-3. Test default and custom install paths, update, launch, and Control Panel uninstall.
-4. Sign the executable and publish its checksum.
+3. Test install, update, launch, and uninstall on Windows.
+4. Publish the installer files and their SHA-256 checksums in a GitHub Release.
 
 Built with Electron and `minecraft-launcher-core`. Licensed under MIT.
-
-## Windows release signing
-
-Public installers must be Authenticode-signed. Configure electron-builder with `CSC_LINK` and `CSC_KEY_PASSWORD` in the private release environment; never commit the certificate or password. Unsigned local builds are for testing only and may be blocked by Windows security policy.
