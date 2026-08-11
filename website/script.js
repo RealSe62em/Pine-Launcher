@@ -22,3 +22,10 @@ if (preview) {
   });
   preview.addEventListener('mouseleave', () => { preview.style.transform = restingTransform; });
 }
+const downloadSection = document.querySelector('#download');
+document.querySelectorAll('a[href="#download"]').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    event.preventDefault();
+    downloadSection?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
