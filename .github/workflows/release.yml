@@ -1,0 +1,77 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
+          if ("v$packageVersion" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match package version v$packageVersion"
+          }
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build x64, ARM64, and universal installers
+        run: npm run build:installer
+
+      - name: Verify packaged source and create checksums
+        shell: pwsh
+        run: |
+          $expected = (Get-Content package.json | ConvertFrom-Json).version
+          $archives = @(
+            'dist-native/win-unpacked/resources/app.asar',
+            'dist-native/win-arm64-unpacked/resources/app.asar'
+          )
+          foreach ($archive in $archives) {
+            $actual = node -e "const a=require('@electron/asar');console.log(JSON.parse(a.extractFile(process.argv[1],'package.json')).version)" $archive
+            if ($actual.Trim() -ne $expected) { throw "$archive contains version $actual, expected $expected" }
+          }
+          Get-ChildItem dist-native/PineLauncherSetup*.exe |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content dist-native/SHA256SUMS.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pine-Launcher-${{ github.ref_name }}
+          path: |
+            dist-native/PineLauncherSetup*.exe
+            dist-native/SHA256SUMS.txt
+
+      - name: Publish tagged release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-native/PineLauncherSetup*.exe
+            dist-native/SHA256SUMS.txt

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion } = require('../lib/compat');
+const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion, javaRuntimeArchitectures } = require('../lib/compat');
 
 test('parses legacy and modern Java version output', () => {
   assert.equal(parseJavaMajor('java version "1.8.0_401"'), 8);
@@ -49,4 +49,9 @@ test('maps JVM class-file versions to Java releases', () => {
   assert.equal(javaMajorFromClassVersion('52.0'), 8);
   assert.equal(javaMajorFromClassVersion('65.0'), 21);
   assert.equal(javaMajorFromClassVersion('69.0'), 25);
+});
+
+test('ARM64 Java provisioning falls back to x64 emulation for older runtimes', () => {
+  assert.deepEqual(javaRuntimeArchitectures('arm64'), ['aarch64', 'x64']);
+  assert.deepEqual(javaRuntimeArchitectures('x64'), ['x64']);
 });

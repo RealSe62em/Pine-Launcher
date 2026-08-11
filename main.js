@@ -7,9 +7,10 @@ const os = require('os');
 const AdmZip = require('adm-zip');
 const { execFile } = require('child_process');
 const { resolveSafePath, safeRemoteFilename, safeInstanceName } = require('./lib/safety');
-const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion } = require('./lib/compat');
+const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion, javaRuntimeArchitectures } = require('./lib/compat');
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
 const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
+const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const portableFetch = (...args) => net.fetch(...args);
 installMclReliabilityPatches({ fetchImpl: portableFetch });
 
@@ -306,13 +307,24 @@ function findJavaExecutable(root, depth = 4) {
 }
 
 async function fetchAdoptiumAsset(javaMajor, imageType) {
-  const architecture = process.arch === 'arm64' ? 'aarch64' : 'x64';
-  const url = `https://api.adoptium.net/v3/assets/latest/${javaMajor}/hotspot?architecture=${architecture}`
-    + `&image_type=${imageType}&os=windows&vendor=eclipse`;
-  const response = await portableFetch(url, { signal: AbortSignal.timeout(30000) });
-  if (!response.ok) throw new Error(`Java runtime service returned HTTP ${response.status}`);
-  const assets = await response.json();
-  return assets.find(asset => asset?.binary?.package?.link && asset?.binary?.package?.checksum)?.binary?.package || null;
+  let lastStatus = null;
+  for (const architecture of javaRuntimeArchitectures(process.arch)) {
+    const url = `https://api.adoptium.net/v3/assets/latest/${javaMajor}/hotspot?architecture=${architecture}`
+      + `&image_type=${imageType}&os=windows&vendor=eclipse`;
+    const response = await portableFetch(url, { signal: AbortSignal.timeout(30000) });
+    lastStatus = response.status;
+    if (!response.ok) continue;
+    const assets = await response.json();
+    const runtimePackage = assets.find(asset => asset?.binary?.package?.link && asset?.binary?.package?.checksum)?.binary?.package;
+    if (runtimePackage) {
+      if (architecture !== 'aarch64' && process.arch === 'arm64') {
+        diagnosticLog('INFO', `Using x64 Java ${javaMajor} under Windows ARM emulation because no ARM64 runtime is available`);
+      }
+      return runtimePackage;
+    }
+  }
+  if (lastStatus && lastStatus >= 400) diagnosticLog('WARN', `Java runtime service returned HTTP ${lastStatus}`);
+  return null;
 }
 
 async function provisionManagedJava(javaMajor, onProgress) {
@@ -842,12 +854,16 @@ async function buildLoaderUrl(instance, instanceDir) {
       return null;
   }
 
-  const writeProfile = (profile, profileId) => {
+  const expectedProfileId = expectedLoaderProfileId(l, lv, mv);
+  const writeProfile = async (profile) => {
+    if (!isMatchingLoaderProfile(profile, l, lv, mv)) {
+      throw new Error(`The ${l} service returned a profile that does not match ${lv} on Minecraft ${mv}`);
+    }
+    const profileId = profile.id;
     const verDir = path.join(instanceDir, 'versions', profileId);
     ensureDir(verDir);
-    const serializedProfile = JSON.stringify(profile, null, 2);
     const instanceProfile = path.join(verDir, `${profileId}.json`);
-    fs.writeFileSync(instanceProfile, serializedProfile);
+    await writeJsonAtomic(instanceProfile, profile);
     // Seed the client jar + vanilla version json from the shared cache so
     // custom-loader instances don't re-download the ~25MB client jar.
     const srcJar = path.join(GLOBAL_VERSIONS_DIR, `${mv}.jar`);
@@ -865,11 +881,11 @@ async function buildLoaderUrl(instance, instanceDir) {
     // interfere with newly created files on some Windows systems.
     const sharedProf = path.join(GLOBAL_VERSIONS_DIR, `${profileId}.json`);
     try {
-      ensureDir(GLOBAL_VERSIONS_DIR);
-      fs.writeFileSync(sharedProf, serializedProfile);
+      await writeJsonAtomic(sharedProf, profile);
     } catch (e) {
       console.warn(`[Loader] Could not cache ${profileId} globally:`, e.message);
     }
+    return profileId;
   };
 
   // Reuse an already-downloaded loader profile for this loader + game version
@@ -894,7 +910,7 @@ async function buildLoaderUrl(instance, instanceDir) {
         try {
           if (!fs.existsSync(jf)) continue;
           const j = JSON.parse(fs.readFileSync(jf, 'utf8'));
-          if (j && j.id && j.id.includes(l) && j.inheritsFrom === mv && j.mainClass) return j;
+          if (isMatchingLoaderProfile(j, l, lv, mv)) return j;
         } catch {}
       }
       return null;
@@ -906,16 +922,16 @@ async function buildLoaderUrl(instance, instanceDir) {
     const res = await portableFetch(url, { headers: { 'User-Agent': 'PineLauncher/1.1' }, signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const profile = await res.json();
-    if (!profile || !profile.id) throw new Error('Profile has no id');
-    writeProfile(profile, profile.id);
-    return profile.id;
+    if (!isMatchingLoaderProfile(profile, l, lv, mv)) {
+      throw new Error(`Profile ID did not match ${expectedProfileId}`);
+    }
+    return await writeProfile(profile);
   } catch (e) {
     console.warn(`[Loader] Failed to fetch ${l} profile (${lv} on ${mv}):`, e.message);
     const cached = findCached();
     if (cached) {
       console.warn('[Loader] Using cached loader profile:', cached.id);
-      writeProfile(cached, cached.id);
-      return cached.id;
+      return await writeProfile(cached);
     }
     throw new Error(
       `Couldn't download the ${l} loader profile for Minecraft ${mv} (${lv}). ` +
@@ -2363,6 +2379,7 @@ async function seedSharedDirs() {
 }
 
 app.whenReady().then(() => {
+  diagnosticLog('INFO', `Pine Launcher ${app.getVersion()} | ${process.platform} ${os.release()} ${process.arch} | Electron ${process.versions.electron}`);
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   migrateSettings();
   migrateUserDataDir();

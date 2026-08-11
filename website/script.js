@@ -4,6 +4,43 @@ const RELEASES = {
   arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup-arm64.exe'
 };
 document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.universal; });
+
+async function syncLatestRelease() {
+  const response = await fetch('https://api.github.com/repos/RealSe62em/Pine-Launcher/releases/latest', {
+    headers: { Accept: 'application/vnd.github+json' }
+  });
+  if (!response.ok) return;
+  const release = await response.json();
+  const version = String(release.tag_name || '').replace(/^v/i, '');
+  if (version) document.querySelectorAll('[data-release-version]').forEach((element) => { element.textContent = version; });
+
+  const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
+  const names = {
+    universal: 'PineLauncherSetup.exe',
+    x64: 'PineLauncherSetup-x64.exe',
+    arm64: 'PineLauncherSetup-arm64.exe'
+  };
+  for (const [build, name] of Object.entries(names)) {
+    const asset = assets.get(name);
+    if (!asset?.browser_download_url) continue;
+    RELEASES[build] = asset.browser_download_url;
+    document.querySelectorAll(`.download-link[data-build="${build}"]`).forEach((link) => { link.href = asset.browser_download_url; });
+  }
+
+  const universal = assets.get(names.universal);
+  if (universal?.size) {
+    const size = `${Math.round(universal.size / 1024 / 1024)} MB`;
+    document.querySelectorAll('[data-release-size]').forEach((element) => { element.textContent = size; });
+  }
+  const digest = String(universal?.digest || '').match(/^sha256:([a-f0-9]{64})$/i)?.[1]?.toUpperCase();
+  const hashButton = document.querySelector('[data-hash]');
+  if (digest && hashButton) {
+    hashButton.dataset.hash = digest;
+    const code = hashButton.querySelector('code');
+    if (code) code.textContent = `${digest.slice(0, 8)}…${digest.slice(-8)}`;
+  }
+}
+syncLatestRelease().catch(() => {});
 const observer = new IntersectionObserver((entries) => entries.forEach((entry) => { if (entry.isIntersecting) { entry.target.classList.add('visible'); observer.unobserve(entry.target); } }), { threshold: 0.12 });
 document.querySelectorAll('.reveal').forEach((element) => observer.observe(element));
 const toast = document.querySelector('.toast');
