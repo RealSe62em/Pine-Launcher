@@ -1,3 +1,12 @@
+<p align="center">
+  <a href="https://realse62em.github.io/Pine-Launcher/">
+    <img src="icon.png" alt="Pine Launcher logo" width="96">
+  </a>
+</p>
+<p align="center">
+  <a href="https://realse62em.github.io/Pine-Launcher/"><strong>Visit the Pine Launcher website</strong></a>
+</p>
+
 # Pine Launcher
 
 Pine Launcher is a Windows Minecraft launcher with isolated instances, Microsoft and offline accounts, Modrinth content management, verified shared caching, and an iOS-inspired glass interface.
