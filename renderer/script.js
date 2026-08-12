@@ -495,22 +495,23 @@ async function loadLoaderVersions() {
   }
   if (!sel) return;
   sel.disabled = false;
+  sel.dataset.loadState = 'loading';
   sel.innerHTML = '<option value="">Loading...</option>';
   try {
     const versions = await api.getLoaderVersions(version, loader);
     if (requestId !== state.loaderRequestId || loader !== state.selectedLoader || version !== $('modal-version')?.value) return;
+    if (!Array.isArray(versions) || !versions.length) throw new Error('No compatible loader versions found');
     const stableIdx = versions.findIndex((v) => v.stable !== false);
-    if (stableIdx >= 0) {
-      sel.innerHTML = versions.map((v, i) =>
-        `<option value="${v.version}"${i === stableIdx ? ' selected' : ''}>${v.name}${v.stable !== false ? ' (recommended)' : ''}</option>`
-      ).join('');
-    } else {
-      sel.innerHTML = '<option value="">Select version</option>' +
-        versions.map((v) => `<option value="${v.version}">${v.name}</option>`).join('');
-    }
-  } catch {
+    const selectedIdx = stableIdx >= 0 ? stableIdx : 0;
+    sel.innerHTML = versions.map((v, i) =>
+      `<option value="${v.version}"${i === selectedIdx ? ' selected' : ''}>${v.name}${i === selectedIdx ? ' (recommended)' : ''}</option>`
+    ).join('');
+    sel.dataset.loadState = 'ready';
+  } catch (error) {
     if (requestId !== state.loaderRequestId) return;
-    sel.innerHTML = '<option value="">Failed to load</option>';
+    sel.dataset.loadState = 'failed';
+    sel.innerHTML = '<option value="">Could not load — click to retry</option>';
+    setStatus('Could not load ' + loader + ' versions: ' + (error.message || error));
   }
 }
 
@@ -1432,10 +1433,10 @@ async function resetSettings() {
 // ── Modal: create instance ──────────────────────────────────
 const PERFORMANCE_MODS = [
   'sodium', 'entityculling', 'ferrite-core', 'krypton', 'modernfix',
-  'no-chat-reports', 'memoryleakfix', 'lazydfu', 'smoothboot', 'ebe', 'immediatelyfast',
+  'no-chat-reports', 'memoryleakfix', 'lazydfu', 'ebe', 'immediatelyfast',
   'alternate-current', 'dynamic-fps', 'fastload', 'moreculling', 'fastanim',
   'vmp-fabric', 'reeses-sodium-options', 'skip-transitions',
-  'indium', 'fabric-api', 'cloth-config', 'modmenu',
+  'fabric-api', 'cloth-config', 'modmenu',
 ];
 
 function openCreateModal() {
@@ -1502,6 +1503,7 @@ function bindEditSheet() {
   $('edit-sheet-save')?.addEventListener('click', saveEditSheet);
   $('edit-sheet-delete')?.addEventListener('click', showDeleteConfirm);
   $('edit-copy-path')?.addEventListener('click', copyInstancePath);
+  $('edit-open-folder')?.addEventListener('click', openInstanceFolder);
   $('confirm-cancel')?.addEventListener('click', closeConfirmDialog);
   $('confirm-delete')?.addEventListener('click', deleteInstance);
   $('confirm-dialog-root')?.addEventListener('click', (e) => {
@@ -1644,6 +1646,20 @@ function closeEditSheet() {
   root.setAttribute('hidden', '');
 }
 
+async function openInstanceFolder() {
+  const instance = state.currentInstance;
+  if (!instance) return;
+  try {
+    await api.openInstanceFolder(instance.name);
+    setStatus('Opened instance folder');
+    successRing($('edit-open-folder'));
+  } catch (error) {
+    const message = error.message || String(error);
+    setStatus('Could not open instance folder: ' + message);
+    toast('Could not open folder: ' + message, 'error', 6000);
+  }
+}
+
 async function copyInstancePath() {
   const path = $('edit-folder-path')?.textContent;
   if (!path) return;
@@ -1651,8 +1667,11 @@ async function copyInstancePath() {
     await api.copyText(path);
     setStatus('Path copied');
     successRing($('edit-copy-path'));
+    toast('Instance path copied', 'success');
   } catch (error) {
-    setStatus('Could not copy path: ' + (error.message || error));
+    const message = error.message || String(error);
+    setStatus('Could not copy path: ' + message);
+    toast('Could not copy path: ' + message, 'error', 6000);
   }
 }
 
@@ -1724,6 +1743,10 @@ function buildLoaderSegmented() {
       loadLoaderVersions();
     });
   });
+  if (state.selectedLoader === 'vanilla') {
+    const versionSelect = $('modal-loader-version');
+    if (versionSelect) delete versionSelect.dataset.loadState;
+  }
 }
 
 function bindModal() {
@@ -1755,6 +1778,11 @@ function bindModal() {
   $('modal-version')?.addEventListener('change', () => {
     loadLoaderVersions();
     updatePerfModsList();
+  });
+  $('modal-loader-version')?.addEventListener('pointerdown', () => {
+    if ($('modal-loader-version')?.dataset.loadState === 'failed') {
+      loadLoaderVersions();
+    }
   });
   $('perf-mods-list')?.addEventListener('click', (e) => {
     const row = e.target.closest('.perf-mod-row');
@@ -1845,6 +1873,7 @@ function selectProfile(profile) {
     setSegmentedLocked(false);
     setCollapsible(wrap, false);
   }
+  loadLoaderVersions();
 }
 
 function setSegmentedLocked(locked) {
@@ -2016,6 +2045,14 @@ async function copyLog() {
 }
 
 // ── Launch flow ─────────────────────────────────────────────
+function launchErrorMessage(error) {
+  return error?.message || String(error || 'Unknown launch error');
+}
+
+function isAccountRequiredError(error) {
+  return /sign in with microsoft|offline account|choose an account/i.test(launchErrorMessage(error));
+}
+
 function bindLaunchEvents() {
   api.onLaunchProgress((p) => {
     if (typeof p === 'number') {
@@ -2028,12 +2065,20 @@ function bindLaunchEvents() {
     setStatus(typeof d === 'string' ? d.split('\n')[0].slice(0, 80) : '');
   });
   api.onLaunchError((e) => {
-    setStatus('Launch failed: ' + (e.message || e));
+    const instanceName = state.launchingName;
+    const message = launchErrorMessage(e);
+    setStatus('Launch failed: ' + message);
     setDockedProgressVisible(false);
     if (state.currentInstance) $('instance-play-btn')?.removeAttribute('disabled');
     state.launchingName = null;
     renderAllInstanceCards();
-    toast('Launch failed', 'error');
+    if (isAccountRequiredError(e) && instanceName) {
+      state.authData = null;
+      updateAuthUI();
+      openAccountRequiredModal(instanceName);
+    } else {
+      toast('Launch failed: ' + message, 'error', 8000);
+    }
   });
   api.onLaunchClose(() => {
     clearLogs();
@@ -2080,13 +2125,20 @@ function launchInstance(name) {
   // also reset the UI.
   api.launchInstance(name).catch((e) => {
     if (state.launchingName !== name) return;
+    const message = launchErrorMessage(e);
     state.launchingName = null;
     setPlayingPill(null);
     setDockedProgressVisible(false);
     $('instance-play-btn')?.removeAttribute('disabled');
     renderAllInstanceCards();
-    setStatus('Launch failed: ' + (e.message || e));
-    toast('Launch failed', 'error');
+    setStatus('Launch failed: ' + message);
+    if (isAccountRequiredError(e)) {
+      state.authData = null;
+      updateAuthUI();
+      openAccountRequiredModal(name);
+    } else {
+      toast('Launch failed: ' + message, 'error', 8000);
+    }
   });
 }
 

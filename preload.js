@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkJavaInstalled: () => ipcRenderer.invoke('check-java'),
   openJavaDownload: () => ipcRenderer.invoke('open-java-download'),
   copyText: (value) => ipcRenderer.invoke('copy-text', value),
+  openInstanceFolder: (name) => ipcRenderer.invoke('open-instance-folder', name),
 
   onLaunchProgress: (cb) => ipcRenderer.on('launch-progress', (_, v) => cb(v)),
   onLaunchData: (cb) => ipcRenderer.on('launch-data', (_, v) => cb(v)),

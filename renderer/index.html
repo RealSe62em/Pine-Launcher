@@ -347,8 +347,10 @@
             <label for="modal-instance-location">Install location <span class="text-muted">(optional)</span></label>
             <div class="instance-location-row">
               <input id="modal-instance-location" class="input" placeholder="Default Pine Launcher folder" readonly>
-              <button id="modal-location-browse" class="btn btn-secondary" type="button">Browse</button>
-              <button id="modal-location-clear" class="btn btn-ghost" type="button" hidden>Use default</button>
+              <div class="instance-location-actions">
+                <button id="modal-location-browse" class="btn btn-secondary" type="button">Browse</button>
+                <button id="modal-location-clear" class="btn btn-ghost" type="button" hidden>Use default</button>
+              </div>
             </div>
             <div class="text-muted instance-location-help">Choose another drive or folder if you want. Existing instances stay where they are.</div>
           </div>
@@ -493,6 +495,11 @@
           <div class="sheet-folder-row">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5z"/></svg>
             <span id="edit-folder-path"></span>
+            <button class="btn-icon" id="edit-open-folder" type="button" title="Open instance folder" aria-label="Open instance folder">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 18V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M14 15h7m-3-3 3 3-3 3"/><path d="M3 18h11"/>
+              </svg>
+            </button>
             <button class="btn-icon" id="edit-copy-path" type="button" title="Copy path">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>

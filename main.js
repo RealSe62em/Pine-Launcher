@@ -792,7 +792,10 @@ async function fetchMinecraftVersions() {
 }
 
 // ── Loader Version Fetching ─────────────────────────────────────────
-async function fetchLoaderVersions(gameVersion, loader) {
+const loaderVersionCache = new Map();
+const LOADER_VERSION_CACHE_MS = 15 * 60 * 1000;
+
+async function fetchLoaderVersionsUncached(gameVersion, loader) {
   switch (loader) {
     case 'fabric': {
       const url = `https://meta.fabricmc.net/v2/versions/loader/${gameVersion}`;
@@ -837,6 +840,32 @@ async function fetchLoaderVersions(gameVersion, loader) {
     default:
       return [];
   }
+}
+
+async function fetchLoaderVersions(gameVersion, loader) {
+  const key = `${loader}:${gameVersion}`;
+  const cached = loaderVersionCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < LOADER_VERSION_CACHE_MS) return cached.versions;
+
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const versions = await fetchLoaderVersionsUncached(gameVersion, loader);
+      if (loader !== 'vanilla' && !versions.length) {
+        throw new Error(`No compatible ${loader} versions were found for Minecraft ${gameVersion}`);
+      }
+      loaderVersionCache.set(key, { fetchedAt: Date.now(), versions });
+      return versions;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 350));
+    }
+  }
+
+  // A previously successful result is safer than leaving the selector unusable
+  // during a temporary metadata outage.
+  if (cached?.versions?.length) return cached.versions;
+  throw lastError;
 }
 
 // ── Modrinth API ────────────────────────────────────────────────────
@@ -987,7 +1016,33 @@ async function prepareForge(instance, instanceDir, onProgress) {
 function setupIPC() {
   ipcMain.handle('copy-text', async (_, value) => {
     if (typeof value !== 'string' || value.length > 10 * 1024 * 1024) throw new Error('Invalid clipboard text');
-    clipboard.writeText(value);
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        clipboard.writeText(value, 'clipboard');
+        const copied = clipboard.readText('clipboard');
+        const normalizeNewlines = text => text.replace(/\r\n/g, '\n');
+        if (copied === value || normalizeNewlines(copied) === normalizeNewlines(value)) return true;
+      } catch (error) {
+        lastError = error;
+      }
+      await new Promise(resolve => setTimeout(resolve, 60));
+    }
+    const detail = lastError?.message ? ` (${lastError.message})` : '';
+    throw new Error('Windows did not accept the copied text. Close other clipboard tools and try again.' + detail);
+  });
+
+  ipcMain.handle('open-instance-folder', async (_, name) => {
+    const safeName = sanitizeName(name);
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instance = registry.find(item => item.name === safeName);
+    if (!instance) throw new Error('Instance not found');
+    const instanceDir = getInstanceDir(instance);
+    if (!fs.existsSync(instanceDir)) {
+      throw new Error('The instance folder is unavailable: ' + instanceDir);
+    }
+    const openError = await shell.openPath(instanceDir);
+    if (openError) throw new Error(openError);
     return true;
   });
 

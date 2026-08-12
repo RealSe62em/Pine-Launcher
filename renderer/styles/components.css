@@ -639,7 +639,8 @@ label, .label {
   word-break: break-all;
 }
 .sheet-folder-row svg { flex-shrink: 0; color: var(--text-md); }
-.sheet-folder-row .btn-icon { margin-left: auto; flex-shrink: 0; }
+.sheet-folder-row .btn-icon { margin-left: 0; flex-shrink: 0; }
+#edit-open-folder { margin-left: auto; }
 #edit-folder-path { user-select: text; cursor: text; min-width: 0; }
 
 /* ── Confirm dialog ──────────────────────────────────────── */

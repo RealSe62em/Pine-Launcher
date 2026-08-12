@@ -5,17 +5,24 @@
 @import "./styles/animations.css";
 
 .instance-location-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+}
+
+.instance-location-row .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.instance-location-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.instance-location-row .input {
-  flex: 1;
-  min-width: 0;
-}
-
-.instance-location-row .btn {
+.instance-location-actions .btn {
   white-space: nowrap;
 }
 
