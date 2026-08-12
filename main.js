@@ -11,6 +11,7 @@ const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSuppo
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
 const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
 const { extractZipOnWindows } = require('./lib/runtime-extraction');
+const { knownModrinthIncompatibility, quarantineKnownBrokenMods } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const portableFetch = (...args) => net.fetch(...args);
 installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
@@ -1204,6 +1205,13 @@ function setupIPC() {
     }
     ensureDir(instanceDir);
     ensureDir(GLOBAL_DIR);
+    const quarantinedMods = quarantineKnownBrokenMods(path.join(instanceDir, 'mods'), instance.gameVersion);
+    for (const mod of quarantinedMods) {
+      const warning = `${mod.filename} was disabled automatically: ${mod.reason} Use ${mod.replacement} instead.`;
+      diagnosticLog('WARN', warning);
+      mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
+      mainWindow?.webContents.send('launch-warning', warning);
+    }
     if (!checkDiskSpace(instanceDir, 512 * 1024 * 1024)) {
       activeInstanceName = null;
       throw new Error('Not enough free space in this instance location. Free at least 512 MB or choose another location.');
@@ -1662,6 +1670,8 @@ function setupIPC() {
 
     const warnings = [];
     const errors = [];
+    const knownIncompatibility = knownModrinthIncompatibility(project.id || projectId, version.id || versionId, gameVersion);
+    if (knownIncompatibility) errors.push(knownIncompatibility);
 
     if (project.project_type === 'modpack') {
       errors.push({ code: 'UNSUPPORTED_PROJECT_TYPE', message: 'Modpack importing is not supported yet; installing an .mrpack file as a mod would break the instance.' });

@@ -2046,7 +2046,12 @@ function bindLaunchEvents() {
   });
   api.onLaunchLog((line) => appendLog(line));
   api.onLaunchMetrics((m) => updateDockedMetrics(m));
-  api.onLaunchFixed((count) => {
+  api.onLaunchWarning((message) => {
+    appendLog('[WARNING] ' + message);
+    setStatus(message);
+    toast(message, 'error', 10000);
+    loadInstances().catch(() => undefined);
+  });  api.onLaunchFixed((count) => {
     const banner = $('dp-fix');
     if (!banner) return;
     banner.textContent = `Found and fixed ${count} corrupted file${count > 1 ? 's' : ''}`;

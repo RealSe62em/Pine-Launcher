@@ -40,5 +40,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onLaunchLog: (cb) => ipcRenderer.on('launch-log', (_, v) => cb(v)),
   onLaunchMetrics: (cb) => ipcRenderer.on('launch-metrics', (_, v) => cb(v)),
   onLaunchFixed: (cb) => ipcRenderer.on('launch-fixed', (_, count) => cb(count)),
+  onLaunchWarning: (cb) => ipcRenderer.on('launch-warning', (_, message) => cb(message)),
   onInstallProgress: (cb) => ipcRenderer.on('install-progress', (_, v) => cb(v)),
 });
