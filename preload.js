@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   getVersions: () => ipcRenderer.invoke('get-versions'),
   getInstancesDir: () => ipcRenderer.invoke('get-instances-dir'),
+  chooseInstanceLocation: () => ipcRenderer.invoke('choose-instance-location'),
   getLoaderVersions: (gameVersion, loader) => ipcRenderer.invoke('get-loader-versions', gameVersion, loader),
   createInstance: (data) => ipcRenderer.invoke('create-instance', data),
   listInstances: () => ipcRenderer.invoke('list-instances'),

@@ -3,3 +3,23 @@
 @import "./styles/shell.css";
 @import "./styles/components.css";
 @import "./styles/animations.css";
+
+.instance-location-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.instance-location-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.instance-location-row .btn {
+  white-space: nowrap;
+}
+
+.instance-location-help {
+  margin-top: 6px;
+  font-size: 12px;
+}

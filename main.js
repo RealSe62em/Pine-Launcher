@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, safeStorage, session, clipboard, net } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, safeStorage, session, clipboard, net, dialog } = require('electron');
 const { Client } = require('minecraft-launcher-core');
 const path = require('path');
 const fs = require('fs');
@@ -10,9 +10,10 @@ const { resolveSafePath, safeRemoteFilename, safeInstanceName } = require('./lib
 const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion, javaRuntimeArchitectures } = require('./lib/compat');
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
 const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
+const { extractZipOnWindows } = require('./lib/runtime-extraction');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const portableFetch = (...args) => net.fetch(...args);
-installMclReliabilityPatches({ fetchImpl: portableFetch });
+installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
 
 let mainWindow;
 let mcClient = null;
@@ -95,6 +96,33 @@ function writeJSON(file, data) {
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function normalizeInstanceRoot(value, { create = false } = {}) {
+  if (value == null || value === '') return INSTANCES_DIR;
+  if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('The custom instance location must be an absolute path');
+  const root = path.resolve(value);
+  if (root === path.parse(root).root) throw new Error('Choose a folder on the drive, not the drive root itself');
+  if (create) {
+    ensureDir(root);
+    fs.accessSync(root, fs.constants.R_OK | fs.constants.W_OK);
+  }
+  return root;
+}
+
+function getInstanceDir(instance, ...segments) {
+  if (!instance || typeof instance !== 'object') throw new Error('Instance not found');
+  const safeName = sanitizeName(instance.name);
+  const root = normalizeInstanceRoot(instance.customRoot || '');
+  return resolveSafePath(root, safeName, ...segments);
+}
+
+function getInstanceDirByName(name, ...segments) {
+  const safeName = sanitizeName(name);
+  const registry = readJSON(INSTANCES_FILE) || [];
+  const instance = registry.find(item => item.name === safeName);
+  if (!instance) throw new Error('Instance not found');
+  return getInstanceDir(instance, ...segments);
 }
 
 function safeImageData(value) {
@@ -345,7 +373,7 @@ async function provisionManagedJava(javaMajor, onProgress) {
     const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
     if (actual.toLowerCase() !== runtimePackage.checksum.toLowerCase()) throw new Error('The Java runtime checksum did not match');
     ensureDir(staging);
-    new AdmZip(archive).extractAllTo(staging, true);
+    await extractZipOnWindows(archive, staging);
     const stagedJava = findJavaExecutable(staging);
     if (!stagedJava || await getJavaVersionAsync(stagedJava) !== javaMajor) throw new Error(`Downloaded runtime is not Java ${javaMajor}`);
     fs.rmSync(runtimeDir, { recursive: true, force: true });
@@ -1028,7 +1056,11 @@ function setupIPC() {
     const existing = registry.find(i => i.name === safeName);
     if (existing) throw new Error(`Instance "${safeName}" already exists`);
 
-    const instanceDir = resolveSafePath(INSTANCES_DIR, safeName);
+    const customRoot = data.customRoot ? normalizeInstanceRoot(data.customRoot, { create: true }) : '';
+    const instanceDir = resolveSafePath(customRoot || INSTANCES_DIR, safeName);
+    if (fs.existsSync(instanceDir) && fs.readdirSync(instanceDir).length) {
+      throw new Error('The selected location already contains a non-empty folder named "' + safeName + '"');
+    }
     ensureDir(instanceDir);
     ensureDir(path.join(instanceDir, 'mods'));
     ensureDir(path.join(instanceDir, 'saves'));
@@ -1037,6 +1069,7 @@ function setupIPC() {
     const entry = {
       name: safeName,
       path: instanceDir,
+      customRoot,
       gameVersion: data.gameVersion,
       profile: requestedProfile,
       loader,
@@ -1065,6 +1098,15 @@ function setupIPC() {
 
   ipcMain.handle('get-instances-dir', async () => INSTANCES_DIR);
 
+  ipcMain.handle('choose-instance-location', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose where instances will be installed',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return normalizeInstanceRoot(result.filePaths[0], { create: true });
+  });
+
   ipcMain.handle('list-instances', async () => {
     let registry = readJSON(INSTANCES_FILE) || [];
     let changed = false;
@@ -1072,7 +1114,7 @@ function setupIPC() {
       try { sanitizeName(inst?.name); return true; } catch { changed = true; return false; }
     });
     for (const inst of registry) {
-      const canonicalPath = resolveSafePath(INSTANCES_DIR, inst.name);
+      const canonicalPath = getInstanceDir(inst);
       if (inst.path !== canonicalPath) {
         inst.path = canonicalPath;
         changed = true;
@@ -1093,8 +1135,8 @@ function setupIPC() {
       const safeNewName = sanitizeName(newName);
       if (safeNewName !== safeName) {
         if (activeInstanceName === safeName) throw new Error('Stop Minecraft before renaming this instance');
-        const oldDir = resolveSafePath(INSTANCES_DIR, safeName);
-        const newDir = resolveSafePath(INSTANCES_DIR, safeNewName);
+        const oldDir = getInstanceDir(registry[idx]);
+        const newDir = resolveSafePath(normalizeInstanceRoot(registry[idx].customRoot || ''), safeNewName);
         if (fs.existsSync(newDir)) throw new Error(`An instance named "${safeNewName}" already exists`);
         if (fs.existsSync(oldDir)) fs.renameSync(oldDir, newDir);
         registry[idx].path = newDir;
@@ -1126,12 +1168,14 @@ function setupIPC() {
     const safeName = sanitizeName(name);
     if (activeInstanceName === safeName) throw new Error('Stop Minecraft before deleting this instance');
     const registry = readJSON(INSTANCES_FILE) || [];
-    const filtered = registry.filter(i => i.name !== safeName);
-    writeJSON(INSTANCES_FILE, filtered);
-    const instanceDir = resolveSafePath(INSTANCES_DIR, safeName);
+    const instance = registry.find(i => i.name === safeName);
+    if (!instance) throw new Error('Instance not found');
+    const instanceDir = getInstanceDir(instance);
     if (fs.existsSync(instanceDir)) {
       fs.rmSync(instanceDir, { recursive: true, force: true });
     }
+    const filtered = registry.filter(i => i.name !== safeName);
+    writeJSON(INSTANCES_FILE, filtered);
     return true;
   });
 
@@ -1153,7 +1197,21 @@ function setupIPC() {
       throw e;
     }
 
-    const instanceDir = resolveSafePath(INSTANCES_DIR, safeName);
+    const instanceDir = getInstanceDir(instance);
+    if (instance.customRoot && !fs.existsSync(instanceDir)) {
+      activeInstanceName = null;
+      throw new Error('This instance location is unavailable. Reconnect the drive or restore the folder: ' + instanceDir);
+    }
+    ensureDir(instanceDir);
+    ensureDir(GLOBAL_DIR);
+    if (!checkDiskSpace(instanceDir, 512 * 1024 * 1024)) {
+      activeInstanceName = null;
+      throw new Error('Not enough free space in this instance location. Free at least 512 MB or choose another location.');
+    }
+    if (!checkDiskSpace(GLOBAL_DIR, 1024 * 1024 * 1024)) {
+      activeInstanceName = null;
+      throw new Error('Not enough free space in Pine Launcher shared storage. Free at least 1 GB on the Windows app-data drive.');
+    }
     const settings = readJSON(SETTINGS_FILE) || {};
 
     mcClient = new Client();
@@ -1442,7 +1500,7 @@ function setupIPC() {
         mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'error' });
         const fixed = cleanCorruptedJars(GLOBAL_LIBRARIES_DIR)
                    + cleanCorruptedJars(GLOBAL_VERSIONS_DIR)
-                   + cleanCorruptedJars(path.join(INSTANCES_DIR, instance.name, 'mods'));
+                   + cleanCorruptedJars(getInstanceDir(instance, 'mods'));
         if (fixed > 0) mainWindow?.webContents.send('launch-fixed', fixed);
         mcClient = null;
         minecraftProcessStarted = false;
@@ -1478,7 +1536,7 @@ function setupIPC() {
       }
       const cleaned = cleanCorruptedJars(GLOBAL_LIBRARIES_DIR)
                    + cleanCorruptedJars(GLOBAL_VERSIONS_DIR)
-                   + cleanCorruptedJars(path.join(INSTANCES_DIR, instance.name, 'mods'));
+                   + cleanCorruptedJars(getInstanceDir(instance, 'mods'));
       if (cleaned > 0) mainWindow?.webContents.send('launch-fixed', cleaned);
       Promise.resolve(mcClient.launch(opts)).then((processHandle) => {
         if (!processHandle && !terminalEventHandled) {
@@ -1677,7 +1735,7 @@ function setupIPC() {
     const primarySize = validFiles[0].size || 0;
     const depSizes = resolvedRequired.reduce((s, v) => s + (v.files?.[0]?.size || 0), 0);
     const totalNeeded = Math.ceil((primarySize + depSizes) * 1.2);
-    const modsDir = path.join(INSTANCES_DIR, instanceName, 'mods');
+    const modsDir = getInstanceDirByName(instanceName, 'mods');
     ensureDir(modsDir);
     if (!checkDiskSpace(modsDir, totalNeeded)) {
       try {
@@ -1803,7 +1861,7 @@ function setupIPC() {
     const sub = projectType === 'resourcepack' ? 'resourcepacks'
       : projectType === 'shader' ? 'shaderpacks'
       : projectType === 'datapack' ? 'datapacks' : 'mods';
-    const targetDir = resolveSafePath(INSTANCES_DIR, instanceName, sub);
+    const targetDir = getInstanceDirByName(instanceName, sub);
     ensureDir(targetDir);
     const safeFilename = safeRemoteFilename(file.filename);
     const filePath = resolveSafePath(targetDir, safeFilename);
@@ -1863,7 +1921,7 @@ function setupIPC() {
     const instance = registry.find(item => item.name === safeName);
     if (!instance) throw new Error('Instance not found');
 
-    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
+    const modsDir = getInstanceDirByName(safeName, 'mods');
     ensureDir(modsDir);
 
     // Batch tracking for rollback
@@ -1919,7 +1977,7 @@ function setupIPC() {
         if (result === null) continue; // already existed
 
         // Save metadata (mods only — resource packs etc. live in their own folders)
-        const contentMetaFile = path.join(INSTANCES_DIR, instanceName, 'content_meta.json');
+        const contentMetaFile = getInstanceDirByName(instanceName, 'content_meta.json');
         let contentMeta = {};
         try { contentMeta = JSON.parse(fs.readFileSync(contentMetaFile, 'utf8')); } catch {}
         contentMeta[`${result.projectType}:${result.file.filename}`] = {
@@ -1933,7 +1991,7 @@ function setupIPC() {
         fs.writeFileSync(contentMetaFile, JSON.stringify(contentMeta, null, 2));
 
         if (result.projectType === 'mod') {
-          const metaFile = path.join(INSTANCES_DIR, instanceName, 'mods_meta.json');
+          const metaFile = getInstanceDirByName(instanceName, 'mods_meta.json');
           let meta = {};
           try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
           meta[result.file.filename] = {
@@ -1969,7 +2027,7 @@ function setupIPC() {
         } catch {}
       }
       // Clean metadata for partial installs
-      const metaFile = path.join(INSTANCES_DIR, instanceName, 'mods_meta.json');
+      const metaFile = getInstanceDirByName(instanceName, 'mods_meta.json');
       try {
         const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
         for (const fp of writtenFiles) {
@@ -2002,7 +2060,7 @@ function setupIPC() {
     if (!safeFile.endsWith('.jar') && !safeFile.endsWith('.jar.disabled')) {
       throw new Error('Invalid mod filename');
     }
-    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
+    const modsDir = getInstanceDirByName(safeName, 'mods');
     const suppliedPath = resolveSafePath(modsDir, safeFile);
     const enabledPath = suppliedPath.endsWith('.disabled') ? suppliedPath.slice(0, -9) : suppliedPath;
     const disabledPath = `${enabledPath}.disabled`;
@@ -2053,10 +2111,10 @@ function setupIPC() {
   // ── Helper: get instance mods list ────────────────────────────────
   async function getInstanceModsList(instanceName) {
     const safeName = sanitizeName(instanceName);
-    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
+    const modsDir = getInstanceDirByName(safeName, 'mods');
     ensureDir(modsDir);
     const files = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'));
-    const metaFile = resolveSafePath(INSTANCES_DIR, safeName, 'mods_meta.json');
+    const metaFile = getInstanceDirByName(safeName, 'mods_meta.json');
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
     return files.map(f => {
@@ -2099,7 +2157,7 @@ function setupIPC() {
     const safeName = sanitizeName(instanceName);
     validateContentType(type);
     if (type === 'mod') return getInstanceModsList(safeName);
-    const base = resolveSafePath(INSTANCES_DIR, safeName);
+    const base = getInstanceDirByName(safeName);
     const metaFile = resolveSafePath(base, 'content_meta.json');
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
@@ -2161,7 +2219,7 @@ function setupIPC() {
     const disabledPath = `${enabledPath}.disabled`;
     if (fs.existsSync(enabledPath)) fs.rmSync(enabledPath, { force: true, recursive: item.isDirectory });
     if (fs.existsSync(disabledPath)) fs.rmSync(disabledPath, { force: true, recursive: item.isDirectory });
-    const metaFile = resolveSafePath(INSTANCES_DIR, sanitizeName(instanceName), 'content_meta.json');
+    const metaFile = getInstanceDirByName(instanceName, 'content_meta.json');
     try {
       const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
       const enabledName = item.filename.endsWith('.disabled') ? item.filename.slice(0, -9) : item.filename;
@@ -2182,13 +2240,13 @@ function setupIPC() {
     if (!safeFile.endsWith('.jar') && !safeFile.endsWith('.jar.disabled')) {
       throw new Error('Invalid mod filename');
     }
-    const modsDir = resolveSafePath(INSTANCES_DIR, safeName, 'mods');
+    const modsDir = getInstanceDirByName(safeName, 'mods');
     const filePath = resolveSafePath(modsDir, safeFile);
     const enabledPath = filePath.endsWith('.disabled') ? filePath.slice(0, -9) : filePath;
     const disabledPath = `${enabledPath}.disabled`;
     if (fs.existsSync(enabledPath)) fs.unlinkSync(enabledPath);
     if (fs.existsSync(disabledPath)) fs.unlinkSync(disabledPath);
-    const metaFile = resolveSafePath(INSTANCES_DIR, safeName, 'mods_meta.json');
+    const metaFile = getInstanceDirByName(safeName, 'mods_meta.json');
     try {
       const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
       const enabledName = safeFile.endsWith('.disabled') ? safeFile.slice(0, -9) : safeFile;
@@ -2337,7 +2395,7 @@ async function seedSharedDirs() {
 
     for (const inst of registry) {
       let instancePath;
-      try { instancePath = resolveSafePath(INSTANCES_DIR, sanitizeName(inst?.name)); } catch { continue; }
+      try { instancePath = getInstanceDir(inst); } catch { continue; }
       try {
         if (needAssets && fs.existsSync(path.join(instancePath, 'assets', 'objects'))) {
           await fs.promises.cp(path.join(instancePath, 'assets'), GLOBAL_ASSETS_DIR, { recursive: true });

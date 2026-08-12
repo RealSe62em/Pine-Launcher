@@ -49,3 +49,29 @@ test('patched downloads commit complete responses atomically', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('patched downloads limit concurrent network requests', async () => {
+  const { install, Handler } = freshModules();
+  let active = 0;
+  let peak = 0;
+  install({
+    maxConcurrentDownloads: 2,
+    fetchImpl: async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      active -= 1;
+      return new Response(Buffer.from('ok'), { status: 200, headers: { 'content-length': '2' } });
+    },
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-download-limit-'));
+  try {
+    const handler = makeHandler(Handler);
+    await Promise.all(Array.from({ length: 8 }, (_, index) =>
+      handler.downloadAsync('https://example.test/' + index, dir, index + '.jar', false, 'classes')
+    ));
+    assert.equal(peak, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

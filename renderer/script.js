@@ -27,6 +27,7 @@ const state = {
   perfInterval: null,
   pendingIcon: null,
   pendingBanner: null,
+  pendingInstanceRoot: '',
   editIcon: null,
   editBanner: null,
   editBlurDir: 'left',
@@ -1041,9 +1042,11 @@ async function handleAuth() {
     updateAuthUI(); updatePride();
     setStatus(`Signed in as ${state.authData.profile.name}`);
     toast('Signed in', 'success');
+    return true;
   } catch (e) {
     if (nameEl) nameEl.textContent = 'Sign in failed';
     setStatus('Login failed: ' + (e.message || e));
+    return false;
   }
 }
 
@@ -1113,6 +1116,86 @@ function openOfflineModal() {
   setTimeout(() => input.focus(), 50);
 }
 
+function openAccountRequiredModal(instanceName) {
+  document.getElementById('account-required-modal')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'account-required-modal';
+  overlay.className = 'modal-root visible';
+  overlay.style.zIndex = '320';
+  overlay.innerHTML = [
+    '<div class="modal" style="max-width:470px">',
+    '<div class="modal-header">',
+    '<div><h2 class="modal-title">Choose an account first</h2>',
+    '<p class="modal-sub">Pine needs a player account before it can launch this instance.</p></div>',
+    '<button class="modal-close" data-close type="button" aria-label="Close">X</button>',
+    '</div>',
+    '<div class="modal-body">',
+    '<label for="required-offline-name">Offline username</label>',
+    '<input id="required-offline-name" class="input" placeholder="Enter 3-16 characters" autocomplete="off" maxlength="16" spellcheck="false">',
+    '<div id="required-account-error" class="modal-error text-muted" hidden></div>',
+    '<div class="text-muted" style="margin-top:10px;font-size:12px">Offline accounts only work on servers that allow offline players. For normal online play, use Microsoft sign-in.</div>',
+    '</div>',
+    '<div class="modal-footer" style="gap:8px;flex-wrap:wrap">',
+    '<button class="btn btn-secondary" data-cancel type="button">Cancel</button>',
+    '<button class="btn btn-secondary" data-microsoft type="button">Sign in with Microsoft</button>',
+    '<button class="btn btn-primary" data-offline type="button">Use offline name</button>',
+    '</div>',
+    '</div>',
+  ].join('');
+  document.body.appendChild(overlay);
+
+  const input = overlay.querySelector('#required-offline-name');
+  const error = overlay.querySelector('#required-account-error');
+  const microsoftButton = overlay.querySelector('[data-microsoft]');
+  const offlineButton = overlay.querySelector('[data-offline]');
+  const close = () => overlay.remove();
+  const showError = message => {
+    error.textContent = message;
+    error.hidden = false;
+  };
+  const continueLaunch = () => {
+    close();
+    launchInstance(instanceName);
+  };
+  const useOffline = async () => {
+    const offlineName = input.value.trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(offlineName)) {
+      showError('Use 3-16 characters: letters, numbers, or underscores.');
+      input.focus();
+      return;
+    }
+    offlineButton.disabled = true;
+    microsoftButton.disabled = true;
+    try {
+      state.authData = await api.offlineLogin(offlineName);
+      updateAuthUI();
+      updatePride();
+      setStatus('Playing offline as ' + offlineName);
+      toast('Offline account set', 'success');
+      continueLaunch();
+    } catch (loginError) {
+      showError(loginError.message || 'Could not create the offline account.');
+      offlineButton.disabled = false;
+      microsoftButton.disabled = false;
+    }
+  };
+
+  offlineButton.addEventListener('click', useOffline);
+  microsoftButton.addEventListener('click', async () => {
+    offlineButton.disabled = true;
+    microsoftButton.disabled = true;
+    const signedIn = await handleAuth();
+    if (signedIn && state.authData?.profile) return continueLaunch();
+    showError('Microsoft sign-in did not finish. Try again or use an offline username.');
+    offlineButton.disabled = false;
+    microsoftButton.disabled = false;
+  });
+  overlay.querySelector('[data-cancel]').addEventListener('click', close);
+  overlay.querySelector('[data-close]').addEventListener('click', close);
+  overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+  input.addEventListener('keydown', event => { if (event.key === 'Enter') useOffline(); });
+  setTimeout(() => input.focus(), 50);
+}
 function setAvatarImage(el, uuid, name) {
   if (!uuid) { el.textContent = (name || 'G')[0].toUpperCase(); return; }
   const img = document.createElement('img');
@@ -1375,6 +1458,10 @@ function openCreateModal() {
   state.selectedLoader = 'vanilla';
   state.pendingIcon = null;
   state.pendingBanner = null;
+  state.pendingInstanceRoot = '';
+  const locationInput = $('modal-instance-location');
+  if (locationInput) locationInput.value = '';
+  $('modal-location-clear')?.setAttribute('hidden', '');
   state.bannerBlurDir = 'left';
   state.showSnapshots = false;
   const blurWrap = $('blur-dir-wrap');
@@ -1644,6 +1731,24 @@ function bindModal() {
   $('modal-cancel-btn')?.addEventListener('click', closeModal);
   $('modal-overlay')?.addEventListener('click', (e) => { if (e.target === $('modal-overlay')) closeModal(); });
   $('modal-create-btn')?.addEventListener('click', createInstance);
+  $('modal-location-browse')?.addEventListener('click', async () => {
+    try {
+      const selected = await api.chooseInstanceLocation();
+      if (!selected) return;
+      state.pendingInstanceRoot = selected;
+      const input = $('modal-instance-location');
+      if (input) input.value = selected;
+      $('modal-location-clear')?.removeAttribute('hidden');
+    } catch (error) {
+      showModalError('Could not use that folder: ' + (error.message || error));
+    }
+  });
+  $('modal-location-clear')?.addEventListener('click', () => {
+    state.pendingInstanceRoot = '';
+    const input = $('modal-instance-location');
+    if (input) input.value = '';
+    $('modal-location-clear')?.setAttribute('hidden', '');
+  });
   document.querySelectorAll('.profile-card').forEach((c) => {
     c.addEventListener('click', () => selectProfile(c.dataset.profile));
   });
@@ -1810,7 +1915,7 @@ async function createInstance() {
 
   let createdThisAttempt = false;
   try {
-    await api.createInstance({ name, gameVersion: version, profile: state.chosenProfile || 'custom', loader: state.selectedLoader, loaderVersion: loaderVer || null, iconData: state.pendingIcon || null, bannerData: state.pendingBanner || null, bannerBlurDir: state.bannerBlurDir || 'left' });
+    await api.createInstance({ name, gameVersion: version, profile: state.chosenProfile || 'custom', loader: state.selectedLoader, loaderVersion: loaderVer || null, iconData: state.pendingIcon || null, bannerData: state.pendingBanner || null, bannerBlurDir: state.bannerBlurDir || 'left', customRoot: state.pendingInstanceRoot || '' });
     createdThisAttempt = true;
     setProgress($('modal-progress-fill'), $('modal-progress-text'), 40, 'Instance created');
 
@@ -1952,6 +2057,10 @@ function bindLaunchEvents() {
 
 function launchInstance(name) {
   if (state.launchingName) return;
+  if (!state.authData?.profile) {
+    openAccountRequiredModal(name);
+    return;
+  }
   clearLogs({ showBanner: false });
   state.launchingName = name;
   setStatus(`Launching ${name}…`);

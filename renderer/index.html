@@ -344,6 +344,15 @@
             <input id="modal-name" class="input" placeholder="My Minecraft world" autocomplete="off">
           </div>
           <div class="form-row">
+            <label for="modal-instance-location">Install location <span class="text-muted">(optional)</span></label>
+            <div class="instance-location-row">
+              <input id="modal-instance-location" class="input" placeholder="Default Pine Launcher folder" readonly>
+              <button id="modal-location-browse" class="btn btn-secondary" type="button">Browse</button>
+              <button id="modal-location-clear" class="btn btn-ghost" type="button" hidden>Use default</button>
+            </div>
+            <div class="text-muted instance-location-help">Choose another drive or folder if you want. Existing instances stay where they are.</div>
+          </div>
+          <div class="form-row">
             <label>Loader</label>
             <div id="loader-segmented" class="segmented"></div>
           </div>
