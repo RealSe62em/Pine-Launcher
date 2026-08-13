@@ -788,6 +788,20 @@ label, .label {
 .profile-card-name { font-size: var(--text-body); font-weight: 600; margin-bottom: 2px; }
 .profile-card-desc { font-size: var(--text-caption); color: var(--text-md); line-height: 1.4; }
 
+.instance-location-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+}
+.instance-location-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.instance-location-actions .btn { min-height: 42px; }
+.instance-location-help { margin-top: var(--s-2); line-height: 1.45; }
+
 /* ── Hero card ───────────────────────────────────────────── */
 .hero-card {
   display: flex;
@@ -1088,6 +1102,66 @@ label, .label {
 .settings-row > input,
 .settings-row > select { flex: 1; }
 .settings-actions { display: flex; align-items: center; gap: var(--s-2); }
+
+.update-card { overflow: hidden; }
+.update-version-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+.update-version-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--s-3);
+  background: var(--glass-surface-base);
+  border-radius: var(--r-sm);
+}
+.update-version-row strong { color: var(--text-hi); font-size: var(--text-headline); }
+.update-status {
+  padding: var(--s-3);
+  margin-bottom: var(--s-3);
+  color: var(--text-md);
+  background: var(--glass-surface-base);
+  border-radius: var(--r-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.update-status.status-available,
+.update-status.status-downloaded { color: var(--text-hi); background: var(--accent-dim); }
+.update-status.status-error { color: var(--danger); background: var(--danger-dim); }
+.content-compatibility-warning {
+  margin-top: 4px;
+  color: var(--danger);
+  font-size: var(--text-caption);
+  line-height: 1.35;
+}
+.update-progress { margin-bottom: var(--s-3); }
+.update-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-top: 6px;
+  color: var(--text-lo);
+  font-size: var(--text-caption);
+}
+.update-release-notes {
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  padding: var(--s-3);
+  margin-bottom: var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--glass-surface-base);
+  color: var(--text-md);
+  font-size: var(--text-caption);
+  line-height: 1.55;
+}
+.update-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.update-source-note { margin: var(--s-3) 0 0; font-size: var(--text-caption); line-height: 1.5; }
 
 .color-swatches { display: flex; gap: var(--s-2); }
 .color-swatch {

@@ -17,6 +17,18 @@ const state = {
   chosenProfile: null,
   performanceMods: [],
   authData: null,
+  updateState: {
+    status: 'idle',
+    currentVersion: '',
+    availableVersion: null,
+    releaseNotes: '',
+    percent: 0,
+    transferred: 0,
+    total: 0,
+    bytesPerSecond: 0,
+    message: 'Pine checks GitHub Releases for updates.',
+  },
+  updateNoticeVersion: null,
   settings: {},
   launchingName: null,
   logLines: [],
@@ -66,10 +78,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindEditSheet();
   bindGlobalKeys();
   bindLaunchEvents();
+  bindUpdateEvents();
   bindCommandK();
 
   await loadVersions();
   await loadSettings();
+  await loadUpdateState();
   await checkJava();
 
   try {
@@ -552,8 +566,7 @@ function selectInstance(name) {
 // ── Home ────────────────────────────────────────────────────
 function renderHome() {
   const greeting = $('home-greeting');
-  const name = state.authData?.profile?.name || 'back';
-  if (greeting) greeting.textContent = `Welcome back, ${name}`;
+  if (greeting) greeting.textContent = homeGreetingText();
   const sub = $('home-sub');
   if (sub) sub.textContent = state.instances.length
     ? 'Ready when you are. Click play to launch your most recent instance.'
@@ -606,6 +619,11 @@ function renderHome() {
       heroBtn.style.display = 'none';
     }
   }
+}
+
+function homeGreetingText() {
+  const name = state.authData?.profile?.name?.trim();
+  return name ? `Welcome back, ${name}` : 'Welcome to Pine Launcher';
 }
 
 function sortByRecency(arr) {
@@ -851,15 +869,16 @@ function renderContentList() {
     return;
   }
   container.innerHTML = filtered.map((m) => {
-    const update = state.contentCategory === 'mod' && (state.pendingModUpdates || []).find(u => u.projectId === m.projectId);
+    const update = !m.compatibilityIssue && state.contentCategory === 'mod' && (state.pendingModUpdates || []).find(u => u.projectId === m.projectId);
     return `
     <div class="content-item ${update ? 'has-update' : ''}${m.disabled ? ' is-disabled' : ''}" data-pid="${escHtml(m.projectId || m.filename)}">
       <div class="content-item-icon">
         ${m.iconUrl ? `<img src="${escHtml(m.iconUrl)}" alt="" loading="lazy">` : escHtml((m.title || m.filename)[0].toUpperCase())}
       </div>
       <div class="content-item-info">
-        <div class="content-item-name">${escHtml(m.title || m.filename)} ${m.disabled ? '<span class="update-badge">Disabled</span>' : (update ? '<span class="update-badge">Update</span>' : '')}</div>
+        <div class="content-item-name">${escHtml(m.title || m.filename)} ${m.disabled ? '<span class="update-badge">Disabled</span>' : (m.compatibilityIssue ? '<span class="update-badge">Incompatible</span>' : (update ? '<span class="update-badge">Update</span>' : ''))}</div>
         <div class="content-item-version">${update ? escHtml(update.latestVersionName) : escHtml(m.world ? `${m.world} · ${m.filename}` : m.filename)}</div>
+        ${m.compatibilityIssue ? `<div class="content-compatibility-warning">${escHtml(m.compatibilityIssue)}</div>` : ''}
       </div>
       <div class="content-item-actions">
         ${update ? `<button class="btn btn-primary btn-sm" data-act="update">Update</button>` : ''}
@@ -1227,7 +1246,7 @@ function updateAuthUI() {
   }
   const greeting = $('home-greeting');
   if (greeting) {
-    greeting.textContent = `Welcome back, ${state.authData?.profile?.name || 'back'}`;
+    greeting.textContent = homeGreetingText();
   }
 }
 
@@ -1263,6 +1282,7 @@ function renderSettingsLayout() {
       <button class="active" data-cat="general">General</button>
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
+      <button data-cat="updates">Updates</button>
     </nav>
     <div class="settings-form">
       <div class="settings-pane active" data-cat="general">
@@ -1336,6 +1356,26 @@ function renderSettingsLayout() {
           <button class="btn btn-ghost" id="set-reset-btn">Reset defaults</button>
         </div>
       </div>
+      <div class="settings-pane" data-cat="updates">
+        <div class="settings-card update-card">
+          <div class="settings-card-title">Launcher updates</div>
+          <div class="update-version-row">
+            <div><span class="text-muted">Installed</span><strong id="update-current-version">-</strong></div>
+            <div id="update-available-wrap" hidden><span class="text-muted">Available</span><strong id="update-available-version">-</strong></div>
+          </div>
+          <div class="update-status" id="update-status">Checking update status...</div>
+          <div class="update-progress" id="update-progress" hidden>
+            <div class="progress-bar"><div class="progress-fill" id="update-progress-fill"></div></div>
+            <div class="update-progress-meta"><span id="update-progress-size"></span><span id="update-progress-speed"></span></div>
+          </div>
+          <div class="update-release-notes" id="update-release-notes" hidden></div>
+          <div class="update-actions">
+            <button class="btn btn-secondary" id="update-check-btn" type="button">Check for updates</button>
+            <button class="btn btn-primary" id="update-action-btn" type="button" hidden></button>
+          </div>
+          <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Pine verifies the release package before installation.</p>
+        </div>
+      </div>
     </div>
   `;
   layout.querySelectorAll('.settings-nav button').forEach((btn) => {
@@ -1344,6 +1384,7 @@ function renderSettingsLayout() {
       layout.querySelectorAll('.settings-pane').forEach((p) => p.classList.remove('active'));
       btn.classList.add('active');
       layout.querySelector(`.settings-pane[data-cat="${btn.dataset.cat}"]`)?.classList.add('active');
+      syncSettingsHeaderSave(btn.dataset.cat);
     });
   });
   layout.querySelectorAll('.color-swatch').forEach((s) => {
@@ -1355,9 +1396,13 @@ function renderSettingsLayout() {
       state.settings.accentColor = color;
     });
   });
+  $('update-check-btn')?.addEventListener('click', checkForLauncherUpdates);
+  $('update-action-btn')?.addEventListener('click', runUpdateAction);
+  renderUpdatePanel();
   layout.querySelectorAll('.set-save-btn').forEach((button) => button.addEventListener('click', () => saveAllSettings(button)));
   const headerSave = $('settings-header-save');
   if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
+  syncSettingsHeaderSave('general');
   $('set-reset-btn')?.addEventListener('click', resetSettings);
   $('set-reduced-motion')?.addEventListener('change', (e) => {
     document.documentElement.classList.toggle('reduced-motion', e.target.checked);
@@ -1382,6 +1427,12 @@ function renderSettingsLayout() {
       saveAllSettings(null, { silent: true });
     });
   });
+}
+
+function syncSettingsHeaderSave(category) {
+  const headerSave = $('settings-header-save');
+  if (!headerSave) return;
+  headerSave.hidden = category === 'updates';
 }
 
 async function saveAllSettings(button = null, { silent = false } = {}) {
@@ -1427,6 +1478,125 @@ async function resetSettings() {
     toast('Settings reset to defaults', 'success');
   } catch (e) {
     toast('Could not reset settings: ' + (e.message || e), 'error', 4500);
+  }
+}
+
+function formatUpdateBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function bindUpdateEvents() {
+  api.onUpdateState((value) => applyUpdateState(value, true));
+  $('update-pill')?.addEventListener('click', openUpdatesSettings);
+}
+
+async function loadUpdateState() {
+  try {
+    applyUpdateState(await api.getUpdateState(), false);
+  } catch (error) {
+    applyUpdateState({ status: 'error', message: error.message || 'Could not read update status.' }, false);
+  }
+}
+
+function applyUpdateState(value, notify = false) {
+  if (!value || typeof value !== 'object') return;
+  const previous = state.updateState;
+  state.updateState = { ...state.updateState, ...value };
+  renderUpdatePanel();
+  renderUpdatePill();
+  if (notify && state.updateState.status === 'available' && state.updateState.availableVersion &&
+      state.updateNoticeVersion !== state.updateState.availableVersion) {
+    state.updateNoticeVersion = state.updateState.availableVersion;
+    toast(`Pine Launcher ${state.updateState.availableVersion} is available`, 'success', 6000);
+  }
+  if (notify && state.updateState.status === 'downloaded' && previous?.status !== 'downloaded') {
+    toast('Update downloaded. Restart Pine when you are ready.', 'success', 7000);
+  }
+}
+
+function renderUpdatePill() {
+  const pill = $('update-pill');
+  const label = $('update-pill-text');
+  if (!pill || !label) return;
+  const update = state.updateState;
+  const visible = ['available', 'downloading', 'downloaded', 'installing'].includes(update.status) ||
+    (update.status === 'error' && update.availableVersion);
+  pill.hidden = !visible;
+  pill.classList.toggle('downloaded', update.status === 'downloaded');
+  if (!visible) return;
+  if (update.status === 'downloading') label.textContent = `Updating ${Math.round(update.percent || 0)}%`;
+  else if (update.status === 'downloaded') label.textContent = 'Restart to update';
+  else if (update.status === 'installing') label.textContent = 'Installing...';
+  else label.textContent = `Update ${update.availableVersion || ''}`.trim();
+}
+
+function renderUpdatePanel() {
+  const status = $('update-status');
+  if (!status) return;
+  const update = state.updateState;
+  $('update-current-version').textContent = update.currentVersion || 'Development build';
+  const availableWrap = $('update-available-wrap');
+  availableWrap.hidden = !update.availableVersion;
+  $('update-available-version').textContent = update.availableVersion || '-';
+  status.textContent = update.message || 'Pine checks GitHub Releases for updates.';
+  status.className = `update-status status-${update.status || 'idle'}`;
+
+  const progress = $('update-progress');
+  const showProgress = update.status === 'downloading' || update.status === 'downloaded';
+  progress.hidden = !showProgress;
+  $('update-progress-fill').style.width = `${Math.max(0, Math.min(100, Number(update.percent) || 0))}%`;
+  $('update-progress-size').textContent = update.total
+    ? `${formatUpdateBytes(update.transferred)} / ${formatUpdateBytes(update.total)}`
+    : '';
+  $('update-progress-speed').textContent = update.status === 'downloading' && update.bytesPerSecond
+    ? `${formatUpdateBytes(update.bytesPerSecond)}/s`
+    : '';
+
+  const notes = $('update-release-notes');
+  notes.hidden = !update.releaseNotes;
+  notes.textContent = update.releaseNotes || '';
+
+  const check = $('update-check-btn');
+  check.disabled = ['checking', 'downloading', 'downloaded', 'installing'].includes(update.status) || update.status === 'unsupported';
+  check.textContent = update.status === 'checking' ? 'Checking...' : 'Check for updates';
+
+  const action = $('update-action-btn');
+  const canDownload = update.status === 'available' || (update.status === 'error' && update.availableVersion);
+  const canInstall = update.status === 'downloaded';
+  action.hidden = !canDownload && !canInstall && update.status !== 'downloading' && update.status !== 'installing';
+  action.disabled = update.status === 'downloading' || update.status === 'installing';
+  if (canDownload) action.textContent = update.status === 'error' ? 'Retry download' : 'Download update';
+  else if (canInstall) action.textContent = 'Restart and install';
+  else if (update.status === 'downloading') action.textContent = `Downloading ${Math.round(update.percent || 0)}%`;
+  else if (update.status === 'installing') action.textContent = 'Restarting...';
+}
+
+function openUpdatesSettings() {
+  switchView('settings');
+  requestAnimationFrame(() => document.querySelector('.settings-nav [data-cat="updates"]')?.click());
+}
+
+async function checkForLauncherUpdates() {
+  try {
+    applyUpdateState(await api.checkForUpdates(), false);
+  } catch (error) {
+    toast('Update check failed: ' + (error.message || error), 'error', 6000);
+  }
+}
+
+async function runUpdateAction() {
+  const update = state.updateState;
+  try {
+    const next = update.status === 'downloaded'
+      ? await api.installUpdate()
+      : await api.downloadUpdate();
+    applyUpdateState(next, false);
+    if (next?.installBlocked) toast(next.message, 'error', 7000);
+  } catch (error) {
+    toast('Update failed: ' + (error.message || error), 'error', 7000);
   }
 }
 

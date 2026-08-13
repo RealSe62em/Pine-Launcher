@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, shell, safeStorage, session, clipboard, net, dialog } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { Client } = require('minecraft-launcher-core');
 const path = require('path');
 const fs = require('fs');
@@ -11,12 +12,14 @@ const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSuppo
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
 const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
 const { extractZipOnWindows } = require('./lib/runtime-extraction');
-const { knownModrinthIncompatibility, quarantineKnownBrokenMods } = require('./lib/mod-compatibility');
+const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
+const { createUpdateManager } = require('./lib/updater');
 const portableFetch = (...args) => net.fetch(...args);
 installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
 
 let mainWindow;
+let updateManager;
 let mcClient = null;
 let minecraftProcessStarted = false;
 let activeInstanceName = null;
@@ -1014,6 +1017,11 @@ async function prepareForge(instance, instanceDir, onProgress) {
 
 // ── IPC Handlers ────────────────────────────────────────────────────
 function setupIPC() {
+  ipcMain.handle('get-update-state', async () => updateManager?.getState());
+  ipcMain.handle('check-for-updates', async () => updateManager?.checkForUpdates({ manual: true }));
+  ipcMain.handle('download-update', async () => updateManager?.downloadUpdate());
+  ipcMain.handle('install-update', async () => updateManager?.installUpdate());
+
   ipcMain.handle('copy-text', async (_, value) => {
     if (typeof value !== 'string' || value.length > 10 * 1024 * 1024) throw new Error('Invalid clipboard text');
     let lastError;
@@ -1263,6 +1271,13 @@ function setupIPC() {
     const quarantinedMods = quarantineKnownBrokenMods(path.join(instanceDir, 'mods'), instance.gameVersion);
     for (const mod of quarantinedMods) {
       const warning = `${mod.filename} was disabled automatically: ${mod.reason} Use ${mod.replacement} instead.`;
+      diagnosticLog('WARN', warning);
+      mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
+      mainWindow?.webContents.send('launch-warning', warning);
+    }
+    const incompatibleLoaderMods = quarantineLoaderIncompatibleMods(path.join(instanceDir, 'mods'), instance.loader);
+    for (const mod of incompatibleLoaderMods) {
+      const warning = `${mod.filename} was disabled automatically: ${mod.reason}`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
       mainWindow?.webContents.send('launch-warning', warning);
@@ -2130,6 +2145,7 @@ function setupIPC() {
     const enabledPath = suppliedPath.endsWith('.disabled') ? suppliedPath.slice(0, -9) : suppliedPath;
     const disabledPath = `${enabledPath}.disabled`;
     if (fs.existsSync(enabledPath)) {
+      if (fs.existsSync(disabledPath)) fs.rmSync(disabledPath, { force: true });
       fs.renameSync(enabledPath, disabledPath);
     } else if (fs.existsSync(disabledPath)) {
       // Already disabled — re-enable
@@ -2178,16 +2194,21 @@ function setupIPC() {
     const safeName = sanitizeName(instanceName);
     const modsDir = getInstanceDirByName(safeName, 'mods');
     ensureDir(modsDir);
-    const files = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'));
+    const allFiles = fs.readdirSync(modsDir).filter(f => f.endsWith('.jar') || f.endsWith('.jar.disabled'));
+    const enabledNames = new Set(allFiles.filter(f => f.endsWith('.jar')));
+    const files = allFiles.filter(f => !f.endsWith('.jar.disabled') || !enabledNames.has(f.slice(0, -9)));
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instanceLoader = registry.find(item => item.name === safeName)?.loader || 'vanilla';
     const metaFile = getInstanceDirByName(safeName, 'mods_meta.json');
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
     return files.map(f => {
       const metaKey = f.endsWith('.disabled') ? f.slice(0, -9) : f;
       const info = meta[f] || meta[metaKey] || {};
+      const jarPath = path.join(modsDir, f);
       return ({
       filename: f,
-      path: path.join(modsDir, f),
+      path: jarPath,
       projectId: info.projectId || null,
       title: info.title || f.replace(/\.jar(?:\.disabled)?$/, ''),
       iconUrl: info.iconUrl || null,
@@ -2195,6 +2216,7 @@ function setupIPC() {
       installedAt: info.installedAt || null,
       depData: info.depData || null,
       disabled: f.endsWith('.disabled'),
+      compatibilityIssue: jarLoaderCompatibilityIssue(jarPath, f, instanceLoader),
     }); });
   }
 
@@ -2508,7 +2530,20 @@ app.whenReady().then(() => {
   migrateUserDataDir();
   migrateInstances();
   createWindow();
+  updateManager = createUpdateManager({
+    autoUpdater,
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged && !process.argv.includes('--smoke-test'),
+    send: updateState => {
+      if (!mainWindow?.isDestroyed() && !mainWindow?.webContents.isDestroyed()) {
+        mainWindow.webContents.send('update-state', updateState);
+      }
+    },
+    isGameActive: () => Boolean(mcClient || activeInstanceName),
+    log: (level, message) => diagnosticLog(String(level || 'info').toUpperCase(), `[Updater] ${message}`),
+  });
   setupIPC();
+  updateManager.start();
   sharedSeedPromise = seedSharedDirs();
   if (process.argv.includes('--smoke-test')) {
     mainWindow.webContents.once('did-finish-load', async () => {
@@ -2533,6 +2568,7 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  updateManager?.dispose();
   // The game process is intentionally detached. Only cancel a launch that has
   // not started Java yet; closing Pine must never close a running game.
   if (mcClient && !minecraftProcessStarted) { try { mcClient.stop(); } catch {} }

@@ -107,6 +107,32 @@
   color: var(--text-lo);
 }
 
+.update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 11px;
+  border: none;
+  border-radius: var(--r-pill);
+  color: var(--accent);
+  background: var(--accent-dim);
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform var(--dur-fast) var(--ease-ios), filter var(--dur-fast) var(--ease-ios);
+}
+.update-pill[hidden] { display: none; }
+.update-pill:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.update-pill.downloaded {
+  color: white;
+  background: var(--accent-grad);
+  box-shadow: var(--accent-glow);
+}
+.update-pill svg { flex-shrink: 0; }
+
 .account {
   display: flex;
   align-items: center;

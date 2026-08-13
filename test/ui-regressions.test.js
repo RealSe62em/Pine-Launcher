@@ -45,3 +45,8 @@ test('instance folder provides themed open and verified copy actions', () => {
   assert.match(main, /ipcMain\.handle\('open-instance-folder'/);
   assert.match(main, /clipboard\.readText\('clipboard'\)/);
 });
+
+test('updates section hides the unrelated settings save button', () => {
+  assert.match(renderer, /syncSettingsHeaderSave\(btn\.dataset\.cat\)/);
+  assert.match(renderer, /headerSave\.hidden = category === 'updates'/);
+});

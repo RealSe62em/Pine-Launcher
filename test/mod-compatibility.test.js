@@ -9,6 +9,9 @@ const AdmZip = require('adm-zip');
 const {
   knownModrinthIncompatibility,
   quarantineKnownBrokenMods,
+  detectJarLoaders,
+  jarLoaderCompatibilityIssue,
+  quarantineLoaderIncompatibleMods,
 } = require('../lib/mod-compatibility');
 
 function writeFabricJar(file, metadata) {
@@ -48,4 +51,40 @@ test('blocks the broken Modrinth release before installation', () => {
   assert.equal(issue.code, 'KNOWN_BROKEN_MOD_BUILD');
   assert.match(issue.detail, /ViaFabricPlus/);
   assert.equal(knownModrinthIncompatibility('YlKdE5VK', 'U1uUiwCm', '1.21.10'), null);
+});
+
+test('identifies wrong-loader jars without flagging multi-loader jars', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-loader-check-'));
+  const forgeJar = path.join(dir, 'example-forge.jar');
+  const multiJar = path.join(dir, 'example-multi.jar');
+  try {
+    const forge = new AdmZip();
+    forge.addFile('META-INF/mods.toml', Buffer.from('modLoader="javafml"'));
+    forge.writeZip(forgeJar);
+    const multi = new AdmZip();
+    multi.addFile('META-INF/mods.toml', Buffer.from('modLoader="javafml"'));
+    multi.addFile('fabric.mod.json', Buffer.from('{"id":"example","version":"1"}'));
+    multi.writeZip(multiJar);
+    assert.deepEqual(detectJarLoaders(forgeJar), ['forge']);
+    assert.match(jarLoaderCompatibilityIssue(forgeJar, 'example-forge.jar', 'fabric'), /Built for Forge/);
+    assert.equal(jarLoaderCompatibilityIssue(multiJar, 'example-multi.jar', 'fabric'), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('quarantines a wrong-loader jar before launch', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-wrong-loader-'));
+  const jar = path.join(dir, 'forge-only.jar');
+  try {
+    const archive = new AdmZip();
+    archive.addFile('META-INF/mods.toml', Buffer.from('modLoader="javafml"'));
+    archive.writeZip(jar);
+    const result = quarantineLoaderIncompatibleMods(dir, 'fabric');
+    assert.equal(result.length, 1);
+    assert.equal(fs.existsSync(jar), false);
+    assert.equal(fs.existsSync(jar + '.disabled'), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
