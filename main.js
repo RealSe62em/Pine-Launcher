@@ -15,6 +15,7 @@ const { extractZipOnWindows } = require('./lib/runtime-extraction');
 const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const { createUpdateManager } = require('./lib/updater');
+const { DiscordPresence, parseGamePresenceLine, serverDisplayAddress } = require('./lib/discord-presence');
 const portableFetch = (...args) => net.fetch(...args);
 installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
 
@@ -24,6 +25,9 @@ let mcClient = null;
 let minecraftProcessStarted = false;
 let activeInstanceName = null;
 let sharedSeedPromise = null;
+const DISCORD_APPLICATION_ID = '1536830830499078275';
+const discordPresence = new DiscordPresence(DISCORD_APPLICATION_ID, { logger: diagnosticLog });
+let presenceContext = { type: 'launcher' };
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
@@ -59,6 +63,65 @@ function diagnosticLog(level, message) {
   } catch {}
   const line = `[${new Date().toISOString()}] [${level}] ${String(message).replace(/[\r\n]+/g, ' ')}\n`;
   fs.appendFile(LOG_FILE, line, () => {});
+}
+
+function loaderLabel(instance) {
+  const loader = instance?.loader && instance.loader !== 'vanilla'
+    ? instance.loader.charAt(0).toUpperCase() + instance.loader.slice(1)
+    : 'Vanilla';
+  return `Minecraft ${instance?.gameVersion || ''} · ${loader}`.trim();
+}
+
+function refreshDiscordPresence(settings = readJSON(SETTINGS_FILE) || {}) {
+  const enabled = settings.discordPresence !== false;
+  discordPresence.setEnabled(enabled);
+  if (!enabled) return;
+  const context = presenceContext;
+  if (context.type === 'launching') {
+    discordPresence.setActivity({
+      details: settings.discordShowInstance !== false ? `Launching ${context.instance.name}` : 'Launching Minecraft',
+      state: loaderLabel(context.instance),
+      startTimestamp: context.startTimestamp,
+      largeImageKey: 'icon',
+      largeImageText: 'Pine Launcher',
+    });
+  } else if (context.type === 'game') {
+    let state = loaderLabel(context.instance);
+    if (context.mode === 'singleplayer') state = 'Singleplayer world';
+    if (context.mode === 'multiplayer' && settings.discordShowServer !== false) state = `On ${context.serverName}`;
+    discordPresence.setActivity({
+      details: settings.discordShowInstance !== false ? `Playing ${context.instance.name}` : 'Playing Minecraft',
+      state,
+      startTimestamp: context.startTimestamp,
+      largeImageKey: 'icon',
+      largeImageText: 'Pine Launcher',
+    });
+  } else {
+    discordPresence.setActivity({
+      details: 'Browsing instances',
+      state: 'Ready to play',
+      largeImageKey: 'icon',
+      largeImageText: 'Pine Launcher',
+    });
+  }
+}
+
+function setPresenceContext(context, settings) {
+  presenceContext = context;
+  refreshDiscordPresence(settings);
+}
+
+function updatePresenceFromGameLine(line, instance, instanceDir, settings, startTimestamp) {
+  const event = parseGamePresenceLine(line);
+  if (!event) return;
+  if (event.type === 'multiplayer') {
+    const serverName = serverDisplayAddress(event.address, event.port);
+    setPresenceContext({ type: 'game', instance, mode: 'multiplayer', serverName, startTimestamp }, settings);
+  } else if (event.type === 'singleplayer') {
+    setPresenceContext({ type: 'game', instance, mode: 'singleplayer', startTimestamp }, settings);
+  } else {
+    setPresenceContext({ type: 'game', instance, mode: 'menu', startTimestamp }, settings);
+  }
 }
 
 // ── MC version → Java version map (fallback) ──────────────
@@ -1291,6 +1354,9 @@ function setupIPC() {
       throw new Error('Not enough free space in Pine Launcher shared storage. Free at least 1 GB on the Windows app-data drive.');
     }
     const settings = readJSON(SETTINGS_FILE) || {};
+    const presenceStartTimestamp = Date.now();
+    let presenceGameStarted = false;
+    setPresenceContext({ type: 'launching', instance, startTimestamp: presenceStartTimestamp }, settings);
 
     mcClient = new Client();
     minecraftProcessStarted = false;
@@ -1328,6 +1394,7 @@ function setupIPC() {
       mainWindow?.webContents.send('launch-metrics', { stage: 'error', progress: 0 });
       mcClient = null;
       activeInstanceName = null;
+      setPresenceContext({ type: 'launcher' }, settings);
       throw e;
     }
 
@@ -1542,6 +1609,11 @@ function setupIPC() {
         minecraftProcessStarted = true;
         diagnosticLog('GAME', e);
         mainWindow?.webContents.send('launch-data', e);
+        if (!presenceGameStarted) {
+          presenceGameStarted = true;
+          setPresenceContext({ type: 'game', instance, mode: 'menu', startTimestamp: presenceStartTimestamp }, settings);
+        }
+        if (typeof e === 'string') updatePresenceFromGameLine(e, instance, instanceDir, settings, presenceStartTimestamp);
         if (typeof e === 'string') {
           const classVersion = e.match(/class file version\s+(\d+(?:\.\d+)?)/i)?.[1];
           const needed = javaMajorFromClassVersion(classVersion);
@@ -1583,6 +1655,7 @@ function setupIPC() {
         mcClient = null;
         minecraftProcessStarted = false;
         activeInstanceName = null;
+        setPresenceContext({ type: 'launcher' }, settings);
         reject(e);
       });
       mcClient.on('close', (code) => {
@@ -1591,6 +1664,7 @@ function setupIPC() {
         mcClient = null;
         minecraftProcessStarted = false;
         activeInstanceName = null;
+        setPresenceContext({ type: 'launcher' }, settings);
         if (Number.isInteger(code) && code !== 0) {
           const error = new Error(runtimeMismatchMessage || `Minecraft crashed with exit code ${code}. Open Logs for the details.`);
           diagnosticLog('ERROR', error.message);
@@ -1630,6 +1704,7 @@ function setupIPC() {
         mcClient = null;
         minecraftProcessStarted = false;
         activeInstanceName = null;
+        setPresenceContext({ type: 'launcher' }, settings);
         reject(e);
       });
     });
@@ -2362,8 +2437,12 @@ function setupIPC() {
       windowHeight: Math.min(4320, Math.max(240, Number.parseInt(settings?.windowHeight, 10) || 720)),
       jvmArgs: typeof settings?.jvmArgs === 'string' ? settings.jvmArgs.slice(0, 4096) : '',
       reducedMotion: Boolean(settings?.reducedMotion),
+      discordPresence: settings?.discordPresence !== false,
+      discordShowInstance: settings?.discordShowInstance !== false,
+      discordShowServer: settings?.discordShowServer !== false,
     };
     writeJSON(SETTINGS_FILE, clean);
+    refreshDiscordPresence(clean);
     return clean;
   });
 
@@ -2543,6 +2622,7 @@ app.whenReady().then(() => {
     log: (level, message) => diagnosticLog(String(level || 'info').toUpperCase(), `[Updater] ${message}`),
   });
   setupIPC();
+  refreshDiscordPresence();
   updateManager.start();
   sharedSeedPromise = seedSharedDirs();
   if (process.argv.includes('--smoke-test')) {
@@ -2569,6 +2649,7 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   updateManager?.dispose();
+  discordPresence.destroy();
   // The game process is intentionally detached. Only cancel a launch that has
   // not started Java yet; closing Pine must never close a running game.
   if (mcClient && !minecraftProcessStarted) { try { mcClient.stop(); } catch {} }

@@ -1282,6 +1282,7 @@ function renderSettingsLayout() {
       <button class="active" data-cat="general">General</button>
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
+      <button data-cat="discord">Discord</button>
       <button data-cat="updates">Updates</button>
     </nav>
     <div class="settings-form">
@@ -1355,6 +1356,31 @@ function renderSettingsLayout() {
           <button class="btn btn-primary set-save-btn">Save settings</button>
           <button class="btn btn-ghost" id="set-reset-btn">Reset defaults</button>
         </div>
+      </div>
+      <div class="settings-pane" data-cat="discord">
+        <div class="settings-card">
+          <div class="settings-card-title">Discord Rich Presence</div>
+          <div class="settings-row"><label>Show Pine on your Discord profile</label>
+            <label class="snapshot-inline" style="position:static;padding:0">
+              <input type="checkbox" id="set-discord-presence" ${s.discordPresence !== false ? 'checked' : ''}>
+              <span class="check-visual"></span>
+            </label>
+          </div>
+          <div class="settings-row"><label>Show instance name</label>
+            <label class="snapshot-inline" style="position:static;padding:0">
+              <input type="checkbox" id="set-discord-instance" ${s.discordShowInstance !== false ? 'checked' : ''}>
+              <span class="check-visual"></span>
+            </label>
+          </div>
+          <div class="settings-row"><label>Show multiplayer server</label>
+            <label class="snapshot-inline" style="position:static;padding:0">
+              <input type="checkbox" id="set-discord-server" ${s.discordShowServer !== false ? 'checked' : ''}>
+              <span class="check-visual"></span>
+            </label>
+          </div>
+          <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
+        </div>
+        <button class="btn btn-primary set-save-btn">Save settings</button>
       </div>
       <div class="settings-pane" data-cat="updates">
         <div class="settings-card update-card">
@@ -1449,6 +1475,9 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
     windowHeight: parseInt($('set-window-height')?.value) || 720,
     jvmArgs: $('set-jvm-args')?.value || '',
     reducedMotion: $('set-reduced-motion')?.checked === true,
+    discordPresence: $('set-discord-presence')?.checked !== false,
+    discordShowInstance: $('set-discord-instance')?.checked !== false,
+    discordShowServer: $('set-discord-server')?.checked !== false,
   };
   try {
     state.settings = await api.saveSettings(state.settings);
@@ -1468,7 +1497,8 @@ async function resetSettings() {
   state.settings = {
     launchBehavior: 'Keep open', dlLimit: 4, javaPath: '', minMemory: '2G', maxMemory: '4G',
     jvmArgs: '', windowWidth: 1280, windowHeight: 720, accentColor: '#ff5cb9',
-    reducedMotion: false, gayMode: true,
+    reducedMotion: false, gayMode: true, discordPresence: true,
+    discordShowInstance: true, discordShowServer: true,
   };
   try {
     state.settings = await api.saveSettings(state.settings);
