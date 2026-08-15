@@ -17,6 +17,10 @@ const state = {
   chosenProfile: null,
   performanceMods: [],
   authData: null,
+  accounts: [],
+  accountsExpanded: false,
+  recentDestinations: [],
+  commandSearchRequestId: 0,
   updateState: {
     status: 'idle',
     currentVersion: '',
@@ -35,8 +39,6 @@ const state = {
   searchOffset: 0,
   discoverCategory: 'mod',
   searchStartTime: 0,
-  perfMonitorActive: false,
-  perfInterval: null,
   pendingIcon: null,
   pendingBanner: null,
   pendingInstanceRoot: '',
@@ -58,6 +60,7 @@ const state = {
   instanceSettingsSaveTimer: null,
 };
 const SEARCH_LIMIT = 20;
+const DISCOVER_DOM_LIMIT = 120;
 const TERMINAL_BANNER = String.raw`
           /\
          /**\
@@ -90,8 +93,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const saved = await api.getAuth();
     if (saved && saved.profile) { state.authData = saved; updateAuthUI(); updatePride(); }
   } catch {}
+  await refreshAccounts();
 
   await loadInstances();
+  await loadRecentDestinations();
   switchView('home');
   renderSettingsLayout();
   const instanceTab = document.querySelector('.tabbar-item[data-view="instance"]');
@@ -197,16 +202,19 @@ function openCommandPalette() {
       <div class="cmdk" role="dialog" aria-label="Search">
         <div class="cmdk-input-row">
           <svg width="20" height="20" aria-hidden="true"><use href="#i-search"/></svg>
-          <input id="cmdk-input" class="cmdk-input" placeholder="Jump to an instance, view, or action..." autocomplete="off">
+          <input id="cmdk-input" class="cmdk-input" placeholder="Search servers, content, accounts, and instances..." autocomplete="off">
           <kbd>Esc</kbd>
         </div>
         <div id="cmdk-results" class="cmdk-results"></div>
       </div>`;
     document.body.appendChild(overlay);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCommandPalette(); });
-    $('cmdk-input')?.addEventListener('input', (e) => renderCmdKResults(e.target.value));
+    $('cmdk-input')?.addEventListener('input', debounce((e) => renderCmdKResults(e.target.value), 160));
   }
   overlay.classList.add('visible');
+  const input = $('cmdk-input');
+  if (input) input.value = '';
+  renderCmdKResults('');
   setTimeout(() => $('cmdk-input')?.focus(), 50);
 }
 
@@ -219,10 +227,11 @@ function closeCommandPalette() {
   }, { once: true });
 }
 
-function renderCmdKResults(query = '') {
+async function renderCmdKResults(query = '') {
   const results = $('cmdk-results');
   if (!results) return;
   const q = query.toLowerCase().trim();
+  const requestId = ++state.commandSearchRequestId;
   const items = [];
 
   // Static actions
@@ -250,25 +259,90 @@ function renderCmdKResults(query = '') {
     }
   }
 
+  for (const account of state.accounts) {
+    const username = account.profile?.name || '';
+    if (q && username.toLowerCase().includes(q)) {
+      items.push({
+        id: 'account-' + account.key,
+        label: username,
+        sub: `${account.meta?.type === 'offline' ? 'Offline' : 'Microsoft'} account${account.key === state.selectedAccountKey ? ' · Active' : ''}`,
+        action: async () => { await chooseAccount(account.key); closeCommandPalette(); },
+        kind: 'account',
+      });
+    }
+  }
+
+  for (const destination of state.recentDestinations) {
+    const searchable = [destination.label, destination.address, destination.folderName, destination.instanceName].filter(Boolean).join(' ').toLowerCase();
+    if (q && searchable.includes(q)) {
+      items.push({
+        id: `destination-${destination.instanceId || destination.instanceName}-${destination.key}`,
+        label: destination.label || destination.identifier,
+        sub: `${destination.address || destination.folderName || destination.identifier} · ${destination.deletedInstance ? 'From a deleted instance' : destination.instanceName}`,
+        action: () => {
+          if (!destination.deletedInstance) launchInstance(destination.instanceName, destination);
+          closeCommandPalette();
+        },
+        kind: destination.type === 'multiplayer' ? 'server' : 'world',
+        play: !destination.deletedInstance,
+      });
+    }
+  }
+
+  if (q.length >= 2) {
+    const immediateItems = items.slice(0, 10);
+    results.innerHTML = renderCommandItems(immediateItems, true);
+    bindCommandItems(results, immediateItems);
+    try {
+      const response = await api.searchMods(q, [], 0, 8, 'relevance');
+      if (requestId !== state.commandSearchRequestId) return;
+      const allowed = new Set(['mod', 'modpack', 'resourcepack', 'datapack', 'shader']);
+      for (const hit of response?.hits || []) {
+        if (!allowed.has(hit.project_type)) continue;
+        items.push({
+          id: 'content-' + hit.project_id,
+          label: hit.title,
+          sub: hit.description,
+          action: () => { closeCommandPalette(); showModDetails(hit.project_id); },
+          kind: ({ mod: 'mod', modpack: 'mod pack', resourcepack: 'resource pack', datapack: 'data pack', shader: 'shader' })[hit.project_type] || 'content',
+        });
+      }
+    } catch {
+      if (requestId !== state.commandSearchRequestId) return;
+    }
+  }
+
   if (!items.length) {
     results.innerHTML = `<div class="cmdk-empty">No matches</div>`;
     return;
   }
-  results.innerHTML = items.slice(0, 10).map((it, i) => `
-    <button class="cmdk-item" data-idx="${i}">
-      <div class="cmdk-item-main">
-        <div class="cmdk-item-label">${escHtml(it.label)}</div>
-        ${it.sub ? `<div class="cmdk-item-sub">${escHtml(it.sub)}</div>` : ''}
-      </div>
-      <div class="cmdk-item-kind">${escHtml(it.kind)}</div>
-    </button>
-  `).join('');
+  const visibleItems = items.slice(0, 14);
+  results.innerHTML = renderCommandItems(visibleItems, false);
+  bindCommandItems(results, visibleItems);
+}
 
-  results.querySelectorAll('.cmdk-item').forEach((btn) => {
-    btn.addEventListener('click', () => items[parseInt(btn.dataset.idx)].action());
+function renderCommandItems(items, loading) {
+  if (!items.length && loading) return '<div class="cmdk-empty cmdk-searching">Searching content…</div>';
+  return items.map((item, index) => `
+    <div class="cmdk-item-row">
+      <button class="cmdk-item" type="button" data-cmdk-idx="${index}">
+        <div class="cmdk-item-main">
+          <div class="cmdk-item-label">${escHtml(item.label)}</div>
+          ${item.sub ? `<div class="cmdk-item-sub">${escHtml(item.sub)}</div>` : ''}
+        </div>
+        <div class="cmdk-item-kind">${escHtml(item.kind)}</div>
+      </button>
+      ${item.play ? `<button class="cmdk-play" type="button" data-cmdk-idx="${index}" aria-label="Play ${escHtml(item.label)}"><svg aria-hidden="true"><use href="#i-play"/></svg><span>Play</span></button>` : ''}
+    </div>`).join('') + (loading ? '<div class="cmdk-loading-line"></div>' : '');
+}
+
+function bindCommandItems(results, items) {
+  results.querySelectorAll('[data-cmdk-idx]').forEach((button) => {
+    button.addEventListener('click', () => items[parseInt(button.dataset.cmdkIdx, 10)]?.action());
   });
-  $('cmdk-input').onkeydown = (e) => {
-    if (e.key === 'Enter') items[0]?.action();
+  const input = $('cmdk-input');
+  if (input) input.onkeydown = (event) => {
+    if (event.key === 'Enter') items[0]?.action();
   };
 }
 
@@ -279,58 +353,58 @@ function toggleAccountMenu() {
   const menu = document.createElement('div');
   menu.id = 'account-menu';
   menu.className = 'account-menu';
-  const uuid = state.authData?.profile?.uuid;
-  const initial = (state.authData?.profile?.name || 'G')[0].toUpperCase();
-  const isOffline = state.authData?.meta?.type === 'offline';
-  const avatarHtml = uuid && !isOffline
-    ? `<img src="https://mc-heads.net/avatar/${uuid}/36" alt="${escHtml(initial)}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">`
-    : escHtml(initial);
+  const visibleAccounts = state.accountsExpanded ? state.accounts : state.accounts.slice(0, 3);
+  const accountRows = visibleAccounts.map(account => {
+    const selected = account.key === state.selectedAccountKey;
+    const isOffline = account.meta?.type === 'offline';
+    const initial = (account.profile?.name || 'G')[0].toUpperCase();
+    const avatar = !isOffline && account.profile?.uuid
+      ? `<img src="https://mc-heads.net/avatar/${encodeURIComponent(account.profile.uuid)}/36" alt="${escHtml(initial)}">`
+      : escHtml(initial);
+    return `<div class="account-switch-row${selected ? ' selected' : ''}" data-account-key="${escHtml(account.key)}">
+      <button class="account-switch-main" type="button" data-act="select-account" aria-label="Use ${escHtml(account.profile.name)}">
+        <span class="avatar">${avatar}</span>
+        <span class="account-menu-info"><span class="account-menu-name">${escHtml(account.profile.name)}</span><span class="account-menu-sub">${isOffline ? 'Offline' : 'Microsoft'}${selected ? ' · Active' : ''}</span></span>
+      </button>
+      <button class="account-delete" type="button" data-act="delete-account" aria-label="Delete ${escHtml(account.profile.name)}"><svg width="13" height="13" aria-hidden="true"><use href="#i-trash"/></svg></button>
+    </div>`;
+  }).join('');
 
-  menu.innerHTML = state.authData ? `
-    <div class="account-menu-header">
-      <div class="avatar">${avatarHtml}</div>
-      <div class="account-menu-info">
-        <div class="account-menu-name">${escHtml(state.authData.profile.name)}</div>
-        <div class="account-menu-sub">${isOffline ? 'Offline account' : 'Microsoft account'}</div>
-      </div>
-    </div>
-    <div class="account-menu-divider"></div>
-    ${!isOffline ? `
-      <button class="account-menu-item" data-act="reauth">
-        <svg width="14" height="14" aria-hidden="true"><use href="#i-settings"/></svg>
-        Re-authenticate
-      </button>` : `
-      <button class="account-menu-item" data-act="signin">
-        <svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>
-        Sign in with Microsoft
-      </button>`}
-    <button class="account-menu-item" data-act="offline">
-      <svg width="14" height="14" aria-hidden="true"><use href="#i-user"/></svg>
-      Play offline
-    </button>
-    <button class="account-menu-item danger" data-act="signout">
-      <svg width="14" height="14" aria-hidden="true"><use href="#i-trash"/></svg>
-      Sign out
-    </button>
-  ` : `
+  menu.innerHTML = `${accountRows || '<div class="account-menu-empty">No saved accounts</div>'}
+    ${state.accounts.length > 3 ? `<button class="account-menu-item" data-act="toggle-more">${state.accountsExpanded ? 'Show less' : `Show ${state.accounts.length - 3} more`}</button>` : ''}
+    ${state.accounts.length ? '<div class="account-menu-divider"></div>' : ''}
     <button class="account-menu-item" data-act="signin">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>
-      Sign in with Microsoft
+      Add Microsoft account
     </button>
     <button class="account-menu-item" data-act="offline">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-user"/></svg>
-      Play offline
+      Add offline account
     </button>
   `;
   const row = $('account-row');
   if (!row) return;
   row.appendChild(menu);
-  menu.addEventListener('click', (e) => {
+  menu.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const act = e.target.closest('[data-act]')?.dataset.act;
-    if (act === 'signin' || act === 'reauth') handleAuth();
+    const action = e.target.closest('[data-act]');
+    const act = action?.dataset.act;
+    const key = action?.closest('[data-account-key]')?.dataset.accountKey;
+    if (act === 'signin') handleAuth();
     if (act === 'offline') openOfflineModal();
-    if (act === 'signout') signOut();
+    if (act === 'select-account' && key) {
+      await chooseAccount(key);
+      menu.remove();
+      toggleAccountMenu();
+      return;
+    }
+    if (act === 'delete-account' && key) await removeAccount(key);
+    if (act === 'toggle-more') {
+      state.accountsExpanded = !state.accountsExpanded;
+      menu.remove();
+      toggleAccountMenu();
+      return;
+    }
     menu.remove();
   });
 }
@@ -373,7 +447,7 @@ function bindTabBar() {
   const liveSearch = debounce(() => searchMods(false), 220);
   $('search-input')?.addEventListener('input', liveSearch);
   $('search-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchMods(false); });
-  ['filter-loader', 'filter-version', 'filter-category', 'results-sort'].forEach((id) => {
+  ['filter-loader', 'filter-version', 'filter-category', 'results-sort', 'catalog-source'].forEach((id) => {
     $(id)?.addEventListener(id === 'filter-category' ? 'input' : 'change',
       id === 'filter-category' ? debounce(() => searchMods(false), 220) : () => searchMods(false));
   });
@@ -574,6 +648,7 @@ function renderHome() {
 
   const recent = $('recent-cards');
   const grid = $('home-instance-grid');
+  renderRecentDestinations();
   if (!recent || !grid) return;
 
   if (!state.instances.length) {
@@ -619,6 +694,192 @@ function renderHome() {
       heroBtn.style.display = 'none';
     }
   }
+}
+
+async function loadRecentDestinations() {
+  try { state.recentDestinations = await api.getRecentDestinations() || []; }
+  catch { state.recentDestinations = []; }
+  renderRecentDestinations();
+}
+
+function renderRecentDestinations() {
+  const grid = $('destination-grid');
+  const header = $('destinations-header');
+  if (!grid || !header) return;
+  const items = state.recentDestinations.slice(0, 9);
+  grid.hidden = header.hidden = !items.length;
+  if (!items.length) { grid.innerHTML = ''; return; }
+  grid.innerHTML = items.map((item, index) => {
+    const isServer = item.type === 'multiplayer';
+    const title = item.label || item.identifier;
+    const detail = isServer ? item.address : item.folderName || item.identifier;
+    const hasDetail = String(title).toLowerCase() !== String(detail).toLowerCase();
+    const visitLabel = Number(item.launches) > 0
+      ? `${fmtNum(item.launches)} ${Number(item.launches) === 1 ? 'visit' : 'visits'}`
+      : (isServer ? 'Saved server' : 'Available world');
+    const image = item.iconData ? `<div class="destination-art"><img src="${escHtml(item.iconData)}" alt="${escHtml(title)} icon"></div>` : '';
+    const payload = escHtml(JSON.stringify({ type: item.type, identifier: item.identifier, address: item.address, label: item.label, instanceId: item.instanceId }));
+    return `<article class="destination-card${item.iconData ? ' has-art' : ''}${hasDetail ? ' has-detail' : ''}${item.deletedInstance ? ' deleted-instance' : ''}" data-destination-index="${index}" data-key="${escHtml(item.key || '')}">
+      <div class="destination-card-main">
+        ${image}
+        <div class="destination-info">
+          <span class="destination-kind">${isServer ? 'SERVER' : 'WORLD'} · ${escHtml(item.instanceName)}${item.deletedInstance ? ' <em>From a deleted instance</em>' : ''}</span>
+          <div class="destination-title-row">
+            <strong title="${escHtml(title)}">${escHtml(title)}</strong>
+            <input class="destination-name-input" value="${escHtml(title)}" maxlength="128" aria-label="Destination name" hidden>
+            <button class="destination-title-action" type="button" data-title-action="copy" aria-label="Copy ${escHtml(title)}"><svg aria-hidden="true"><use href="#i-copy"/></svg></button>
+            <button class="destination-title-action" type="button" data-title-action="edit" aria-label="Edit ${escHtml(title)} name"><svg aria-hidden="true"><use href="#i-edit"/></svg></button>
+          </div>
+          <span class="destination-address" title="${escHtml(detail)}">${escHtml(detail)}</span>
+          <span class="destination-stats">${visitLabel} · ${formatDestinationDate(item.lastUsed)}</span>
+        </div>
+      </div>
+      <div class="destination-actions" role="group" aria-label="${escHtml(title)} actions">
+        <button class="destination-action active" type="button" data-action="play" data-instance="${escHtml(item.instanceName)}" data-destination="${payload}"${item.deletedInstance ? ' disabled title="The original instance was deleted"' : ''}>
+          <svg aria-hidden="true"><use href="#i-play"/></svg><span>Play</span>
+        </button>
+        <button class="destination-action destination-action-remove" type="button" data-action="remove" data-instance="${escHtml(item.instanceName)}" data-destination="${payload}">
+          <svg aria-hidden="true"><use href="#i-trash"/></svg><span>Remove</span>
+        </button>
+        <div class="destination-action-indicator" aria-hidden="true"></div>
+      </div>
+    </article>`;
+  }).join('');
+
+  grid.querySelectorAll('.destination-card').forEach((card) => {
+    const item = items[Number(card.dataset.destinationIndex)];
+    if (!item) return;
+    card.querySelector('[data-title-action="copy"]')?.addEventListener('click', async () => {
+      const shownName = card.querySelector('.destination-title-row strong')?.textContent || item.label || item.identifier;
+      try {
+        await api.copyText(shownName);
+        toast('Destination name copied', 'success');
+      } catch (error) {
+        toast('Could not copy the name: ' + (error.message || error), 'error');
+      }
+    });
+    card.querySelector('[data-title-action="edit"]')?.addEventListener('click', () => beginDestinationRename(card, item));
+    card.querySelectorAll('.destination-action').forEach(button => button.addEventListener('click', async () => {
+      selectDestinationAction(card, button);
+      const destination = JSON.parse(button.dataset.destination);
+      if (button.dataset.action === 'play') {
+        launchInstance(button.dataset.instance, destination);
+        return;
+      }
+      button.disabled = true;
+      try {
+        await api.removeRecentDestination(button.dataset.instance, destination);
+        state.recentDestinations = state.recentDestinations.filter(entry => !(entry.key === item.key && entry.instanceName === item.instanceName));
+        renderRecentDestinations();
+        toast(`${item.label || item.identifier} removed from frequently visited`, 'success');
+      } catch (error) {
+        button.disabled = false;
+        selectDestinationAction(card, card.querySelector('[data-action="play"]'));
+        toast('Could not remove destination: ' + (error.message || error), 'error');
+      }
+    }));
+    if (item.type === 'multiplayer' && item.canFetchMetadata) hydrateServerMetadata(card, item);
+  });
+}
+
+function beginDestinationRename(card, item) {
+  const input = card.querySelector('.destination-name-input');
+  const title = card.querySelector('.destination-title-row strong');
+  if (!input || !title || card.classList.contains('saving-name')) return;
+  if (!card.classList.contains('editing-name')) {
+    input.value = title.textContent.trim();
+    input.hidden = false;
+    card.classList.add('editing-name');
+    requestAnimationFrame(() => { input.focus(); input.select(); });
+    input.onkeydown = (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); saveDestinationRename(card, item); }
+      if (event.key === 'Escape') { event.preventDefault(); cancelDestinationRename(card); }
+    };
+    return;
+  }
+  saveDestinationRename(card, item);
+}
+
+function cancelDestinationRename(card) {
+  const input = card.querySelector('.destination-name-input');
+  if (input) input.hidden = true;
+  card.classList.remove('editing-name', 'saving-name');
+}
+
+async function saveDestinationRename(card, item) {
+  const input = card.querySelector('.destination-name-input');
+  const title = card.querySelector('.destination-title-row strong');
+  const nextName = input?.value.replace(/[\r\n\0]+/g, ' ').trim();
+  if (!input || !title || !nextName || card.classList.contains('saving-name')) {
+    if (!nextName) toast('Enter a name first', 'error');
+    return;
+  }
+  card.classList.add('saving-name');
+  try {
+    const destination = { type: item.type, identifier: item.identifier, address: item.address, label: item.label };
+    const result = await api.renameRecentDestination(item.instanceName, destination, nextName);
+    item.label = result?.label || nextName;
+    item.customLabel = item.label;
+    item.hasCustomName = true;
+    title.textContent = item.label;
+    title.title = item.label;
+    card.querySelector('[data-title-action="copy"]')?.setAttribute('aria-label', `Copy ${item.label}`);
+    card.querySelector('[data-title-action="edit"]')?.setAttribute('aria-label', `Edit ${item.label} name`);
+    card.classList.add('has-detail', 'destination-renamed');
+    setTimeout(() => card.classList.remove('destination-renamed'), 700);
+    cancelDestinationRename(card);
+    toast('Destination name updated', 'success');
+  } catch (error) {
+    card.classList.remove('saving-name');
+    toast('Could not update the name: ' + (error.message || error), 'error');
+  }
+}
+
+function formatDestinationDate(value) {
+  const time = new Date(value || 0).getTime();
+  if (!Number.isFinite(time) || time <= 0) return 'Played recently';
+  const elapsed = Math.max(0, Date.now() - time);
+  if (elapsed < 60 * 60 * 1000) return 'Played recently';
+  if (elapsed < 24 * 60 * 60 * 1000) return `Played ${Math.max(1, Math.floor(elapsed / 3600000))}h ago`;
+  if (elapsed < 7 * 24 * 60 * 60 * 1000) return `Played ${Math.max(1, Math.floor(elapsed / 86400000))}d ago`;
+  return `Played ${new Date(time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
+function selectDestinationAction(card, selected) {
+  if (!card || !selected) return;
+  card.querySelectorAll('.destination-action').forEach(button => button.classList.toggle('active', button === selected));
+  card.querySelector('.destination-actions')?.classList.toggle('remove-selected', selected.dataset.action === 'remove');
+  const indicator = card.querySelector('.destination-action-indicator');
+  if (indicator) indicator.style.transform = `translateX(${selected.dataset.action === 'remove' ? '100%' : '0'})`;
+}
+
+async function hydrateServerMetadata(card, item) {
+  try {
+    const metadata = await api.getServerMetadata(item.instanceName, item.address);
+    if (!metadata || !card.isConnected) return;
+    if (!item.hasCustomName && metadata.name) {
+      const title = card.querySelector('.destination-info strong');
+      if (title) { title.textContent = metadata.name; title.title = metadata.name; card.classList.add('has-detail'); }
+    }
+    if (metadata.resolvedAddress) {
+      const address = card.querySelector('.destination-address');
+      if (address) {
+        address.textContent = `${item.address} · ${metadata.resolvedAddress}`;
+        address.title = address.textContent;
+      }
+    }
+    if (metadata.iconData && !card.querySelector('.destination-art')) {
+      const art = document.createElement('div');
+      art.className = 'destination-art';
+      const image = document.createElement('img');
+      image.src = metadata.iconData;
+      image.alt = `${metadata.name || item.label || item.address} icon`;
+      image.addEventListener('error', () => art.remove(), { once: true });
+      art.appendChild(image);
+      card.querySelector('.destination-card-main')?.prepend(art);
+      card.classList.add('has-art');
+    }
+  } catch {}
 }
 
 function homeGreetingText() {
@@ -848,10 +1109,13 @@ async function refreshContentCounts() {
 async function checkForModUpdates(instanceName) {
   try {
     const updates = await api.checkModUpdates(instanceName);
+    if (state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
     state.pendingModUpdates = updates || [];
   } catch {
+    if (state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
     state.pendingModUpdates = [];
   }
+  renderContentList();
 }
 
 function renderContentList() {
@@ -948,6 +1212,15 @@ async function updateMod(inst, mod) {
   if (!mod.projectId) return;
   toast('Checking for updates…', 'info');
   try {
+    if (String(mod.projectId).startsWith('curseforge:')) {
+      const update = state.pendingModUpdates.find(item => item.projectId === mod.projectId);
+      if (!update) { toast('Already up to date', 'success', 3000); return; }
+      await api.installCurseForgeContent(inst.name, { projectId: mod.projectId, fileId: Number(update.latestVersion), type: 'mod', replaceFilename: mod.filename });
+      await loadContentList();
+      await checkForModUpdates(inst.name);
+      toast(`${mod.title} updated`, 'success');
+      return;
+    }
     const loaders = inst.loader === 'vanilla' ? [] : [inst.loader];
     const versions = await findCompatibleVersion(mod.projectId, loaders, inst.gameVersion);
     if (!versions || !versions.length) {
@@ -967,10 +1240,6 @@ async function updateMod(inst, mod) {
 
 async function openContentAdder() {
   if (!state.currentInstance) return;
-  if (state.contentCategory === 'datapack') {
-    toast('Data packs belong to a specific world. Add them from that world’s datapacks folder.', 'info', 5000);
-    return;
-  }
   state.discoverCategory = state.contentCategory;
   $('discover-categories')?.querySelectorAll('[data-category]').forEach(chip => {
     chip.classList.toggle('chip-active', chip.dataset.category === state.discoverCategory);
@@ -1054,11 +1323,55 @@ async function saveInstanceSettings(button = null, { silent = false } = {}) {
 }
 
 // ── Auth ────────────────────────────────────────────────────
+async function refreshAccounts() {
+  try {
+    const result = await api.listAccounts();
+    state.accounts = result?.accounts || [];
+    state.selectedAccountKey = result?.selectedKey || null;
+  } catch {
+    state.accounts = [];
+    state.selectedAccountKey = null;
+  }
+}
+
+async function chooseAccount(key) {
+  try {
+    state.authData = await api.selectAccount(key);
+    await refreshAccounts();
+    updateAuthUI();
+    updatePride();
+    renderHome();
+    toast(`Using ${state.authData.profile.name}`, 'success');
+    return true;
+  } catch (error) {
+    toast('Could not switch account: ' + (error.message || error), 'error');
+    return false;
+  }
+}
+
+async function removeAccount(key) {
+  const account = state.accounts.find(item => item.key === key);
+  if (!account || !confirm(`Delete ${account.profile.name} from Pine Launcher?`)) return;
+  try {
+    const result = await api.deleteAccount(key);
+    state.accounts = result?.accounts || [];
+    state.selectedAccountKey = result?.selectedKey || null;
+    state.authData = result?.selected || null;
+    updateAuthUI();
+    updatePride();
+    renderHome();
+    toast('Account removed', 'success');
+  } catch (error) {
+    toast('Could not remove account: ' + (error.message || error), 'error');
+  }
+}
+
 async function handleAuth() {
   const nameEl = $('account-name');
   if (nameEl) nameEl.textContent = 'Logging in…';
   try {
     state.authData = await api.microsoftLogin();
+    await refreshAccounts();
     updateAuthUI(); updatePride();
     setStatus(`Signed in as ${state.authData.profile.name}`);
     toast('Signed in', 'success');
@@ -1073,7 +1386,8 @@ async function handleAuth() {
 async function signOut() {
   try {
     await api.signOut();
-    state.authData = null;
+    await refreshAccounts();
+    state.authData = await api.getAuth();
     updateAuthUI();
     setStatus('Signed out');
     toast('Signed out', 'success');
@@ -1118,6 +1432,7 @@ function openOfflineModal() {
     okBtn.disabled = true;
     try {
       state.authData = await api.offlineLogin(name);
+      await refreshAccounts();
       updateAuthUI(); updatePride();
       setStatus(`Playing offline as ${name}`);
       toast('Offline account set', 'success');
@@ -1142,6 +1457,12 @@ function openAccountRequiredModal(instanceName) {
   overlay.id = 'account-required-modal';
   overlay.className = 'modal-root visible';
   overlay.style.zIndex = '320';
+  const alternativeAccounts = state.accounts.filter(account => account.key !== state.selectedAccountKey);
+  const alternatives = alternativeAccounts.length ? [
+    '<div class="account-required-saved"><label>Other saved accounts</label>',
+    ...alternativeAccounts.map(account => `<button class="btn btn-secondary" data-saved-account="${escHtml(account.key)}" type="button">${escHtml(account.profile.name)} · ${account.meta?.type === 'offline' ? 'Offline' : 'Microsoft'}</button>`),
+    '</div>',
+  ].join('') : '';
   overlay.innerHTML = [
     '<div class="modal" style="max-width:470px">',
     '<div class="modal-header">',
@@ -1150,6 +1471,7 @@ function openAccountRequiredModal(instanceName) {
     '<button class="modal-close" data-close type="button" aria-label="Close">X</button>',
     '</div>',
     '<div class="modal-body">',
+    alternatives,
     '<label for="required-offline-name">Offline username</label>',
     '<input id="required-offline-name" class="input" placeholder="Enter 3-16 characters" autocomplete="off" maxlength="16" spellcheck="false">',
     '<div id="required-account-error" class="modal-error text-muted" hidden></div>',
@@ -1188,6 +1510,7 @@ function openAccountRequiredModal(instanceName) {
     microsoftButton.disabled = true;
     try {
       state.authData = await api.offlineLogin(offlineName);
+      await refreshAccounts();
       updateAuthUI();
       updatePride();
       setStatus('Playing offline as ' + offlineName);
@@ -1201,6 +1524,21 @@ function openAccountRequiredModal(instanceName) {
   };
 
   offlineButton.addEventListener('click', useOffline);
+  overlay.querySelectorAll('[data-saved-account]').forEach(button => button.addEventListener('click', async () => {
+    offlineButton.disabled = true;
+    microsoftButton.disabled = true;
+    try {
+      const selected = await chooseAccount(button.dataset.savedAccount);
+      if (selected && state.authData?.profile) return continueLaunch();
+      showError('Could not switch to that saved account.');
+      offlineButton.disabled = false;
+      microsoftButton.disabled = false;
+    } catch (accountError) {
+      showError(accountError.message || 'Could not switch accounts.');
+      offlineButton.disabled = false;
+      microsoftButton.disabled = false;
+    }
+  }));
   microsoftButton.addEventListener('click', async () => {
     offlineButton.disabled = true;
     microsoftButton.disabled = true;
@@ -1251,8 +1589,8 @@ function updateAuthUI() {
 }
 
 function updatePride() {
-  const name = state.authData?.profile?.name || '';
-  const eligible = name === 'undrrwrldd' || name === 'Se62em' || name === 'Shemes' || name === 'Exobeast';
+  const name = (state.authData?.profile?.name || '').toLowerCase();
+  const eligible = new Set(['undrrwrldd', 'se62em', 'shemes', 'exobeast']).has(name);
   const enabled = eligible && state.settings.gayMode !== false;
   document.documentElement.classList.toggle('pride-mode', !!enabled);
   const row = $('gay-mode-row');
@@ -1283,6 +1621,7 @@ function renderSettingsLayout() {
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
       <button data-cat="discord">Discord</button>
+      <button data-cat="integrations">Integrations</button>
       <button data-cat="updates">Updates</button>
     </nav>
     <div class="settings-form">
@@ -1402,6 +1741,16 @@ function renderSettingsLayout() {
           <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Pine verifies the release package before installation.</p>
         </div>
       </div>
+      <div class="settings-pane" data-cat="integrations">
+        <div class="settings-card">
+          <div class="settings-card-title">Content catalogs</div>
+          <div class="settings-row"><label>CurseForge API key</label>
+            <input id="set-curseforge-key" class="input" type="password" value="${escHtml(s.curseForgeApiKey || '')}" placeholder="Required for CurseForge search and downloads" autocomplete="off">
+          </div>
+          <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Pine sends this key only to api.curseforge.com. You can also set PINE_CURSEFORGE_API_KEY instead of saving it here.</p>
+        </div>
+        <button class="btn btn-primary set-save-btn">Save settings</button>
+      </div>
     </div>
   `;
   layout.querySelectorAll('.settings-nav button').forEach((btn) => {
@@ -1478,6 +1827,7 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
     discordPresence: $('set-discord-presence')?.checked !== false,
     discordShowInstance: $('set-discord-instance')?.checked !== false,
     discordShowServer: $('set-discord-server')?.checked !== false,
+    curseForgeApiKey: $('set-curseforge-key')?.value.trim() || '',
   };
   try {
     state.settings = await api.saveSettings(state.settings);
@@ -1807,7 +2157,9 @@ function showDeleteConfirm() {
   if (!inst) return;
   const root = $('confirm-dialog-root');
   const nameEl = $('confirm-instance-name');
+  const deleteButton = $('confirm-delete');
   if (nameEl) nameEl.textContent = inst.name || '';
+  if (deleteButton) { deleteButton.disabled = false; deleteButton.textContent = 'Delete'; }
   if (!root) return;
   root.removeAttribute('hidden');
   requestAnimationFrame(() => root.classList.add('visible'));
@@ -1818,12 +2170,15 @@ function closeConfirmDialog() {
   if (!root) return;
   root.classList.remove('visible');
   root.setAttribute('hidden', '');
+  const deleteButton = $('confirm-delete');
+  if (deleteButton) { deleteButton.disabled = false; deleteButton.textContent = 'Delete'; }
 }
 
 async function deleteInstance() {
   const inst = state.currentInstance;
   if (!inst) return;
   const btn = $('confirm-delete');
+  if (btn?.disabled) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
   try {
     await api.deleteInstance(inst.name);
@@ -1831,6 +2186,7 @@ async function deleteInstance() {
     closeEditSheet();
     state.currentInstance = null;
     await loadInstances();
+    await loadRecentDestinations();
     switchView('library');
     setStatus('Instance deleted');
   } catch (e) {
@@ -2250,7 +2606,7 @@ function launchErrorMessage(error) {
 }
 
 function isAccountRequiredError(error) {
-  return /sign in with microsoft|offline account|choose an account/i.test(launchErrorMessage(error));
+  return /sign in with microsoft|offline account|choose an account|microsoft session expired|session .*revoked/i.test(launchErrorMessage(error));
 }
 
 function bindLaunchEvents() {
@@ -2288,6 +2644,7 @@ function bindLaunchEvents() {
     if (state.currentInstance) $('instance-play-btn')?.removeAttribute('disabled');
     state.launchingName = null;
     renderAllInstanceCards();
+    loadRecentDestinations();
   });
   api.onLaunchLog((line) => appendLog(line));
   api.onLaunchMetrics((m) => updateDockedMetrics(m));
@@ -2305,7 +2662,7 @@ function bindLaunchEvents() {
   });
 }
 
-function launchInstance(name) {
+function launchInstance(name, destination = null) {
   if (state.launchingName) return;
   if (!state.authData?.profile) {
     openAccountRequiredModal(name);
@@ -2323,7 +2680,8 @@ function launchInstance(name) {
   // Event handlers cover failures after a launcher client exists. Rejections
   // before that point (auth refresh, missing account, registry errors) must
   // also reset the UI.
-  api.launchInstance(name).catch((e) => {
+  const launchPromise = destination ? api.launchDestination(name, destination) : api.launchInstance(name);
+  launchPromise.catch((e) => {
     if (state.launchingName !== name) return;
     const message = launchErrorMessage(e);
     state.launchingName = null;
@@ -2476,11 +2834,12 @@ async function searchMods(append = false) {
   const version = $('filter-version')?.value || '';
   const category = $('filter-category')?.value.trim() || '';
   const sort = $('results-sort')?.value || 'relevance';
+  const source = $('catalog-source')?.value || 'all';
   const facets = [['project_type:' + (state.discoverCategory || 'mod')]];
   if (loader) facets.push(['categories:' + loader]);
   if (version) facets.push(['versions:' + version]);
   if (category) facets.push(['categories:' + category]);
-  const searchKey = JSON.stringify({ query, loader, version, category, sort, type: state.discoverCategory });
+  const searchKey = JSON.stringify({ query, loader, version, category, sort, source, type: state.discoverCategory });
   const requestId = ++state.searchRequestId;
   state.activeSearchKey = searchKey;
   state.searchLoading = true;
@@ -2498,11 +2857,21 @@ async function searchMods(append = false) {
   }
 
   try {
-    const result = await api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort);
+    const requests = [];
+    if (source === 'all' || source === 'modrinth') {
+      requests.push(api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort).then(value => ({ source: 'modrinth', value })));
+    }
+    if (source === 'all' || source === 'curseforge') {
+      requests.push(api.searchCurseForge(query, { type: state.discoverCategory, loader, gameVersion: version, offset: state.searchOffset, limit: SEARCH_LIMIT, sort }).then(value => ({ source: 'curseforge', value })));
+    }
+    const settled = await Promise.allSettled(requests);
     if (requestId !== state.searchRequestId || searchKey !== state.activeSearchKey) return;
-    const hits = result.hits || [];
-    state.searchOffset += hits.length;
-    const total = result.total_hits || hits.length;
+    const successful = settled.filter(item => item.status === 'fulfilled').map(item => item.value);
+    if (!successful.length) throw settled[0]?.reason || new Error('No catalog was available');
+    const hits = successful.flatMap(item => (item.value.hits || []).map(hit => ({ ...hit, source: hit.source || item.source })));
+    state.searchOffset += SEARCH_LIMIT;
+    const total = successful.reduce((sum, item) => sum + (item.value.total_hits || item.value.hits?.length || 0), 0);
+    const unavailable = settled.length - successful.length;
     const took = Math.round(performance.now() - state.searchStartTime);
 
     if (!hits.length && !append) {
@@ -2515,7 +2884,7 @@ async function searchMods(append = false) {
       </div>`;
       return;
     }
-    count.textContent = `${fmtNum(total)} results · ${took} ms`;
+    count.textContent = `${fmtNum(total)} results · ${took} ms${unavailable ? ' · one catalog unavailable' : ''}`;
 
     const html = hits.map((mod) => `
       <div class="mod-card" data-pid="${escHtml(mod.project_id || '')}">
@@ -2524,7 +2893,7 @@ async function searchMods(append = false) {
         </div>
         <div class="mod-card-body">
           <div class="mod-card-title">${escHtml(mod.title || mod.name)}</div>
-          <div class="mod-card-author">by ${escHtml(mod.author || 'unknown')}</div>
+          <div class="mod-card-author">by ${escHtml(mod.author || 'unknown')} · ${mod.source === 'curseforge' ? 'CurseForge' : 'Modrinth'}</div>
           <div class="mod-card-desc">${escHtml(mod.description || '')}</div>
           <div class="mod-card-footer">
             <span class="mod-card-dls">${fmtNum(mod.downloads)} downloads</span>
@@ -2533,7 +2902,11 @@ async function searchMods(append = false) {
         </div>
       </div>
     `).join('');
-    if (append) grid.insertAdjacentHTML('beforeend', html);
+    if (append) {
+      grid.insertAdjacentHTML('beforeend', html);
+      const cards = [...grid.querySelectorAll('.mod-card')];
+      cards.slice(0, Math.max(0, cards.length - DISCOVER_DOM_LIMIT)).forEach(card => card.remove());
+    }
     else {
       const cards = grid.querySelectorAll('.mod-card');
       if (cards.length) {
@@ -2547,10 +2920,11 @@ async function searchMods(append = false) {
     grid.querySelectorAll('.mod-card:not([data-bound])').forEach((card) => {
       card.setAttribute('data-bound', '');
       const pid = card.dataset.pid;
-      card.addEventListener('click', () => showModDetails(pid));
+      card.addEventListener('click', () => pid.startsWith('curseforge:') ? showCurseForgeDetails(pid) : showModDetails(pid));
       card.querySelector('[data-act="install"]')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        installModFromSearch(pid);
+        if (pid.startsWith('curseforge:')) showCurseForgeDetails(pid, true);
+        else installModFromSearch(pid);
       });
     });
     if (state.searchOffset < total && hits.length >= SEARCH_LIMIT) loadMoreBtn?.removeAttribute('hidden');
@@ -2881,5 +3255,97 @@ async function showModDetails(projectId) {
     });
   } catch (e) {
     setStatus('Failed to load mod: ' + (e.message || e));
+  }
+}
+
+async function showCurseForgeDetails(projectId, focusInstall = false) {
+  const type = state.discoverCategory || 'mod';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  overlay.style.zIndex = '320';
+  overlay.innerHTML = `<div class="modal-backdrop"></div><div class="modal-card modal-card-wide">
+    <div class="modal-head"><div><h2 class="modal-title">Loading CurseForge project…</h2><p class="modal-sub">Checking compatible files</p></div><button class="icon-btn" data-close type="button"><svg width="16" height="16"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body"><div class="skeleton skeleton-block"></div></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('[data-close]').addEventListener('click', close);
+  overlay.querySelector('.modal-backdrop').addEventListener('click', close);
+  try {
+    const project = await api.getCurseForgeProject(projectId);
+    const defaultInstance = state.currentInstance || sortByRecency(state.instances)[0] || null;
+    overlay.querySelector('.modal-title').textContent = project.name || 'CurseForge project';
+    overlay.querySelector('.modal-sub').textContent = `CurseForge · ${fmtNum(project.downloadCount || 0)} downloads`;
+    const body = overlay.querySelector('.modal-body');
+    body.innerHTML = `<p class="modal-description">${escHtml(project.summary || 'No description supplied.')}</p>
+      ${type === 'modpack' ? `
+        <label>New instance name</label><input id="cf-pack-name" class="input" maxlength="64" value="${escHtml(project.name || 'CurseForge Pack')}">
+      ` : `
+        <label>Install into</label><select id="cf-instance" class="input">${state.instances.map(instance => `<option value="${escHtml(instance.name)}" ${instance.name === defaultInstance?.name ? 'selected' : ''}>${escHtml(instance.name)} · ${escHtml(instance.gameVersion)} · ${escHtml(instance.loader)}</option>`).join('')}</select>
+      `}
+      <label>Compatible file</label><select id="cf-file" class="input"><option>Loading…</option></select>
+      <div id="cf-world-wrap" hidden><label>World</label><select id="cf-world" class="input"></select></div>
+      <div id="cf-error" class="modal-error text-muted" hidden></div>
+      <div class="modal-actions"><button class="btn btn-ghost" data-close-action type="button">Cancel</button><button class="btn btn-primary" id="cf-install" type="button" ${type !== 'modpack' && !state.instances.length ? 'disabled' : ''}>${type === 'modpack' ? 'Import modpack' : 'Install'}</button></div>`;
+    body.querySelector('[data-close-action]').addEventListener('click', close);
+    const instanceSelect = body.querySelector('#cf-instance');
+    const fileSelect = body.querySelector('#cf-file');
+    const worldWrap = body.querySelector('#cf-world-wrap');
+    const worldSelect = body.querySelector('#cf-world');
+    const error = body.querySelector('#cf-error');
+    let availableFiles = [];
+    const showError = message => { error.hidden = false; error.textContent = message; };
+    const loadOptions = async () => {
+      error.hidden = true;
+      fileSelect.disabled = true;
+      fileSelect.innerHTML = '<option>Loading…</option>';
+      try {
+        availableFiles = await api.getCurseForgeFiles(projectId, type === 'modpack' ? null : instanceSelect.value);
+        fileSelect.innerHTML = '';
+        for (const file of availableFiles) {
+          const option = document.createElement('option');
+          option.value = String(file.id);
+          option.textContent = file.displayName || file.fileName || String(file.id);
+          fileSelect.appendChild(option);
+        }
+        fileSelect.disabled = !availableFiles.length;
+        if (!availableFiles.length) showError('No compatible files were found for this instance.');
+        if (type === 'datapack') {
+          const worlds = await api.getInstanceWorlds(instanceSelect.value);
+          worldWrap.hidden = false;
+          worldSelect.innerHTML = '';
+          for (const world of worlds) {
+            const option = document.createElement('option'); option.value = world; option.textContent = world; worldSelect.appendChild(option);
+          }
+          if (!worlds.length) showError('Create or copy a world into this instance before installing a data pack.');
+        }
+      } catch (loadError) { showError(loadError.message || loadError); }
+    };
+    instanceSelect?.addEventListener('change', loadOptions);
+    await loadOptions();
+    const installButton = body.querySelector('#cf-install');
+    installButton.addEventListener('click', async () => {
+      if (!fileSelect.value || fileSelect.disabled) return;
+      installButton.disabled = true;
+      error.hidden = true;
+      try {
+        if (type === 'modpack') {
+          await api.importCurseForgeModpack({ projectId, fileId: Number(fileSelect.value), name: body.querySelector('#cf-pack-name').value });
+          await loadInstances();
+          toast('CurseForge modpack imported', 'success');
+        } else {
+          await api.installCurseForgeContent(instanceSelect.value, { projectId, fileId: Number(fileSelect.value), type, world: worldSelect?.value || null });
+          if (state.currentInstance?.name === instanceSelect.value) await loadContentList();
+          toast(`${project.name} installed`, 'success');
+        }
+        close();
+      } catch (installError) {
+        showError(installError.message || installError);
+        installButton.disabled = false;
+      }
+    });
+    if (focusInstall) installButton.focus();
+  } catch (error) {
+    overlay.querySelector('.modal-body').innerHTML = `<div class="modal-error">${escHtml(error.message || error)}</div>`;
   }
 }

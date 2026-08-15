@@ -27,17 +27,19 @@ Pine supports Windows 10 and Windows 11. The launcher downloads and verifies the
 ## Features
 
 - Separate Vanilla, Fabric, Quilt, and Forge instances.
-- Microsoft login with secure operating-system-backed token storage when available.
-- Offline accounts for servers that allow offline authentication.
-- Modrinth discovery for mods, resource packs, shaders, data packs, and mod packs.
+- Multiple Microsoft and offline accounts with individual switching and deletion.
+- Modrinth discovery plus optional CurseForge mods, packs, and data packs using an approved API key.
+- A polished frequently visited grid with real server/world details and one-click Play.
 - Shared verified caches for game assets, libraries, versions, and mods—so matching files are reused instead of downloaded again for every new instance.
 - Clear launch stages and selectable, copyable logs for troubleshooting.
 
 NeoForge is not currently offered until its installer/profile flow is implemented and tested.
 
+CurseForge requires an approved third-party API key. Add it under **Settings → Integrations** or set `PINE_CURSEFORGE_API_KEY`; Pine does not ship a private developer key in source control.
+
 ## Privacy and safety
 
-Microsoft login uses OAuth with PKCE. Account tokens are encrypted through Electron secure storage when it is available. Modrinth downloads use HTTPS, verify available hashes, reject unsafe filenames, resolve required dependencies, and roll back partial installations.
+Microsoft login uses OAuth with PKCE. Microsoft refresh tokens are saved only when Electron's operating-system-backed secure storage is available; Pine refuses to persist them as plaintext. Content downloads use HTTPS, verify available hashes, reject unsafe filenames, resolve required dependencies, and roll back partial installations.
 
 Instances, encrypted account data, settings, caches, and diagnostic logs are stored in Pine Launcher's per-user Windows application-data directory. Uninstalling Pine removes the application files but keeps worlds and other user data.
 

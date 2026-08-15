@@ -1,7 +1,7 @@
 const RELEASES = {
-  universal: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup.exe',
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/latest/download/PineLauncherSetup-arm64.exe'
+  universal: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.14/PineLauncherSetup.exe',
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.14/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.14/PineLauncherSetup-arm64.exe'
 };
 document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.universal; });
 
@@ -38,6 +38,8 @@ async function syncLatestRelease() {
     hashButton.dataset.hash = digest;
     const code = hashButton.querySelector('code');
     if (code) code.textContent = `${digest.slice(0, 8)}…${digest.slice(-8)}`;
+    const virusTotal = document.querySelector('[data-virustotal]');
+    if (virusTotal) virusTotal.href = `https://www.virustotal.com/gui/file/${digest.toLowerCase()}`;
   }
 }
 syncLatestRelease().catch(() => {});

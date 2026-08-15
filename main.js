@@ -12,10 +12,12 @@ const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSuppo
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
 const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
 const { extractZipOnWindows } = require('./lib/runtime-extraction');
-const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
+const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineDuplicateModIds, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const { createUpdateManager } = require('./lib/updater');
-const { DiscordPresence, parseGamePresenceLine, serverDisplayAddress } = require('./lib/discord-presence');
+const { DiscordPresence, isPrivateServerAddress, normalizeServerIcon, parseGamePresenceLine, readSavedServers, serverDisplayAddress } = require('./lib/discord-presence');
+const { deleteAccount, normalizeAuthStore, publicAccounts, selectAccount, selectedAccount, upsertAccount } = require('./lib/account-store');
+const { destinationKey, listWorlds, newestWorld, rankDestinations, readActivity, recordDestination, removeDestination, sanitizeDestination } = require('./lib/activity-store');
 const portableFetch = (...args) => net.fetch(...args);
 installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
 
@@ -47,6 +49,7 @@ const GLOBAL_LIBRARIES_DIR = path.join(GLOBAL_DIR, 'libraries');
 const GLOBAL_VERSIONS_DIR = path.join(GLOBAL_DIR, 'versions');
 const INSTANCES_FILE = path.join(INSTANCES_DIR, 'registry.json');
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
+const DESTINATION_CATALOG_FILE = path.join(app.getPath('userData'), 'recent-destinations.json');
 function getAuthFile() { return path.join(app.getPath('userData'), 'auth.json'); }
 const MOD_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'mods');
 const LOG_DIR = path.join(app.getPath('userData'), 'logs');
@@ -113,7 +116,7 @@ function setPresenceContext(context, settings) {
 
 function updatePresenceFromGameLine(line, instance, instanceDir, settings, startTimestamp) {
   const event = parseGamePresenceLine(line);
-  if (!event) return;
+  if (!event) return null;
   if (event.type === 'multiplayer') {
     const serverName = serverDisplayAddress(event.address, event.port);
     setPresenceContext({ type: 'game', instance, mode: 'multiplayer', serverName, startTimestamp }, settings);
@@ -122,6 +125,7 @@ function updatePresenceFromGameLine(line, instance, instanceDir, settings, start
   } else {
     setPresenceContext({ type: 'game', instance, mode: 'menu', startTimestamp }, settings);
   }
+  return event;
 }
 
 // ── MC version → Java version map (fallback) ──────────────
@@ -159,6 +163,84 @@ function readJSON(file) {
 function writeJSON(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
+
+function destinationCatalogId(value) {
+  const instanceRef = String(value?.instanceId || value?.instanceName || '').trim();
+  const key = String(value?.key || destinationKey(value)).trim();
+  return instanceRef && key ? `${instanceRef}\0${key}` : '';
+}
+
+function readDestinationCatalog() {
+  const value = readJSON(DESTINATION_CATALOG_FILE);
+  return Array.isArray(value?.items) ? value.items.slice(0, 100) : [];
+}
+
+function writeDestinationCatalog(items) {
+  writeJSON(DESTINATION_CATALOG_FILE, { version: 1, items: items.filter(Boolean).slice(0, 100) });
+}
+
+function syncDestinationCatalog(liveItems, registry) {
+  const existing = readDestinationCatalog();
+  const previous = new Map(existing.map(item => [destinationCatalogId(item), item]).filter(([id]) => id));
+  const liveIds = new Set();
+  const normalizedLive = liveItems.map(item => {
+    const id = destinationCatalogId(item);
+    const old = previous.get(id);
+    liveIds.add(id);
+    return {
+      ...item,
+      customLabel: old?.customLabel || item.customLabel || null,
+      label: old?.customLabel || item.label,
+      deletedInstance: false,
+    };
+  });
+  const activeIds = new Set(registry.map(item => String(item.id || item.created || item.name)));
+  const deleted = existing
+    .filter(item => !liveIds.has(destinationCatalogId(item)) && !activeIds.has(String(item.instanceId || '')) && (Number(item.launches) || 0) > 0)
+    .map(item => ({ ...item, deletedInstance: true, label: item.customLabel || item.label }));
+  writeDestinationCatalog([...normalizedLive, ...deleted]);
+  return [...normalizedLive, ...deleted];
+}
+
+function archiveDeletedInstance(instance) {
+  const instanceDir = getInstanceDir(instance);
+  const activity = readActivity(path.join(instanceDir, '.pine-activity.json'));
+  const savedServers = readSavedServers(instanceDir);
+  const worlds = new Map(listWorlds(path.join(instanceDir, 'saves')).map(world => [world.identifier.toLowerCase(), world]));
+  const existing = readDestinationCatalog();
+  const byId = new Map(existing.map(item => [destinationCatalogId(item), item]).filter(([id]) => id));
+  for (const destination of activity.destinations || []) {
+    if ((Number(destination.launches) || 0) < 1) continue;
+    const clean = sanitizeDestination(destination);
+    if (!clean) continue;
+    const key = destinationKey(clean);
+    const saved = clean.type === 'multiplayer'
+      ? savedServers.find(server => destinationKey({ type: 'multiplayer', address: server.ip }) === key)
+      : null;
+    const world = clean.type === 'singleplayer' ? worlds.get(clean.identifier.toLowerCase()) : null;
+    const savedName = String(saved?.name || '').replace(/[\r\n\0]+/g, ' ').trim();
+    const usefulName = savedName && !/^(?:minecraft|multiplayer) server$/i.test(savedName);
+    const item = {
+      ...clean,
+      key,
+      instanceId: String(instance.id || instance.created || instance.name),
+      instanceName: instance.name,
+      gameVersion: instance.gameVersion,
+      loader: instance.loader,
+      label: clean.type === 'multiplayer' ? (usefulName ? savedName.slice(0, 128) : clean.identifier) : (world?.name || clean.label),
+      folderName: world?.identifier,
+      iconData: clean.type === 'multiplayer' ? normalizeServerIcon(saved?.icon) : world?.iconData,
+      launches: Number(destination.launches) || 0,
+      lastUsed: destination.lastUsed || instance.lastPlayed || instance.created,
+      canFetchMetadata: clean.type === 'multiplayer' && !isPrivateServerAddress(clean.identifier),
+      deletedInstance: true,
+    };
+    const id = destinationCatalogId(item);
+    const old = byId.get(id);
+    byId.set(id, { ...item, customLabel: old?.customLabel || null, label: old?.customLabel || item.label });
+  }
+  writeDestinationCatalog([...byId.values()]);
 }
 
 function ensureDir(dir) {
@@ -205,9 +287,14 @@ function parseJvmArgs(value) {
 }
 
 // ── Safe auth storage ───────────────────────────────────────
-function writeAuth(data) {
-  const json = JSON.stringify(data);
+function writeAuthStore(store) {
+  const normalized = normalizeAuthStore(store);
+  if (!safeStorage.isEncryptionAvailable() && normalized.accounts.some(account => account.meta?.type !== 'offline')) {
+    throw new Error('Windows secure credential storage is unavailable, so Pine will not save Microsoft refresh tokens on this PC');
+  }
+  const json = JSON.stringify(normalized);
   const file = getAuthFile();
+  ensureDir(path.dirname(file));
   if (safeStorage.isEncryptionAvailable()) {
     const encrypted = safeStorage.encryptString(json);
     fs.writeFileSync(file, encrypted);
@@ -216,19 +303,29 @@ function writeAuth(data) {
   }
 }
 
-function readAuth() {
+function readAuthStore() {
   try {
     const file = getAuthFile();
     if (!fs.existsSync(file)) return null;
     const raw = fs.readFileSync(file);
     if (safeStorage.isEncryptionAvailable()) {
       const decrypted = safeStorage.decryptString(raw);
-      return JSON.parse(decrypted);
+      return normalizeAuthStore(JSON.parse(decrypted));
     }
-    return JSON.parse(raw.toString('utf8'));
+    return normalizeAuthStore(JSON.parse(raw.toString('utf8')));
   } catch {
-    return null;
+    return normalizeAuthStore(null);
   }
+}
+
+function writeAuth(data) {
+  const store = upsertAccount(readAuthStore(), data);
+  writeAuthStore(store);
+  return selectedAccount(store);
+}
+
+function readAuth() {
+  return selectedAccount(readAuthStore());
 }
 
 // ── Offline (username-only) auth ────────────────────────────
@@ -762,14 +859,24 @@ async function refreshMicrosoftAuth(authData) {
   if (!authData?.refresh_token || authData.meta?.type === 'offline') return authData;
   // Refresh proactively after 20 minutes; Minecraft access tokens are short-lived.
   if (authData.refreshedAt && Date.now() - authData.refreshedAt < 20 * 60 * 1000) return authData;
-  const tokenData = await jsonResponse(await portableFetch('https://login.live.com/oauth20_token.srf', {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: CLIENT_ID, refresh_token: authData.refresh_token, redirect_uri: REDIRECT_URI, grant_type: 'refresh_token', scope: 'XboxLive.signin offline_access' }),
-    signal: AbortSignal.timeout(15000),
-  }), 'Microsoft token refresh');
-  const refreshed = await minecraftAuthFromMicrosoft(tokenData.access_token, tokenData.refresh_token || authData.refresh_token);
-  writeAuth(refreshed);
-  return refreshed;
+  try {
+    const tokenData = await jsonResponse(await portableFetch('https://login.live.com/oauth20_token.srf', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: CLIENT_ID, refresh_token: authData.refresh_token, redirect_uri: REDIRECT_URI, grant_type: 'refresh_token', scope: 'XboxLive.signin offline_access' }),
+      signal: AbortSignal.timeout(15000),
+    }), 'Microsoft token refresh');
+    const refreshed = await minecraftAuthFromMicrosoft(tokenData.access_token, tokenData.refresh_token || authData.refresh_token);
+    writeAuth(refreshed);
+    return refreshed;
+  } catch (error) {
+    // A rejected refresh token is not a generic launch failure. Tell the
+    // renderer to reopen the chooser so the player can repair this account,
+    // switch to another saved account, or deliberately use offline mode.
+    if (/Microsoft token refresh failed \((?:400|401|403)\)/i.test(error?.message || '')) {
+      throw new Error('Your Microsoft session expired or was revoked. Sign in again, choose another saved account, or use an offline account.');
+    }
+    throw error;
+  }
 }
 
 async function microsoftLogin() {
@@ -957,6 +1064,86 @@ async function modrinthFetch(path) {
     modrinthResponseCache.delete(path);
     throw e;
   }
+}
+
+const CURSEFORGE_API = 'https://api.curseforge.com/v1';
+const CURSEFORGE_CLASS_IDS = Object.freeze({ mod: 6, resourcepack: 12, modpack: 4471, datapack: 6945, shader: 6552 });
+const CURSEFORGE_LOADER_TYPES = Object.freeze({ forge: 1, fabric: 4, quilt: 5, neoforge: 6 });
+const curseForgeResponseCache = new Map();
+const serverMetadataCache = new Map();
+
+function curseForgeApiKey() {
+  const fromEnvironment = String(process.env.PINE_CURSEFORGE_API_KEY || '').trim();
+  if (fromEnvironment) return fromEnvironment;
+  return String(readJSON(SETTINGS_FILE)?.curseForgeApiKey || '').trim();
+}
+
+function verifyCurseForgeFile(file, destination) {
+  const stat = fs.statSync(destination);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('CurseForge download was empty');
+  if (Number(file?.fileLength) > 0 && stat.size !== Number(file.fileLength)) throw new Error('CurseForge download size did not match');
+  const expected = (file?.hashes || []).find(hash => hash.algo === 1) || (file?.hashes || []).find(hash => hash.algo === 2);
+  if (!expected?.value) return true;
+  const algorithm = expected.algo === 1 ? 'sha1' : 'md5';
+  const actual = crypto.createHash(algorithm).update(fs.readFileSync(destination)).digest('hex');
+  if (actual.toLowerCase() !== String(expected.value).toLowerCase()) throw new Error(`CurseForge ${algorithm.toUpperCase()} checksum did not match`);
+  return true;
+}
+
+async function curseForgeFetch(apiPath) {
+  const apiKey = curseForgeApiKey();
+  if (!apiKey) throw new Error('Add a CurseForge API key in Settings → Integrations to enable this catalog');
+  const now = Date.now();
+  const cached = curseForgeResponseCache.get(apiPath);
+  if (cached && cached.expires > now) return cached.promise;
+  const promise = (async () => {
+    const response = await portableFetch(`${CURSEFORGE_API}${apiPath}`, {
+      headers: { Accept: 'application/json', 'x-api-key': apiKey },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`CurseForge ${response.status}: ${response.statusText}`);
+    const body = await response.json();
+    return body;
+  })();
+  curseForgeResponseCache.set(apiPath, { expires: now + (apiPath.startsWith('/mods/search?') ? 10000 : 60000), promise });
+  while (curseForgeResponseCache.size > 500) curseForgeResponseCache.delete(curseForgeResponseCache.keys().next().value);
+  try { return await promise; }
+  catch (error) { curseForgeResponseCache.delete(apiPath); throw error; }
+}
+
+async function fetchServerMetadata(address) {
+  const displayAddress = serverDisplayAddress(address);
+  if (!displayAddress || displayAddress === 'Minecraft server' || isPrivateServerAddress(displayAddress)) return null;
+  const host = displayAddress.replace(/^\[|\](?::\d+)?$/g, '').replace(/:\d+$/, '');
+  if (!host.includes('.') && !host.includes(':')) return null;
+  const key = displayAddress.toLowerCase();
+  const now = Date.now();
+  const cached = serverMetadataCache.get(key);
+  if (cached && cached.expires > now) return cached.promise;
+  const promise = (async () => {
+    try {
+      const response = await portableFetch(`https://api.mcsrvstat.us/3/${encodeURIComponent(displayAddress)}`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'PineLauncher/1.1 server-icon' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) return null;
+      const status = await response.json();
+      if (!status?.online) return null;
+      const cleanMotd = Array.isArray(status.motd?.clean) ? status.motd.clean : [];
+      const name = cleanMotd.map(line => String(line || '').replace(/[\r\n\0]+/g, ' ').trim()).find(Boolean) || null;
+      const resolvedAddress = status.ip ? serverDisplayAddress(status.ip, status.port) : null;
+      return {
+        iconData: normalizeServerIcon(status.icon),
+        name: name?.slice(0, 128) || null,
+        resolvedAddress: resolvedAddress && resolvedAddress.toLowerCase() !== displayAddress.toLowerCase() ? resolvedAddress : null,
+      };
+    } catch {
+      return null;
+    }
+  })();
+  serverMetadataCache.set(key, { expires: now + 5 * 60 * 1000, promise });
+  while (serverMetadataCache.size > 100) serverMetadataCache.delete(serverMetadataCache.keys().next().value);
+  return promise;
 }
 
 // ── Build MCLC Loader Profile ───────────────────────────────────────
@@ -1155,9 +1342,28 @@ function setupIPC() {
     return readAuth();
   });
 
+  ipcMain.handle('list-accounts', async () => publicAccounts(readAuthStore()));
+
+  ipcMain.handle('select-account', async (_, key) => {
+    if (typeof key !== 'string' || key.length > 200) throw new Error('Invalid account');
+    const store = selectAccount(readAuthStore(), key);
+    writeAuthStore(store);
+    return selectedAccount(store);
+  });
+
+  ipcMain.handle('delete-account', async (_, key) => {
+    if (typeof key !== 'string' || key.length > 200) throw new Error('Invalid account');
+    const store = deleteAccount(readAuthStore(), key);
+    if (store.accounts.length) writeAuthStore(store);
+    else fs.rmSync(getAuthFile(), { force: true });
+    return { ...publicAccounts(store), selected: selectedAccount(store) };
+  });
+
   ipcMain.handle('sign-out', async () => {
-    const file = getAuthFile();
-    if (fs.existsSync(file)) fs.rmSync(file, { force: true });
+    const store = readAuthStore();
+    const next = store.selectedKey ? deleteAccount(store, store.selectedKey) : store;
+    if (next.accounts.length) writeAuthStore(next);
+    else fs.rmSync(getAuthFile(), { force: true });
     return true;
   });
 
@@ -1192,8 +1398,8 @@ function setupIPC() {
     ensureDir(path.join(instanceDir, 'mods'));
     ensureDir(path.join(instanceDir, 'saves'));
     ensureDir(path.join(instanceDir, 'config'));
-
     const entry = {
+      id: crypto.randomUUID(),
       name: safeName,
       path: instanceDir,
       customRoot,
@@ -1241,6 +1447,10 @@ function setupIPC() {
       try { sanitizeName(inst?.name); return true; } catch { changed = true; return false; }
     });
     for (const inst of registry) {
+      if (!inst.id) {
+        inst.id = crypto.randomUUID();
+        changed = true;
+      }
       const canonicalPath = getInstanceDir(inst);
       if (inst.path !== canonicalPath) {
         inst.path = canonicalPath;
@@ -1249,6 +1459,139 @@ function setupIPC() {
     }
     if (changed) writeJSON(INSTANCES_FILE, registry);
     return registry;
+  });
+
+  ipcMain.handle('get-recent-destinations', async () => {
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const destinations = [];
+    for (const instance of registry) {
+      try {
+        const instanceDir = getInstanceDir(instance);
+        const activity = readActivity(path.join(instanceDir, '.pine-activity.json'));
+        const savedServers = readSavedServers(instanceDir);
+        const activityByKey = new Map((activity.destinations || []).map(item => [destinationKey(item), item]));
+        const hidden = new Set(activity.hiddenKeys || []);
+        const included = new Set();
+        const baseFor = destination => ({
+          ...destination,
+          key: destinationKey(destination),
+          instanceId: String(instance.id || instance.created || instance.name),
+          instanceName: instance.name,
+          gameVersion: instance.gameVersion,
+          loader: instance.loader,
+          deletedInstance: false,
+        });
+
+        const serversFile = path.join(instanceDir, 'servers.dat');
+        const serversModified = fs.existsSync(serversFile) ? fs.statSync(serversFile).mtime.toISOString() : instance.lastPlayed || instance.created;
+        for (const saved of savedServers) {
+          const address = serverDisplayAddress(saved.ip);
+          const key = destinationKey({ type: 'multiplayer', address });
+          if (!address || hidden.has(key) || included.has(key)) continue;
+          const recorded = activityByKey.get(key);
+          const savedName = String(saved.name || '').replace(/[\r\n\0]+/g, ' ').trim();
+          const usefulName = savedName && !/^(?:minecraft|multiplayer) server$/i.test(savedName);
+          destinations.push({
+            ...baseFor({ type: 'multiplayer', identifier: address, address, launches: Number(recorded?.launches) || 0, lastUsed: recorded?.lastUsed || serversModified }),
+            label: usefulName ? savedName.slice(0, 128) : address,
+            hasCustomName: Boolean(usefulName),
+            iconData: normalizeServerIcon(saved.icon),
+            canFetchMetadata: !isPrivateServerAddress(address),
+          });
+          included.add(key);
+        }
+
+        for (const world of listWorlds(path.join(instanceDir, 'saves'))) {
+          const key = destinationKey({ type: 'singleplayer', identifier: world.identifier });
+          if (hidden.has(key) || included.has(key)) continue;
+          const recorded = activityByKey.get(key);
+          destinations.push({
+            ...baseFor({ type: 'singleplayer', identifier: world.identifier, launches: Number(recorded?.launches) || 0, lastUsed: recorded?.lastUsed || new Date(world.modified).toISOString() }),
+            label: world.name,
+            folderName: world.identifier,
+            iconData: world.iconData,
+            canFetchIcon: false,
+          });
+          included.add(key);
+        }
+
+        for (const destination of activity.destinations || []) {
+          const key = destinationKey(destination);
+          if ((Number(destination.launches) || 0) < 1 || hidden.has(key) || included.has(key)) continue;
+          const base = {
+            ...destination,
+            key,
+            instanceId: String(instance.id || instance.created || instance.name),
+            instanceName: instance.name,
+            gameVersion: instance.gameVersion,
+            loader: instance.loader,
+          };
+          if (destination.type === 'multiplayer') {
+            const address = serverDisplayAddress(destination.address || destination.identifier);
+            const saved = savedServers.find(server => serverDisplayAddress(server.ip).toLowerCase() === address.toLowerCase());
+            const savedName = String(saved?.name || '').replace(/[\r\n\0]+/g, ' ').trim();
+            const usefulName = savedName && !/^(?:minecraft|multiplayer) server$/i.test(savedName);
+            destinations.push({
+              ...base,
+              identifier: address,
+              address,
+              label: usefulName ? savedName.slice(0, 128) : address,
+              hasCustomName: Boolean(usefulName),
+              iconData: normalizeServerIcon(saved?.icon),
+              canFetchMetadata: !isPrivateServerAddress(address),
+            });
+          }
+        }
+      } catch {}
+    }
+    return rankDestinations(syncDestinationCatalog(destinations, registry), 9);
+  });
+
+  ipcMain.handle('get-server-metadata', async (_, instanceName, address) => {
+    const safeName = sanitizeName(instanceName);
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instance = registry.find(item => item.name === safeName);
+    const clean = sanitizeDestination({ type: 'multiplayer', identifier: address, address });
+    if (!clean) throw new Error('Invalid server address');
+    const catalogItem = readDestinationCatalog().find(item => item.instanceName === safeName && destinationKey(item) === destinationKey(clean));
+    const activity = instance ? readActivity(getInstanceDir(instance, '.pine-activity.json')) : { destinations: [] };
+    const saved = instance ? readSavedServers(getInstanceDir(instance)).find(server => destinationKey({ type: 'multiplayer', address: server.ip }) === destinationKey(clean)) : null;
+    const recorded = activity.destinations.some(item => item.type === 'multiplayer' && destinationKey(item) === destinationKey(clean));
+    if (!saved && !recorded && !catalogItem) {
+      throw new Error('Server is not in recent activity');
+    }
+    const remote = await fetchServerMetadata(clean.address);
+    return {
+      iconData: normalizeServerIcon(saved?.icon) || remote?.iconData || null,
+      name: remote?.name || null,
+      resolvedAddress: remote?.resolvedAddress || null,
+    };
+  });
+
+  ipcMain.handle('remove-recent-destination', async (_, instanceName, destination) => {
+    const safeName = sanitizeName(instanceName);
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instance = registry.find(item => item.name === safeName);
+    const clean = sanitizeDestination(destination);
+    if (!clean) throw new Error('Invalid destination');
+    const catalog = readDestinationCatalog();
+    const remaining = catalog.filter(item => !(item.instanceName === safeName && destinationKey(item) === destinationKey(clean)));
+    writeDestinationCatalog(remaining);
+    return instance ? removeDestination(getInstanceDir(instance, '.pine-activity.json'), clean) : true;
+  });
+
+  ipcMain.handle('rename-recent-destination', async (_, instanceName, destination, requestedName) => {
+    const safeName = sanitizeName(instanceName);
+    const clean = sanitizeDestination(destination);
+    const label = String(requestedName || '').replace(/[\r\n\0]+/g, ' ').trim().slice(0, 128);
+    if (!clean || !label) throw new Error('Enter a destination name');
+    const catalog = readDestinationCatalog();
+    const item = catalog.find(entry => entry.instanceName === safeName && destinationKey(entry) === destinationKey(clean));
+    if (!item) throw new Error('Destination not found');
+    item.customLabel = label;
+    item.label = label;
+    writeDestinationCatalog(catalog);
+    return { label };
   });
 
   ipcMain.handle('update-instance', async (_, name, data) => {
@@ -1298,20 +1641,44 @@ function setupIPC() {
     const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error('Instance not found');
     const instanceDir = getInstanceDir(instance);
+    try { archiveDeletedInstance(instance); }
+    catch (error) { diagnosticLog('WARN', `Could not archive destinations for ${safeName}: ${error.message}`); }
+    let deletionTarget = instanceDir;
     if (fs.existsSync(instanceDir)) {
-      fs.rmSync(instanceDir, { recursive: true, force: true });
+      const root = normalizeInstanceRoot(instance.customRoot || '');
+      const stagingName = `.pine-deleting-${safeName}-${Date.now()}`;
+      const stagingPath = resolveSafePath(root, stagingName);
+      try {
+        await fs.promises.rename(instanceDir, stagingPath);
+        deletionTarget = stagingPath;
+      } catch (error) {
+        diagnosticLog('WARN', `Could not stage ${safeName} for deletion: ${error.message}`);
+      }
     }
     const filtered = registry.filter(i => i.name !== safeName);
     writeJSON(INSTANCES_FILE, filtered);
-    return true;
+    if (fs.existsSync(deletionTarget)) {
+      fs.promises.rm(deletionTarget, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })
+        .catch(error => diagnosticLog('WARN', `Background cleanup failed for ${safeName}: ${error.message}`));
+    }
+    return { deleted: true, cleanupPending: fs.existsSync(deletionTarget) };
   });
 
-  ipcMain.handle('launch-instance', async (_, name) => {
+  ipcMain.handle('launch-instance', async (_, name, requestedDestination = null) => {
     if (mcClient) throw new Error('Minecraft is already launching or running');
     const safeName = sanitizeName(name);
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error(`Instance "${safeName}" not found`);
+
+    let quickDestination = null;
+    if (requestedDestination != null) {
+      quickDestination = sanitizeDestination(requestedDestination);
+      if (!quickDestination) throw new Error('The quick-connect destination is invalid');
+      if (quickDestination.type === 'singleplayer' && compareSemver(instance.gameVersion, '1.20') < 0) {
+        throw new Error('Auto-opening a world requires Minecraft 1.20 or newer');
+      }
+    }
 
     let authData = readAuth();
     if (!authData || !authData.profile) throw new Error('Please sign in with Microsoft or set up an offline account first');
@@ -1330,6 +1697,14 @@ function setupIPC() {
       throw new Error('This instance location is unavailable. Reconnect the drive or restore the folder: ' + instanceDir);
     }
     ensureDir(instanceDir);
+    if (quickDestination) ensureDir(path.join(instanceDir, 'quickPlay'));
+    if (quickDestination?.type === 'singleplayer') {
+      const worldDir = resolveSafePath(instanceDir, 'saves', quickDestination.identifier);
+      if (!fs.existsSync(worldDir) || !fs.statSync(worldDir).isDirectory()) {
+        activeInstanceName = null;
+        throw new Error('That world is no longer available in this instance');
+      }
+    }
     ensureDir(GLOBAL_DIR);
     const quarantinedMods = quarantineKnownBrokenMods(path.join(instanceDir, 'mods'), instance.gameVersion);
     for (const mod of quarantinedMods) {
@@ -1340,6 +1715,13 @@ function setupIPC() {
     }
     const incompatibleLoaderMods = quarantineLoaderIncompatibleMods(path.join(instanceDir, 'mods'), instance.loader);
     for (const mod of incompatibleLoaderMods) {
+      const warning = `${mod.filename} was disabled automatically: ${mod.reason}`;
+      diagnosticLog('WARN', warning);
+      mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
+      mainWindow?.webContents.send('launch-warning', warning);
+    }
+    const duplicateIdMods = quarantineDuplicateModIds(path.join(instanceDir, 'mods'));
+    for (const mod of duplicateIdMods) {
       const warning = `${mod.filename} was disabled automatically: ${mod.reason}`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
@@ -1428,6 +1810,13 @@ function setupIPC() {
     const customArgs = parseJvmArgs(instance.jvmArgs || settings.jvmArgs);
     if (customArgs.length) opts.customArgs = customArgs;
     if (forgeInstaller) opts.forge = forgeInstaller;
+    if (quickDestination) {
+      opts.quickPlay = {
+        type: compareSemver(instance.gameVersion, '1.20') < 0 ? 'legacy' : quickDestination.type,
+        identifier: quickDestination.identifier,
+        path: path.join(instanceDir, 'quickPlay', `java-${Date.now()}.json`),
+      };
+    }
 
     // Vanilla versions share a global versions dir too; custom loader
     // profiles stay per-instance (MCLC resolves those against the
@@ -1438,6 +1827,16 @@ function setupIPC() {
       let terminalEventHandled = false;
       let lastLauncherFailure = '';
       let runtimeMismatchMessage = '';
+      const recordedDestinations = new Set();
+      const saveDestination = destination => {
+        const clean = sanitizeDestination(destination);
+        if (!clean) return;
+        const key = `${clean.type}:${clean.identifier.toLowerCase()}`;
+        if (recordedDestinations.has(key)) return;
+        recordedDestinations.add(key);
+        try { recordDestination(path.join(instanceDir, '.pine-activity.json'), clean); }
+        catch (error) { diagnosticLog('WARN', `Could not save recent destination: ${error.message}`); }
+      };
       // ── Launch metrics tracker ────────────────────────────────
       const metrics = {
         stage: 'preparing',
@@ -1613,7 +2012,16 @@ function setupIPC() {
           presenceGameStarted = true;
           setPresenceContext({ type: 'game', instance, mode: 'menu', startTimestamp: presenceStartTimestamp }, settings);
         }
-        if (typeof e === 'string') updatePresenceFromGameLine(e, instance, instanceDir, settings, presenceStartTimestamp);
+        if (typeof e === 'string') {
+          const activity = updatePresenceFromGameLine(e, instance, instanceDir, settings, presenceStartTimestamp);
+          if (activity?.type === 'multiplayer') {
+            const address = serverDisplayAddress(activity.address, activity.port);
+            saveDestination({ type: 'multiplayer', identifier: address, address, label: address });
+          } else if (activity?.type === 'singleplayer') {
+            const world = quickDestination?.type === 'singleplayer' ? quickDestination : newestWorld(path.join(instanceDir, 'saves'));
+            if (world) saveDestination({ type: 'singleplayer', identifier: world.identifier, label: world.label });
+          }
+        }
         if (typeof e === 'string') {
           const classVersion = e.match(/class file version\s+(\d+(?:\.\d+)?)/i)?.[1];
           const needed = javaMajorFromClassVersion(classVersion);
@@ -1716,6 +2124,222 @@ function setupIPC() {
     const allowedSorts = new Set(['relevance', 'downloads', 'updated', 'newest']);
     const index = sort === 'name' ? 'relevance' : (allowedSorts.has(sort) ? sort : 'relevance');
     return modrinthFetch(`/search?query=${encodeURIComponent(query || '')}&offset=${Math.max(0, Number(offset) || 0)}&limit=${Math.min(100, Math.max(1, Number(limit) || 20))}&index=${index}${facetStr}`);
+  });
+
+  ipcMain.handle('search-curseforge', async (_, query, options = {}) => {
+    const type = Object.prototype.hasOwnProperty.call(CURSEFORGE_CLASS_IDS, options.type) ? options.type : 'mod';
+    const params = new URLSearchParams({
+      gameId: '432',
+      classId: String(CURSEFORGE_CLASS_IDS[type]),
+      index: String(Math.max(0, Number(options.offset) || 0)),
+      pageSize: String(Math.min(50, Math.max(1, Number(options.limit) || 20))),
+      sortField: options.sort === 'updated' || options.sort === 'newest' ? '3' : '2',
+      sortOrder: 'desc',
+    });
+    if (query) params.set('searchFilter', String(query).slice(0, 200));
+    if (options.gameVersion) params.set('gameVersion', String(options.gameVersion).slice(0, 40));
+    if (CURSEFORGE_LOADER_TYPES[options.loader]) params.set('modLoaderType', String(CURSEFORGE_LOADER_TYPES[options.loader]));
+    const response = await curseForgeFetch(`/mods/search?${params}`);
+    return {
+      hits: (response.data || []).map(project => ({
+        source: 'curseforge',
+        project_id: `curseforge:${project.id}`,
+        curseforge_id: project.id,
+        title: project.name,
+        author: project.authors?.[0]?.name || 'unknown',
+        description: project.summary || '',
+        downloads: project.downloadCount || 0,
+        icon_url: project.logo?.url || null,
+        project_type: type,
+        website_url: project.links?.websiteUrl || null,
+      })),
+      total_hits: response.pagination?.totalCount || 0,
+      configured: true,
+    };
+  });
+
+  ipcMain.handle('get-curseforge-project', async (_, projectId) => {
+    const id = Number(String(projectId).replace(/^curseforge:/, ''));
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid CurseForge project');
+    return (await curseForgeFetch(`/mods/${id}`)).data;
+  });
+
+  ipcMain.handle('get-curseforge-files', async (_, projectId, instanceName) => {
+    const id = Number(String(projectId).replace(/^curseforge:/, ''));
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid CurseForge project');
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instance = instanceName ? registry.find(item => item.name === sanitizeName(instanceName)) : null;
+    if (instanceName && !instance) throw new Error('Instance not found');
+    const params = new URLSearchParams({ pageSize: '50' });
+    if (instance) params.set('gameVersion', instance.gameVersion);
+    if (instance && CURSEFORGE_LOADER_TYPES[instance.loader]) params.set('modLoaderType', String(CURSEFORGE_LOADER_TYPES[instance.loader]));
+    return (await curseForgeFetch(`/mods/${id}/files?${params}`)).data || [];
+  });
+
+  ipcMain.handle('install-curseforge-content', async (_, instanceName, options = {}) => {
+    const id = Number(String(options.projectId).replace(/^curseforge:/, ''));
+    const fileId = Number(options.fileId);
+    const type = Object.prototype.hasOwnProperty.call(CURSEFORGE_CLASS_IDS, options.type) ? options.type : 'mod';
+    if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(fileId) || fileId <= 0) throw new Error('Invalid CurseForge file');
+    if (type === 'modpack') throw new Error('Use the dedicated modpack importer');
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const instance = registry.find(item => item.name === sanitizeName(instanceName));
+    if (!instance) throw new Error('Instance not found');
+    const project = (await curseForgeFetch(`/mods/${id}`)).data;
+    const file = (await curseForgeFetch(`/mods/${id}/files/${fileId}`)).data;
+    if (!file || !Array.isArray(file.gameVersions) || !file.gameVersions.includes(instance.gameVersion)) {
+      throw new Error(`This file does not support Minecraft ${instance.gameVersion}`);
+    }
+    const filename = safeRemoteFilename(file.fileName);
+    const allowedExtension = type === 'mod' ? /\.jar$/i : /\.(?:zip|jar)$/i;
+    if (!allowedExtension.test(filename)) throw new Error('CurseForge returned an unexpected file type');
+    let url = file.downloadUrl;
+    if (!url) {
+      try { url = (await curseForgeFetch(`/mods/${id}/files/${fileId}/download-url`)).data; } catch {}
+    }
+    if (!url || new URL(url).protocol !== 'https:') throw new Error('This author does not allow third-party launcher downloads for this file');
+    let destinationDir;
+    if (type === 'mod') destinationDir = getInstanceDir(instance, 'mods');
+    else if (type === 'resourcepack') destinationDir = getInstanceDir(instance, 'resourcepacks');
+    else if (type === 'shader') destinationDir = getInstanceDir(instance, 'shaderpacks');
+    else {
+      const world = safeRemoteFilename(options.world || '');
+      if (world === '.' || world === '..') throw new Error('Choose an existing world for this data pack');
+      const worldDir = getInstanceDir(instance, 'saves', world);
+      if (!fs.existsSync(worldDir) || !fs.statSync(worldDir).isDirectory()) throw new Error('Choose an existing world for this data pack');
+      destinationDir = resolveSafePath(worldDir, 'datapacks');
+    }
+    ensureDir(destinationDir);
+    const destination = resolveSafePath(destinationDir, filename);
+    await fetchWithRetry(url, destination, progress => sendInstallProgress(instance.name, 'downloading', `Downloading ${filename}`, progress.percent));
+    try { verifyCurseForgeFile(file, destination); } catch (error) { fs.rmSync(destination, { force: true }); throw error; }
+    if (type === 'mod' && !isValidJar(destination)) { fs.rmSync(destination, { force: true }); throw new Error('The downloaded mod is not a valid JAR'); }
+    if (type === 'mod' && options.replaceFilename) {
+      const previous = safeRemoteFilename(options.replaceFilename);
+      if (previous !== filename && /\.jar(?:\.disabled)?$/i.test(previous)) {
+        fs.rmSync(resolveSafePath(destinationDir, previous), { force: true });
+      }
+    }
+    const metaFile = getInstanceDir(instance, type === 'mod' ? 'mods_meta.json' : 'content_meta.json');
+    const metadata = readJSON(metaFile) || {};
+    const info = { projectId: `curseforge:${id}`, title: project.name || filename, iconUrl: project.logo?.url || null, installedVersion: String(fileId), installedAt: new Date().toISOString(), source: 'curseforge' };
+    if (type === 'mod') {
+      if (options.replaceFilename) delete metadata[safeRemoteFilename(options.replaceFilename).replace(/\.disabled$/i, '')];
+      metadata[filename] = info;
+    }
+    else metadata[`${type}:${filename}`] = { ...info, projectType: type };
+    writeJSON(metaFile, metadata);
+    return { filename, projectId: `curseforge:${id}` };
+  });
+
+  ipcMain.handle('get-instance-worlds', async (_, instanceName) => {
+    const savesDir = getInstanceDirByName(sanitizeName(instanceName), 'saves');
+    try {
+      return fs.readdirSync(savesDir, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
+    } catch { return []; }
+  });
+
+  ipcMain.handle('import-curseforge-modpack', async (_, options = {}) => {
+    const projectId = Number(String(options.projectId).replace(/^curseforge:/, ''));
+    const fileId = Number(options.fileId);
+    const name = sanitizeName(options.name);
+    if (!Number.isSafeInteger(projectId) || projectId <= 0 || !Number.isSafeInteger(fileId) || fileId <= 0) throw new Error('Invalid CurseForge modpack');
+    const registry = readJSON(INSTANCES_FILE) || [];
+    if (registry.some(item => item.name === name)) throw new Error(`Instance "${name}" already exists`);
+    const file = (await curseForgeFetch(`/mods/${projectId}/files/${fileId}`)).data;
+    let url = file?.downloadUrl;
+    if (!url) {
+      try { url = (await curseForgeFetch(`/mods/${projectId}/files/${fileId}/download-url`)).data; } catch {}
+    }
+    if (!url || new URL(url).protocol !== 'https:') throw new Error('This modpack cannot be downloaded by third-party launchers');
+    const cacheDir = path.join(app.getPath('userData'), 'cache', 'modpacks');
+    ensureDir(cacheDir);
+    const archivePath = path.join(cacheDir, `${projectId}-${fileId}.zip`);
+    await fetchWithRetry(url, archivePath, progress => sendInstallProgress(name, 'downloading', 'Downloading modpack', Math.round((progress.percent || 0) * 0.2)));
+    try { verifyCurseForgeFile(file, archivePath); } catch (error) { fs.rmSync(archivePath, { force: true }); throw error; }
+    let archive;
+    let manifest;
+    try {
+      archive = new AdmZip(archivePath);
+      const manifestEntry = archive.getEntry('manifest.json');
+      if (!manifestEntry) throw new Error('The archive has no CurseForge manifest.json');
+      manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+    } catch (error) {
+      fs.rmSync(archivePath, { force: true });
+      throw new Error(`Invalid CurseForge modpack: ${error.message}`);
+    }
+    const gameVersion = String(manifest.minecraft?.version || '');
+    const primaryLoader = (manifest.minecraft?.modLoaders || []).find(item => item.primary) || manifest.minecraft?.modLoaders?.[0];
+    const loaderMatch = String(primaryLoader?.id || '').match(/^(forge|fabric|quilt|neoforge)-(.+)$/i);
+    const loader = loaderMatch ? loaderMatch[1].toLowerCase() : 'vanilla';
+    const loaderVersion = loaderMatch ? loaderMatch[2] : null;
+    const versions = await fetchMinecraftVersions();
+    if (!versions.versions?.some(item => item.id === gameVersion)) throw new Error(`The modpack requests unknown Minecraft version ${gameVersion}`);
+    if (!['vanilla', 'fabric', 'quilt', 'forge'].includes(loader)) throw new Error(`The modpack loader ${loader} is not supported yet`);
+    const instanceDir = resolveSafePath(INSTANCES_DIR, name);
+    if (fs.existsSync(instanceDir) && fs.readdirSync(instanceDir).length) throw new Error(`The instance folder ${name} is not empty`);
+    ensureDir(instanceDir);
+    const written = [];
+    try {
+      ensureDir(path.join(instanceDir, 'mods'));
+      ensureDir(path.join(instanceDir, 'saves'));
+      ensureDir(path.join(instanceDir, 'config'));
+      const overridesPrefix = `${String(manifest.overrides || 'overrides').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')}/`;
+      let extractedBytes = 0;
+      let extractedFiles = 0;
+      for (const entry of archive.getEntries()) {
+        const normalized = entry.entryName.replace(/\\/g, '/');
+        if (entry.isDirectory || !normalized.startsWith(overridesPrefix)) continue;
+        const relative = normalized.slice(overridesPrefix.length);
+        const parts = relative.split('/').filter(Boolean);
+        if (!parts.length || parts.some(part => part === '.' || part === '..')) throw new Error('The modpack contains an unsafe override path');
+        extractedBytes += entry.header.size;
+        extractedFiles += 1;
+        if (extractedBytes > 1024 * 1024 * 1024 || extractedFiles > 10000) throw new Error('The modpack overrides exceed Pine safety limits');
+        const destination = resolveSafePath(instanceDir, ...parts);
+        ensureDir(path.dirname(destination));
+        fs.writeFileSync(destination, entry.getData());
+        written.push(destination);
+      }
+      const modsMeta = {};
+      const manifestFiles = Array.isArray(manifest.files) ? manifest.files : [];
+      for (let index = 0; index < manifestFiles.length; index += 1) {
+        const item = manifestFiles[index];
+        if (!item.required) continue;
+        const modId = Number(item.projectID);
+        const modFileId = Number(item.fileID);
+        if (!Number.isSafeInteger(modId) || !Number.isSafeInteger(modFileId)) throw new Error('The modpack contains an invalid file reference');
+        const modFile = (await curseForgeFetch(`/mods/${modId}/files/${modFileId}`)).data;
+        const project = (await curseForgeFetch(`/mods/${modId}`)).data;
+        let modUrl = modFile?.downloadUrl;
+        if (!modUrl) {
+          try { modUrl = (await curseForgeFetch(`/mods/${modId}/files/${modFileId}/download-url`)).data; } catch {}
+        }
+        if (!modUrl || new URL(modUrl).protocol !== 'https:') throw new Error(`${project?.name || modId} does not allow third-party downloads`);
+        const filename = safeRemoteFilename(modFile.fileName);
+        const destination = resolveSafePath(instanceDir, 'mods', filename);
+        await fetchWithRetry(modUrl, destination, progress => sendInstallProgress(name, 'downloading', `Installing ${index + 1} of ${manifestFiles.length}: ${filename}`, 20 + Math.round(((index + (progress.percent || 0) / 100) / Math.max(1, manifestFiles.length)) * 75)));
+        try { verifyCurseForgeFile(modFile, destination); } catch (error) { fs.rmSync(destination, { force: true }); throw error; }
+        written.push(destination);
+        modsMeta[filename] = { projectId: `curseforge:${modId}`, title: project?.name || filename, iconUrl: project?.logo?.url || null, installedVersion: String(modFileId), installedAt: new Date().toISOString(), source: 'curseforge' };
+      }
+      writeJSON(path.join(instanceDir, 'mods_meta.json'), modsMeta);
+      const defaults = readJSON(SETTINGS_FILE) || {};
+      const entry = {
+        name, path: instanceDir, customRoot: '', gameVersion, profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
+        created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
+        memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left', modpack: { source: 'curseforge', projectId, fileId },
+      };
+      registry.push(entry);
+      writeJSON(INSTANCES_FILE, registry);
+      sendInstallProgress(name, 'done', 'Modpack imported', 100);
+      return entry;
+    } catch (error) {
+      fs.rmSync(instanceDir, { recursive: true, force: true });
+      throw error;
+    } finally {
+      fs.rmSync(archivePath, { force: true });
+    }
   });
 
   ipcMain.handle('get-project-versions', async (_, projectId, loaders, gameVersions) => {
@@ -2237,10 +2861,21 @@ function setupIPC() {
     for (const mod of mods) {
       if (!mod.projectId) continue;
       try {
-        const versions = await modrinthFetch(`/project/${mod.projectId}/version`);
-        // Find the latest version that matches the instance's game version
         const registry = readJSON(INSTANCES_FILE) || [];
         const instance = registry.find(i => i.name === instanceName);
+        if (String(mod.projectId).startsWith('curseforge:')) {
+          const id = Number(String(mod.projectId).slice('curseforge:'.length));
+          const params = new URLSearchParams({ gameVersion: instance?.gameVersion || '', pageSize: '50' });
+          if (CURSEFORGE_LOADER_TYPES[instance?.loader]) params.set('modLoaderType', String(CURSEFORGE_LOADER_TYPES[instance.loader]));
+          const files = (await curseForgeFetch(`/mods/${id}/files?${params}`)).data || [];
+          const latest = files[0];
+          if (latest && String(latest.id) !== String(mod.installedVersion)) {
+            updates.push({ filename: mod.filename, projectId: mod.projectId, title: mod.title, currentVersion: mod.installedVersion, latestVersion: String(latest.id), latestVersionName: latest.displayName || latest.fileName || String(latest.id), source: 'curseforge' });
+          }
+          continue;
+        }
+        const versions = await modrinthFetch(`/project/${mod.projectId}/version`);
+        // Find the latest version that matches the instance's game version
         const loaders = instance?.loader && instance.loader !== 'vanilla' ? [instance.loader] : [];
         const compatible = versions.filter(v => {
           const gv = v.game_versions || [];
@@ -2440,6 +3075,7 @@ function setupIPC() {
       discordPresence: settings?.discordPresence !== false,
       discordShowInstance: settings?.discordShowInstance !== false,
       discordShowServer: settings?.discordShowServer !== false,
+      curseForgeApiKey: typeof settings?.curseForgeApiKey === 'string' ? settings.curseForgeApiKey.trim().slice(0, 256) : '',
     };
     writeJSON(SETTINGS_FILE, clean);
     refreshDiscordPresence(clean);

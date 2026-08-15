@@ -5,6 +5,7 @@ const {
   DiscordPresence,
   encodeFrame,
   isPrivateServerAddress,
+  normalizeServerIcon,
   normalizeServerAddress,
   parseGamePresenceLine,
   serverDisplayAddress,
@@ -33,8 +34,15 @@ test('uses the friendly Minecraft saved-server name', () => {
 test('formats the exact multiplayer address for Discord', () => {
   assert.equal(serverDisplayAddress('play.example.com', 25565), 'play.example.com');
   assert.equal(serverDisplayAddress('play.example.com:25565', 25565), 'play.example.com');
+  assert.equal(serverDisplayAddress('play.example.com:25565'), 'play.example.com');
   assert.equal(serverDisplayAddress('play.example.com:25570', 25570), 'play.example.com:25570');
   assert.equal(serverDisplayAddress('2001:db8::1', 25565), '2001:db8::1');
+});
+
+test('accepts real PNG server icons and rejects placeholder text', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  assert.match(normalizeServerIcon(png.toString('base64')), /^data:image\/png;base64,/);
+  assert.equal(normalizeServerIcon('not-an-icon'), null);
 });
 
 test('recognizes game activity log lines', () => {

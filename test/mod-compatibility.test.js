@@ -12,6 +12,7 @@ const {
   detectJarLoaders,
   jarLoaderCompatibilityIssue,
   quarantineLoaderIncompatibleMods,
+  quarantineDuplicateModIds,
 } = require('../lib/mod-compatibility');
 
 function writeFabricJar(file, metadata) {
@@ -32,6 +33,44 @@ test('quarantines the confirmed broken ViaFabric 1.21.11 build', () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('quarantines older jars that provide the same undeclared mod id', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-duplicate-id-'));
+  const older = path.join(dir, 'older.jar');
+  const newer = path.join(dir, 'newer.jar');
+  try {
+    writeFabricJar(older, { id: 'same_mod', version: '1' });
+    fs.utimesSync(older, new Date(1), new Date(1));
+    writeFabricJar(newer, { id: 'same_mod', version: '2' });
+    fs.utimesSync(newer, new Date(2), new Date(2));
+    const result = quarantineDuplicateModIds(dir);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].filename, 'older.jar');
+    assert.equal(fs.existsSync(older + '.disabled'), true);
+    assert.equal(fs.existsSync(newer), true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('keeps a maximal compatible set when one jar provides multiple IDs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-overlapping-ids-'));
+  const newestX = path.join(dir, 'newest-x.jar');
+  const bridge = path.join(dir, 'bridge.jar');
+  const oldestY = path.join(dir, 'oldest-y.jar');
+  try {
+    writeFabricJar(newestX, { id: 'newest_x', provides: ['shared_x'], version: '1' });
+    fs.utimesSync(newestX, new Date(3), new Date(3));
+    writeFabricJar(bridge, { id: 'bridge', provides: ['shared_x', 'shared_y'], version: '1' });
+    fs.utimesSync(bridge, new Date(2), new Date(2));
+    writeFabricJar(oldestY, { id: 'oldest_y', provides: ['shared_y'], version: '1' });
+    fs.utimesSync(oldestY, new Date(1), new Date(1));
+
+    const result = quarantineDuplicateModIds(dir);
+    assert.deepEqual(result.map(item => item.filename), ['bridge.jar']);
+    assert.equal(fs.existsSync(newestX), true);
+    assert.equal(fs.existsSync(oldestY), true);
+    assert.equal(fs.existsSync(bridge + '.disabled'), true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('does not disable ViaFabric for an unconfirmed game or mod version', () => {
