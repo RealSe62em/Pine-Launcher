@@ -75,3 +75,38 @@ test('patched downloads limit concurrent network requests', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('MCLC reuses a Java runtime that Pine already verified', async () => {
+  const { install, Handler } = freshModules();
+  const { rememberValidatedJava } = require('../lib/mcl-reliability');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-java-cache-'));
+  const java = path.join(dir, 'java.exe');
+  try {
+    fs.writeFileSync(java, 'runtime fingerprint');
+    install();
+    rememberValidatedJava(java, 21);
+    const result = await makeHandler(Handler).checkJava(java);
+    assert.equal(result.run, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('MCLC checksum cache rehashes a file only after it changes', async () => {
+  const { install, Handler } = freshModules();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-checksum-cache-'));
+  const file = path.join(dir, 'asset.bin');
+  try {
+    fs.writeFileSync(file, 'asset');
+    install();
+    const handler = makeHandler(Handler);
+    handler.options.root = dir;
+    const hash = require('crypto').createHash('sha1').update('asset').digest('hex');
+    assert.equal(await handler.checkSum(hash, file), true);
+    assert.equal(await handler.checkSum(hash, file), true);
+    fs.writeFileSync(file, 'changed');
+    assert.equal(await handler.checkSum(hash, file), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

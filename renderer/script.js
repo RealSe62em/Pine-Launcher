@@ -1137,7 +1137,7 @@ function renderContentList() {
     return `
     <div class="content-item ${update ? 'has-update' : ''}${m.disabled ? ' is-disabled' : ''}" data-pid="${escHtml(m.projectId || m.filename)}">
       <div class="content-item-icon">
-        ${m.iconUrl ? `<img src="${escHtml(m.iconUrl)}" alt="" loading="lazy">` : escHtml((m.title || m.filename)[0].toUpperCase())}
+        ${m.iconUrl ? `<img src="${escHtml(m.iconUrl)}" alt="" loading="lazy" decoding="async">` : escHtml((m.title || m.filename)[0].toUpperCase())}
       </div>
       <div class="content-item-info">
         <div class="content-item-name">${escHtml(m.title || m.filename)} ${m.disabled ? '<span class="update-badge">Disabled</span>' : (m.compatibilityIssue ? '<span class="update-badge">Incompatible</span>' : (update ? '<span class="update-badge">Update</span>' : ''))}</div>

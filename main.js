@@ -10,7 +10,8 @@ const { execFile } = require('child_process');
 const { resolveSafePath, safeRemoteFilename, safeInstanceName } = require('./lib/safety');
 const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion, javaRuntimeArchitectures } = require('./lib/compat');
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
-const { installMclReliabilityPatches } = require('./lib/mcl-reliability');
+const { installMclReliabilityPatches, rememberValidatedJava } = require('./lib/mcl-reliability');
+const { ValidationCache } = require('./lib/validation-cache');
 const { extractZipOnWindows } = require('./lib/runtime-extraction');
 const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineDuplicateModIds, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
@@ -54,6 +55,8 @@ function getAuthFile() { return path.join(app.getPath('userData'), 'auth.json');
 const MOD_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'mods');
 const LOG_DIR = path.join(app.getPath('userData'), 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'latest.log');
+const LAUNCH_VALIDATION_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'launch-validation.json');
+const launchValidationCache = new ValidationCache(LAUNCH_VALIDATION_CACHE_FILE);
 
 function diagnosticLog(level, message) {
   ensureDir(LOG_DIR);
@@ -135,6 +138,10 @@ const MC_JAVA_MAP_FALLBACK = [
 ];
 
 async function getRequiredJava(mcVersion) {
+  const cachedMetadata = readJSON(path.join(GLOBAL_VERSIONS_DIR, `${mcVersion}.json`));
+  if (cachedMetadata?.id === mcVersion && cachedMetadata.javaVersion?.majorVersion) {
+    return cachedMetadata.javaVersion.majorVersion;
+  }
   try {
     const manifest = await fetchMinecraftVersions();
     const entry = manifest.versions?.find(v => v.id === mcVersion);
@@ -427,11 +434,17 @@ function fmtBytes(bytes) {
 // ── Java version detection ─────────────────────────────────
 function getJavaVersionAsync(javaPath) {
   return new Promise(resolve => {
-    execFile(javaPath, ['-version'], { timeout: 3000, windowsHide: true, encoding: 'utf8' }, (error, stdout, stderr) => {
-      // Java normally writes its version to stderr and may still return usable
-      // output alongside a nonzero exit status.
-      resolve(parseJavaMajor(`${stderr || ''}${stdout || ''}`));
-    });
+    let attempt = 0;
+    const probe = () => {
+      attempt += 1;
+      execFile(javaPath, ['-version'], { timeout: 3000 + attempt * 2000, windowsHide: true, encoding: 'utf8' }, (_error, stdout, stderr) => {
+        const major = parseJavaMajor(`${stderr || ''}${stdout || ''}`);
+        if (major) return resolve(major);
+        if (attempt < 3) return setTimeout(probe, attempt * 150);
+        resolve(null);
+      });
+    };
+    probe();
   });
 }
 
@@ -553,6 +566,7 @@ async function provisionManagedJava(javaMajor, onProgress) {
 
 let javaDiscoveryCache = null;
 let javaDiscoveryCachedAt = 0;
+const modJavaRequirementCache = new Map();
 function getJavaCandidates() {
   if (!javaDiscoveryCache || Date.now() - javaDiscoveryCachedAt > 5 * 60 * 1000) {
     javaDiscoveryCache = findJavaOnWindows();
@@ -608,6 +622,16 @@ function getModJavaRequirement(instanceDir) {
   const sources = [];
   let files = [];
   try { files = fs.readdirSync(modsDir).filter(f => f.toLowerCase().endsWith('.jar')); } catch { return { required, sources }; }
+  const fingerprint = files.sort().map(filename => {
+    try {
+      const stat = fs.statSync(path.join(modsDir, filename));
+      return `${filename}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return `${filename}:missing`;
+    }
+  }).join('|');
+  const cached = modJavaRequirementCache.get(modsDir);
+  if (cached?.fingerprint === fingerprint) return cached.result;
   for (const filename of files) {
     try {
       const zip = new AdmZip(path.join(modsDir, filename));
@@ -621,7 +645,10 @@ function getModJavaRequirement(instanceDir) {
       console.warn(`[Java] Could not inspect ${filename}:`, e.message);
     }
   }
-  return { required, sources };
+  const result = { required, sources };
+  modJavaRequirementCache.set(modsDir, { fingerprint, result });
+  if (modJavaRequirementCache.size > 100) modJavaRequirementCache.delete(modJavaRequirementCache.keys().next().value);
+  return result;
 }
 
 // ── Fetch with retry + resume ──────────────────────────────
@@ -721,21 +748,30 @@ function writeToCache(versionId, hash, hashType, srcPath) {
   }
 }
 
-function cleanCorruptedJars(dir) {
+function cleanCorruptedJars(dir, nested = false) {
   let removed = 0;
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) removed += cleanCorruptedJars(fullPath);
-      else if (entry.name.endsWith('.jar') && !isValidJar(fullPath)) {
+      if (entry.isDirectory()) removed += cleanCorruptedJars(fullPath, true);
+      else if (entry.name.endsWith('.jar') && !launchValidationCache.isValid(fullPath, 'jar', isValidJar)) {
         console.warn('[Cleanup] Removing corrupted JAR:', fullPath);
         fs.unlinkSync(fullPath);
+        launchValidationCache.forget(fullPath);
         removed++;
       }
     }
   } catch {}
+  if (!nested) launchValidationCache.flush();
   return removed;
+}
+
+function isValidatedClientJar(jarPath, expected) {
+  return launchValidationCache.isValid(jarPath, `client:${expected || 'zip-only'}`, file => {
+    if (!isValidJar(file)) return false;
+    return !expected || crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex') === expected;
+  });
 }
 
 function validateSharedVersionCache(versionId) {
@@ -750,36 +786,44 @@ function validateSharedVersionCache(versionId) {
   }
   if (fs.existsSync(jarPath)) {
     const expected = metadata.downloads?.client?.sha1;
-    const validZip = isValidJar(jarPath);
-    const validHash = !expected || crypto.createHash('sha1').update(fs.readFileSync(jarPath)).digest('hex') === expected;
-    if (!validZip || !validHash) fs.rmSync(jarPath, { force: true });
+    if (!isValidatedClientJar(jarPath, expected)) {
+      fs.rmSync(jarPath, { force: true });
+      launchValidationCache.forget(jarPath);
+    }
   }
+  launchValidationCache.flush();
 }
 
 // ── Create Window ───────────────────────────────────────────────────
 
 async function ensureSharedMinecraftVersion(versionId, onProgress) {
   ensureDir(GLOBAL_VERSIONS_DIR);
+  const jsonPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.json`);
+  const jarPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.jar`);
+  const cachedMetadata = readJSON(jsonPath);
+  const cachedExpected = cachedMetadata?.downloads?.client?.sha1;
+  if (cachedMetadata?.id === versionId && !cachedMetadata.inheritsFrom && isValidatedClientJar(jarPath, cachedExpected)) {
+    launchValidationCache.flush();
+    return cachedMetadata;
+  }
   const manifest = await fetchMinecraftVersions();
   const entry = manifest.versions?.find(version => version.id === versionId);
   if (!entry?.url) throw new Error(`Minecraft ${versionId} is missing from the official version manifest`);
   const metadataResponse = await portableFetch(entry.url, { signal: AbortSignal.timeout(30000) });
   if (!metadataResponse.ok) throw new Error(`Minecraft ${versionId} metadata returned HTTP ${metadataResponse.status}`);
   const metadata = await metadataResponse.json();
-  const jsonPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.json`);
-  const jarPath = path.join(GLOBAL_VERSIONS_DIR, `${versionId}.jar`);
   writeJSON(jsonPath, metadata);
   const expected = metadata.downloads?.client?.sha1;
-  let valid = fs.existsSync(jarPath) && isValidJar(jarPath);
-  if (valid && expected) valid = crypto.createHash('sha1').update(fs.readFileSync(jarPath)).digest('hex') === expected;
+  let valid = isValidatedClientJar(jarPath, expected);
   if (!valid) {
     fs.rmSync(jarPath, { force: true });
     const url = metadata.downloads?.client?.url;
     if (!url) throw new Error(`Minecraft ${versionId} has no client download`);
     await fetchWithRetry(url, jarPath, progress => onProgress?.({ ...progress, label: `Downloading Minecraft ${versionId}` }));
-    if (!isValidJar(jarPath)) throw new Error(`Minecraft ${versionId} downloaded an invalid client file`);
-    if (expected && crypto.createHash('sha1').update(fs.readFileSync(jarPath)).digest('hex') !== expected) throw new Error(`Minecraft ${versionId} client checksum did not match`);
+    launchValidationCache.forget(jarPath);
+    if (!isValidatedClientJar(jarPath, expected)) throw new Error(`Minecraft ${versionId} client download failed integrity validation`);
   }
+  launchValidationCache.flush();
   return metadata;
 }
 
@@ -1228,6 +1272,9 @@ async function buildLoaderUrl(instance, instanceDir) {
     };
     return scanDir(path.join(instanceDir, 'versions'), true) || scanDir(GLOBAL_VERSIONS_DIR, false);
   };
+
+  const cachedBeforeNetwork = findCached();
+  if (cachedBeforeNetwork) return await writeProfile(cachedBeforeNetwork);
 
   try {
     const res = await portableFetch(url, { headers: { 'User-Agent': 'PineLauncher/1.1' }, signal: AbortSignal.timeout(15000) });
@@ -1758,6 +1805,7 @@ function setupIPC() {
       selectedJava = result.java;
       const verifiedMajor = await getJavaVersionAsync(selectedJava.path);
       if (verifiedMajor !== selectedJava.major || verifiedMajor < requiredJava) throw new Error(`Selected Java runtime failed verification (needed ${requiredJava}, got ${verifiedMajor || 'unknown'})`);
+      rememberValidatedJava(selectedJava.path, verifiedMajor);
       if (configuredJava && selectedJava.path !== configuredJava) {
         console.warn(`[Java] Configured runtime is incompatible; using Java ${selectedJava.major} at ${selectedJava.path}`);
       }
@@ -1806,6 +1854,7 @@ function setupIPC() {
         libraryRoot: GLOBAL_LIBRARIES_DIR,
         maxSockets: Math.max(2, parseInt(settings.dlLimit, 10) || 4),
       },
+      cache: path.join(GLOBAL_DIR, 'cache'),
     };
     const customArgs = parseJvmArgs(instance.jvmArgs || settings.jvmArgs);
     if (customArgs.length) opts.customArgs = customArgs;
@@ -2074,7 +2123,7 @@ function setupIPC() {
         activeInstanceName = null;
         setPresenceContext({ type: 'launcher' }, settings);
         if (Number.isInteger(code) && code !== 0) {
-          const error = new Error(runtimeMismatchMessage || `Minecraft crashed with exit code ${code}. Open Logs for the details.`);
+          const error = new Error(runtimeMismatchMessage || `Minecraft crashed with exit code ${code}. Check the launcher logs at: ${LOG_FILE}`);
           diagnosticLog('ERROR', error.message);
           mainWindow?.webContents.send('launch-error', { message: error.message, exitCode: code });
           mainWindow?.webContents.send('launch-log', `[ERROR] ${error.message}`);

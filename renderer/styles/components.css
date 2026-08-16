@@ -404,6 +404,7 @@ label, .label {
   transform: translateX(0);
   opacity: 1;
   transition: opacity 120ms var(--ease-ios), transform 220ms var(--ease-ios);
+  contain: layout paint style;
 }
 .content-list.content-switching { opacity: 0; transform: translateX(-10px); }
 .content-list.content-entering { animation: content-category-in 280ms var(--ease-ios); }
@@ -415,12 +416,17 @@ label, .label {
   display: flex; align-items: center; gap: var(--s-3);
   padding: var(--s-3);
   background: var(--glass-surface-raised);
-  backdrop-filter: blur(var(--glass-blur-raised)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--glass-blur-raised)) saturate(180%);
+  /* The tab surface already supplies the glass blur. Repeating a live blur on
+     every scrolling row forces Chromium to re-composite the whole list. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-radius: var(--r-sm);
   box-shadow: var(--glass-inner-shadow);
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease-ios);
+  transition: background var(--dur-fast) var(--ease-ios), box-shadow var(--dur-fast) var(--ease-ios);
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: auto 60px;
 }
 .content-item:hover { background: var(--glass-surface-overlay); }
 .content-item-icon {
@@ -1636,13 +1642,16 @@ html.reduced-motion *::after {
 /* ── Perf mods ───────────────────────────────────────────── */
 .perf-mods {
   background: var(--glass-surface-base);
-  backdrop-filter: blur(var(--glass-blur-base));
+  /* Keep the same tint and inner highlight without a costly live filter on
+     the element containing the scrolling list. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-radius: var(--r-md);
   padding: var(--s-3);
   box-shadow: var(--glass-inner-shadow);
 }
 .perf-mods-label { font-size: var(--text-caption); color: var(--text-md); margin-bottom: var(--s-2); font-weight: 500; }
-.perf-mods-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+.perf-mods-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; contain: layout paint style; overscroll-behavior: contain; }
 
 /* ── Modal progress ──────────────────────────────────────── */
 .modal-progress {
@@ -2045,6 +2054,7 @@ html.reduced-motion *::after {
   border-radius: var(--r-xs);
   cursor: default;
   transition: background var(--dur-fast) var(--ease-ios);
+  contain: layout paint style;
 }
 .perf-mod-row:hover { background: var(--glass-surface-raised); }
 
