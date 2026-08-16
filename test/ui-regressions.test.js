@@ -122,3 +122,10 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
 });
+
+test('CurseForge and private integration settings are not exposed in the launcher UI', () => {
+  assert.doesNotMatch(html, /catalog-source|CurseForge/i);
+  assert.doesNotMatch(renderer, /data-cat="integrations"|set-curseforge-key|searchCurseForge\(/i);
+  assert.doesNotMatch(website, /CurseForge/i);
+  assert.match(renderer, /api\.searchMods\(query, facets, state\.searchOffset, SEARCH_LIMIT, sort\)/);
+});

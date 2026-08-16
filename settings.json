@@ -5,6 +5,5 @@
   "maxMemory": "4G",
   "launchBehavior": "Keep open",
   "dlLimit": 4,
-  "accentColor": "#ff5cb9",
-  "curseForgeApiKey": ""
+  "accentColor": "#ff5cb9"
 }

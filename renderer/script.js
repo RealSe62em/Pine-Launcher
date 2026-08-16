@@ -447,7 +447,7 @@ function bindTabBar() {
   const liveSearch = debounce(() => searchMods(false), 220);
   $('search-input')?.addEventListener('input', liveSearch);
   $('search-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchMods(false); });
-  ['filter-loader', 'filter-version', 'filter-category', 'results-sort', 'catalog-source'].forEach((id) => {
+  ['filter-loader', 'filter-version', 'filter-category', 'results-sort'].forEach((id) => {
     $(id)?.addEventListener(id === 'filter-category' ? 'input' : 'change',
       id === 'filter-category' ? debounce(() => searchMods(false), 220) : () => searchMods(false));
   });
@@ -1621,7 +1621,6 @@ function renderSettingsLayout() {
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
       <button data-cat="discord">Discord</button>
-      <button data-cat="integrations">Integrations</button>
       <button data-cat="updates">Updates</button>
     </nav>
     <div class="settings-form">
@@ -1741,16 +1740,6 @@ function renderSettingsLayout() {
           <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Pine verifies the release package before installation.</p>
         </div>
       </div>
-      <div class="settings-pane" data-cat="integrations">
-        <div class="settings-card">
-          <div class="settings-card-title">Content catalogs</div>
-          <div class="settings-row"><label>CurseForge API key</label>
-            <input id="set-curseforge-key" class="input" type="password" value="${escHtml(s.curseForgeApiKey || '')}" placeholder="Required for CurseForge search and downloads" autocomplete="off">
-          </div>
-          <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Pine sends this key only to api.curseforge.com. You can also set PINE_CURSEFORGE_API_KEY instead of saving it here.</p>
-        </div>
-        <button class="btn btn-primary set-save-btn">Save settings</button>
-      </div>
     </div>
   `;
   layout.querySelectorAll('.settings-nav button').forEach((btn) => {
@@ -1827,7 +1816,6 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
     discordPresence: $('set-discord-presence')?.checked !== false,
     discordShowInstance: $('set-discord-instance')?.checked !== false,
     discordShowServer: $('set-discord-server')?.checked !== false,
-    curseForgeApiKey: $('set-curseforge-key')?.value.trim() || '',
   };
   try {
     state.settings = await api.saveSettings(state.settings);
@@ -2834,12 +2822,11 @@ async function searchMods(append = false) {
   const version = $('filter-version')?.value || '';
   const category = $('filter-category')?.value.trim() || '';
   const sort = $('results-sort')?.value || 'relevance';
-  const source = $('catalog-source')?.value || 'all';
   const facets = [['project_type:' + (state.discoverCategory || 'mod')]];
   if (loader) facets.push(['categories:' + loader]);
   if (version) facets.push(['versions:' + version]);
   if (category) facets.push(['categories:' + category]);
-  const searchKey = JSON.stringify({ query, loader, version, category, sort, source, type: state.discoverCategory });
+  const searchKey = JSON.stringify({ query, loader, version, category, sort, type: state.discoverCategory });
   const requestId = ++state.searchRequestId;
   state.activeSearchKey = searchKey;
   state.searchLoading = true;
@@ -2857,21 +2844,11 @@ async function searchMods(append = false) {
   }
 
   try {
-    const requests = [];
-    if (source === 'all' || source === 'modrinth') {
-      requests.push(api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort).then(value => ({ source: 'modrinth', value })));
-    }
-    if (source === 'all' || source === 'curseforge') {
-      requests.push(api.searchCurseForge(query, { type: state.discoverCategory, loader, gameVersion: version, offset: state.searchOffset, limit: SEARCH_LIMIT, sort }).then(value => ({ source: 'curseforge', value })));
-    }
-    const settled = await Promise.allSettled(requests);
+    const response = await api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort);
     if (requestId !== state.searchRequestId || searchKey !== state.activeSearchKey) return;
-    const successful = settled.filter(item => item.status === 'fulfilled').map(item => item.value);
-    if (!successful.length) throw settled[0]?.reason || new Error('No catalog was available');
-    const hits = successful.flatMap(item => (item.value.hits || []).map(hit => ({ ...hit, source: hit.source || item.source })));
+    const hits = (response.hits || []).map(hit => ({ ...hit, source: 'modrinth' }));
     state.searchOffset += SEARCH_LIMIT;
-    const total = successful.reduce((sum, item) => sum + (item.value.total_hits || item.value.hits?.length || 0), 0);
-    const unavailable = settled.length - successful.length;
+    const total = response.total_hits || response.hits?.length || 0;
     const took = Math.round(performance.now() - state.searchStartTime);
 
     if (!hits.length && !append) {
@@ -2884,7 +2861,7 @@ async function searchMods(append = false) {
       </div>`;
       return;
     }
-    count.textContent = `${fmtNum(total)} results · ${took} ms${unavailable ? ' · one catalog unavailable' : ''}`;
+    count.textContent = `${fmtNum(total)} results · ${took} ms`;
 
     const html = hits.map((mod) => `
       <div class="mod-card" data-pid="${escHtml(mod.project_id || '')}">
@@ -2893,7 +2870,7 @@ async function searchMods(append = false) {
         </div>
         <div class="mod-card-body">
           <div class="mod-card-title">${escHtml(mod.title || mod.name)}</div>
-          <div class="mod-card-author">by ${escHtml(mod.author || 'unknown')} · ${mod.source === 'curseforge' ? 'CurseForge' : 'Modrinth'}</div>
+          <div class="mod-card-author">by ${escHtml(mod.author || 'unknown')} · Modrinth</div>
           <div class="mod-card-desc">${escHtml(mod.description || '')}</div>
           <div class="mod-card-footer">
             <span class="mod-card-dls">${fmtNum(mod.downloads)} downloads</span>
@@ -2920,11 +2897,10 @@ async function searchMods(append = false) {
     grid.querySelectorAll('.mod-card:not([data-bound])').forEach((card) => {
       card.setAttribute('data-bound', '');
       const pid = card.dataset.pid;
-      card.addEventListener('click', () => pid.startsWith('curseforge:') ? showCurseForgeDetails(pid) : showModDetails(pid));
+      card.addEventListener('click', () => showModDetails(pid));
       card.querySelector('[data-act="install"]')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (pid.startsWith('curseforge:')) showCurseForgeDetails(pid, true);
-        else installModFromSearch(pid);
+        installModFromSearch(pid);
       });
     });
     if (state.searchOffset < total && hits.length >= SEARCH_LIMIT) loadMoreBtn?.removeAttribute('hidden');

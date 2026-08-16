@@ -3124,7 +3124,6 @@ function setupIPC() {
       discordPresence: settings?.discordPresence !== false,
       discordShowInstance: settings?.discordShowInstance !== false,
       discordShowServer: settings?.discordShowServer !== false,
-      curseForgeApiKey: typeof settings?.curseForgeApiKey === 'string' ? settings.curseForgeApiKey.trim().slice(0, 256) : '',
     };
     writeJSON(SETTINGS_FILE, clean);
     refreshDiscordPresence(clean);
@@ -3132,7 +3131,9 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-settings', async () => {
-    return readJSON(SETTINGS_FILE) || {};
+    const settings = readJSON(SETTINGS_FILE) || {};
+    delete settings.curseForgeApiKey;
+    return settings;
   });
 }
 
