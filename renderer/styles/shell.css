@@ -284,7 +284,9 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: calc(var(--topbar-h) + 28px) var(--s-6) calc(var(--tabbar-h) + var(--safe-bottom) + 16px);
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .status-bar {

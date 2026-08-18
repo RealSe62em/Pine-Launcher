@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteInstance: (name) => ipcRenderer.invoke('delete-instance', name),
   updateInstance: (name, data) => ipcRenderer.invoke('update-instance', name, data),
   launchInstance: (name) => ipcRenderer.invoke('launch-instance', name),
-  microsoftLogin: () => ipcRenderer.invoke('microsoft-login'),
+  microsoftLogin: (options) => ipcRenderer.invoke('microsoft-login', options),
   offlineLogin: (username) => ipcRenderer.invoke('offline-login', username),
   getAuth: () => ipcRenderer.invoke('get-auth'),
   listAccounts: () => ipcRenderer.invoke('list-accounts'),
@@ -61,5 +61,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onLaunchMetrics: (cb) => ipcRenderer.on('launch-metrics', (_, v) => cb(v)),
   onLaunchFixed: (cb) => ipcRenderer.on('launch-fixed', (_, count) => cb(count)),
   onLaunchWarning: (cb) => ipcRenderer.on('launch-warning', (_, message) => cb(message)),
+  onJavaInstallProgress: (cb) => ipcRenderer.on('java-install-progress', (_, value) => cb(value)),
   onInstallProgress: (cb) => ipcRenderer.on('install-progress', (_, v) => cb(v)),
 });

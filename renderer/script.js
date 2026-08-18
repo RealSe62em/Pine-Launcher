@@ -366,6 +366,7 @@ function toggleAccountMenu() {
         <span class="avatar">${avatar}</span>
         <span class="account-menu-info"><span class="account-menu-name">${escHtml(account.profile.name)}</span><span class="account-menu-sub">${isOffline ? 'Offline' : 'Microsoft'}${selected ? ' · Active' : ''}</span></span>
       </button>
+      ${isOffline ? '' : `<button class="account-reauth" type="button" data-act="reauth-account" aria-label="Re-authenticate ${escHtml(account.profile.name)}" title="Re-authenticate"><svg width="13" height="13" aria-hidden="true"><use href="#i-refresh"/></svg></button>`}
       <button class="account-delete" type="button" data-act="delete-account" aria-label="Delete ${escHtml(account.profile.name)}"><svg width="13" height="13" aria-hidden="true"><use href="#i-trash"/></svg></button>
     </div>`;
   }).join('');
@@ -390,7 +391,7 @@ function toggleAccountMenu() {
     const action = e.target.closest('[data-act]');
     const act = action?.dataset.act;
     const key = action?.closest('[data-account-key]')?.dataset.accountKey;
-    if (act === 'signin') handleAuth();
+    if (act === 'signin') handleAuth({ mode: 'add' });
     if (act === 'offline') openOfflineModal();
     if (act === 'select-account' && key) {
       await chooseAccount(key);
@@ -399,6 +400,12 @@ function toggleAccountMenu() {
       return;
     }
     if (act === 'delete-account' && key) await removeAccount(key);
+    if (act === 'reauth-account' && key) {
+      await reauthenticateAccount(key);
+      menu.remove();
+      toggleAccountMenu();
+      return;
+    }
     if (act === 'toggle-more') {
       state.accountsExpanded = !state.accountsExpanded;
       menu.remove();
@@ -1366,11 +1373,30 @@ async function removeAccount(key) {
   }
 }
 
-async function handleAuth() {
+async function reauthenticateAccount(key) {
+  const account = state.accounts.find(item => item.key === key && item.meta?.type !== 'offline');
+  if (!account) return false;
+  try {
+    state.authData = await api.microsoftLogin({ mode: 'reauth', accountKey: key });
+    await refreshAccounts();
+    updateAuthUI();
+    updatePride();
+    renderHome();
+    setStatus(`${account.profile.name} re-authenticated`);
+    toast(`${account.profile.name} re-authenticated`, 'success');
+    return true;
+  } catch (error) {
+    setStatus('Re-authentication failed: ' + (error.message || error));
+    toast('Could not re-authenticate: ' + (error.message || error), 'error', 6000);
+    return false;
+  }
+}
+
+async function handleAuth(options = { mode: 'add' }) {
   const nameEl = $('account-name');
   if (nameEl) nameEl.textContent = 'Logging in…';
   try {
-    state.authData = await api.microsoftLogin();
+    state.authData = await api.microsoftLogin(options);
     await refreshAccounts();
     updateAuthUI(); updatePride();
     setStatus(`Signed in as ${state.authData.profile.name}`);
@@ -2598,6 +2624,15 @@ function isAccountRequiredError(error) {
 }
 
 function bindLaunchEvents() {
+  api.onJavaInstallProgress?.((update) => {
+    const label = update?.label || 'Preparing Java';
+    setStatus(label);
+    if (update?.error) {
+      toast(label, 'error', 7000);
+    } else if (update?.complete) {
+      toast(label, 'success');
+    }
+  });
   api.onLaunchProgress((p) => {
     if (typeof p === 'number') {
       const pct = Math.round(Math.min(100, p * 100));
@@ -2917,7 +2952,9 @@ async function searchMods(append = false) {
 
 async function installModFromSearch(projectId) {
   if (!state.instances.length) {
-    setStatus('Create an instance first');
+    setStatus('Create an instance first, then select the mod again');
+    toast('Create an instance first, then return to Discover and select the mod you want to install.', 'error', 6500);
+    showInstallNeedsInstanceWarning();
     return;
   }
   if (state.instances.length === 1) {
@@ -2966,6 +3003,36 @@ async function installModFromSearch(projectId) {
       const inst = state.instances.find((i) => i.name === card.dataset.name);
       overlay.remove();
       if (inst) doInstallMod(inst, projectId);
+    }
+  });
+}
+
+function showInstallNeedsInstanceWarning() {
+  if ($('install-needs-instance')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'install-needs-instance';
+  overlay.className = 'modal-root visible';
+  overlay.style.zIndex = '320';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:430px">
+      <div class="modal-header">
+        <div><h2 class="modal-title">Create an instance first</h2><p class="modal-sub">Mods need a Minecraft instance to install into.</p></div>
+        <button class="modal-close" data-close type="button"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted" style="line-height:1.6">Go create an instance, then return to Discover and select the mod again.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close type="button">Not now</button>
+        <button class="btn btn-primary" data-create-instance type="button">Create instance</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) overlay.remove();
+    if (event.target.closest('[data-create-instance]')) {
+      overlay.remove();
+      openCreateModal();
     }
   });
 }

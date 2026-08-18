@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const os = require('os');
 const AdmZip = require('adm-zip');
 const { execFile } = require('child_process');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const { resolveSafePath, safeRemoteFilename, safeInstanceName } = require('./lib/safety');
 const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSupports, normalizeProfileLoader, javaMajorFromClassVersion, javaRuntimeArchitectures } = require('./lib/compat');
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
@@ -437,10 +439,11 @@ function getJavaVersionAsync(javaPath) {
     let attempt = 0;
     const probe = () => {
       attempt += 1;
-      execFile(javaPath, ['-version'], { timeout: 3000 + attempt * 2000, windowsHide: true, encoding: 'utf8' }, (_error, stdout, stderr) => {
+      execFile(javaPath, ['-version'], { timeout: 5000 + attempt * 2500, windowsHide: true, encoding: 'utf8' }, (error, stdout, stderr) => {
         const major = parseJavaMajor(`${stderr || ''}${stdout || ''}`);
         if (major) return resolve(major);
-        if (attempt < 3) return setTimeout(probe, attempt * 150);
+        if (attempt < 5) return setTimeout(probe, attempt * 300);
+        diagnosticLog('WARN', `Java version probe failed after ${attempt} attempts for ${javaPath}: ${error?.message || 'no version output'}`);
         resolve(null);
       });
     };
@@ -513,22 +516,29 @@ function findJavaExecutable(root, depth = 4) {
 
 async function fetchAdoptiumAsset(javaMajor, imageType) {
   let lastStatus = null;
+  let lastError = null;
   for (const architecture of javaRuntimeArchitectures(process.arch)) {
     const url = `https://api.adoptium.net/v3/assets/latest/${javaMajor}/hotspot?architecture=${architecture}`
       + `&image_type=${imageType}&os=windows&vendor=eclipse`;
-    const response = await portableFetch(url, { signal: AbortSignal.timeout(30000) });
-    lastStatus = response.status;
-    if (!response.ok) continue;
-    const assets = await response.json();
-    const runtimePackage = assets.find(asset => asset?.binary?.package?.link && asset?.binary?.package?.checksum)?.binary?.package;
-    if (runtimePackage) {
-      if (architecture !== 'aarch64' && process.arch === 'arm64') {
-        diagnosticLog('INFO', `Using x64 Java ${javaMajor} under Windows ARM emulation because no ARM64 runtime is available`);
+    try {
+      const response = await portableFetch(url, { signal: AbortSignal.timeout(30000) });
+      lastStatus = response.status;
+      if (!response.ok) continue;
+      const assets = await response.json();
+      const runtimePackage = assets.find(asset => asset?.binary?.package?.link && asset?.binary?.package?.checksum)?.binary?.package;
+      if (runtimePackage) {
+        if (architecture !== 'aarch64' && process.arch === 'arm64') {
+          diagnosticLog('INFO', `Using x64 Java ${javaMajor} under Windows ARM emulation because no ARM64 runtime is available`);
+        }
+        return runtimePackage;
       }
-      return runtimePackage;
+    } catch (error) {
+      lastError = error;
+      diagnosticLog('WARN', `Could not query Java ${javaMajor} ${imageType} metadata for ${architecture}: ${error.message}`);
     }
   }
   if (lastStatus && lastStatus >= 400) diagnosticLog('WARN', `Java runtime service returned HTTP ${lastStatus}`);
+  if (lastError) diagnosticLog('WARN', `Java runtime metadata lookup failed: ${lastError.message}`);
   return null;
 }
 
@@ -543,25 +553,48 @@ async function provisionManagedJava(javaMajor, onProgress) {
   if (!runtimePackage) throw new Error(`No Eclipse Temurin Java ${javaMajor} runtime is available for this PC`);
   const archive = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.arch}.zip`);
   const staging = `${runtimeDir}.installing-${process.pid}`;
-  fs.rmSync(staging, { recursive: true, force: true });
-  onProgress?.({ percent: 0, label: `Downloading Java ${javaMajor}` });
-  try {
-    await fetchWithRetry(runtimePackage.link, archive, progress => onProgress?.({ ...progress, label: `Downloading Java ${javaMajor}` }));
-    const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
-    if (actual.toLowerCase() !== runtimePackage.checksum.toLowerCase()) throw new Error('The Java runtime checksum did not match');
-    ensureDir(staging);
-    await extractZipOnWindows(archive, staging);
-    const stagedJava = findJavaExecutable(staging);
-    if (!stagedJava || await getJavaVersionAsync(stagedJava) !== javaMajor) throw new Error(`Downloaded runtime is not Java ${javaMajor}`);
-    fs.rmSync(runtimeDir, { recursive: true, force: true });
-    fs.renameSync(staging, runtimeDir);
-    const installed = findJavaExecutable(runtimeDir);
-    if (!installed) throw new Error('Java runtime extraction did not produce an executable');
-    return { path: installed, major: javaMajor, managed: true };
-  } finally {
-    fs.rmSync(archive, { force: true });
+  let lastError;
+  for (let installAttempt = 1; installAttempt <= 3; installAttempt++) {
     fs.rmSync(staging, { recursive: true, force: true });
+    fs.rmSync(archive, { force: true });
+    onProgress?.({ percent: 0, label: installAttempt === 1 ? `Downloading Java ${javaMajor}` : `Retrying Java ${javaMajor} installation (${installAttempt}/3)` });
+    diagnosticLog('INFO', `Installing managed Java ${javaMajor} (attempt ${installAttempt}/3)`);
+    try {
+      await fetchWithRetry(runtimePackage.link, archive, progress => onProgress?.({ ...progress, label: `Downloading Java ${javaMajor}` }));
+      const actual = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+      if (actual.toLowerCase() !== runtimePackage.checksum.toLowerCase()) throw new Error('The Java runtime checksum did not match');
+      onProgress?.({ percent: 100, label: `Installing Java ${javaMajor}` });
+      ensureDir(staging);
+      const extractor = await extractZipOnWindows(archive, staging);
+      const stagedJava = findJavaExecutable(staging);
+      if (!stagedJava || await getJavaVersionAsync(stagedJava) !== javaMajor) throw new Error(`Downloaded runtime is not Java ${javaMajor}`);
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+      fs.renameSync(staging, runtimeDir);
+      const installed = findJavaExecutable(runtimeDir);
+      if (!installed) throw new Error('Java runtime extraction did not produce an executable');
+      diagnosticLog('INFO', `Managed Java ${javaMajor} installed successfully with ${extractor}: ${installed}`);
+      onProgress?.({ percent: 100, label: `Java ${javaMajor} ready`, complete: true });
+      return { path: installed, major: javaMajor, managed: true };
+    } catch (error) {
+      lastError = error;
+      diagnosticLog('ERROR', `Managed Java ${javaMajor} attempt ${installAttempt}/3 failed: ${error.stack || error.message || error}`);
+      if (installAttempt < 3) await new Promise(resolve => setTimeout(resolve, installAttempt * 1500));
+    } finally {
+      fs.rmSync(archive, { force: true });
+      fs.rmSync(staging, { recursive: true, force: true });
+    }
   }
+  throw new Error(`Java ${javaMajor} automatic installation failed after 3 attempts: ${lastError?.message || lastError}`);
+}
+
+const managedJavaInstallPromises = new Map();
+function ensureManagedJava(javaMajor, onProgress) {
+  const active = managedJavaInstallPromises.get(javaMajor);
+  if (active) return active;
+  const task = provisionManagedJava(javaMajor, onProgress)
+    .finally(() => managedJavaInstallPromises.delete(javaMajor));
+  managedJavaInstallPromises.set(javaMajor, task);
+  return task;
 }
 
 let javaDiscoveryCache = null;
@@ -602,7 +635,7 @@ async function resolveJavaForLaunch(requiredMajor, preferredPath, onProgress) {
   const exact = chooseCompatibleJava(result.checked.filter(java => java.major === requiredMajor), requiredMajor);
   if (exact) return { java: exact, checked: result.checked };
   try {
-    const managed = await provisionManagedJava(requiredMajor, onProgress);
+    const managed = await ensureManagedJava(requiredMajor, onProgress);
     return { java: managed, checked: [...result.checked, managed] };
   } catch (error) {
     if (result.java) {
@@ -613,6 +646,23 @@ async function resolveJavaForLaunch(requiredMajor, preferredPath, onProgress) {
       ? ` Detected: ${result.checked.map(java => `Java ${java.major}`).join(', ')}.`
       : ' No Java installation was detected.';
     throw new Error(`Minecraft requires Java ${requiredMajor}. Pine could not install it automatically: ${error.message}.${detected}`);
+  }
+}
+
+async function prepareJavaForInstance(gameVersion) {
+  const requiredMajor = await getRequiredJava(gameVersion);
+  const available = await findCompatibleJava(requiredMajor, '');
+  const exact = available.checked.some(java => java.major === requiredMajor);
+  if (exact) return;
+  const report = update => mainWindow?.webContents.send('java-install-progress', update);
+  try {
+    await ensureManagedJava(requiredMajor, report);
+  } catch (error) {
+    diagnosticLog('ERROR', `Background Java preparation for Minecraft ${gameVersion} failed: ${error.stack || error.message || error}`);
+    mainWindow?.webContents.send('java-install-progress', {
+      error: true,
+      label: `Java ${requiredMajor} will retry automatically when you press Play`,
+    });
   }
 }
 
@@ -679,33 +729,31 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
       if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
 
       const isPartial = res.status === 206;
+      if (isPartial) {
+        const contentRange = res.headers.get('content-range') || '';
+        const rangeStart = Number.parseInt(contentRange.match(/^bytes\s+(\d+)-/i)?.[1] || '-1', 10);
+        if (rangeStart !== downloaded) {
+          fs.rmSync(tmpPath, { force: true });
+          downloaded = 0;
+          throw new Error(`Download resume was rejected (expected byte ${headers.Range ? headers.Range.slice(6, -1) : 0}, received ${rangeStart})`);
+        }
+      }
       if (!isPartial && downloaded > 0) {
-        fs.unlinkSync(tmpPath);
+        fs.rmSync(tmpPath, { force: true });
         downloaded = 0;
       }
 
-      const stream = fs.createWriteStream(tmpPath, { flags: isPartial ? 'a' : 'w' });
-      const reader = res.body.getReader();
-      const pump = async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!stream.write(Buffer.from(value))) {
-            await new Promise((resolve, reject) => {
-              stream.once('drain', resolve);
-              stream.once('error', reject);
-            });
-          }
-          downloaded += value.length;
+      const progress = new Transform({
+        transform(chunk, _encoding, callback) {
+          downloaded += chunk.length;
           if (onProgress && total) {
             const pct = Math.min(100, Math.round((downloaded / total) * 100));
             onProgress({ percent: pct, bytes: downloaded, total });
           }
-        }
-        stream.end();
-      };
-      await pump();
-      await new Promise((resolve, reject) => { stream.on('finish', resolve); stream.on('error', reject); });
+          callback(null, chunk);
+        },
+      });
+      await pipeline(Readable.fromWeb(res.body), progress, fs.createWriteStream(tmpPath, { flags: isPartial ? 'a' : 'w' }));
 
       if (total > 0 && downloaded < total) throw new Error(`Incomplete download: ${downloaded} / ${total} bytes`);
 
@@ -713,6 +761,7 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
       fs.renameSync(tmpPath, destPath);
       return;
     } catch (e) {
+      diagnosticLog(attempt === retries ? 'ERROR' : 'WARN', `Download attempt ${attempt + 1}/${retries + 1} failed for ${parsedUrl.hostname}: ${e.message}`);
       if (attempt === retries) throw e;
     }
   }
@@ -923,7 +972,16 @@ async function refreshMicrosoftAuth(authData) {
   }
 }
 
-async function microsoftLogin() {
+async function microsoftLogin(options = {}) {
+  const mode = options?.mode === 'reauth' ? 'reauth' : 'add';
+  const expectedKey = mode === 'reauth' && typeof options?.accountKey === 'string' ? options.accountKey : '';
+  const accountStore = readAuthStore();
+  const expectedAccount = expectedKey
+    ? normalizeAuthStore(accountStore).accounts.find(account => `microsoft:${account.profile.uuid.toLowerCase()}` === expectedKey)
+    : null;
+  if (mode === 'reauth' && (!expectedAccount || expectedAccount.meta?.type === 'offline')) {
+    throw new Error('That Microsoft account is no longer saved');
+  }
   // Step 1: Get auth code via browser
   const codeVerifier = crypto.randomBytes(32).toString('base64url');
   const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
@@ -933,6 +991,7 @@ async function microsoftLogin() {
     + `&response_type=code`
     + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
     + `&scope=XboxLive.signin%20offline_access`
+    + `&prompt=select_account`
     + `&code_challenge=${codeChallenge}`
     + `&code_challenge_method=S256`;
 
@@ -966,6 +1025,9 @@ async function microsoftLogin() {
         });
         const tokenData = await jsonResponse(tokenRes, 'Microsoft login');
         const authData = await minecraftAuthFromMicrosoft(tokenData.access_token, tokenData.refresh_token);
+        if (expectedAccount && authData.profile.uuid.toLowerCase() !== expectedAccount.profile.uuid.toLowerCase()) {
+          throw new Error(`You selected ${authData.profile.name}. Choose ${expectedAccount.profile.name} to re-authenticate that saved account.`);
+        }
         writeAuth(authData);
         resolve(authData);
       } catch (e) {
@@ -1370,8 +1432,11 @@ function setupIPC() {
     return fetchLoaderVersions(gameVersion, loader);
   });
 
-  ipcMain.handle('microsoft-login', async () => {
-    return microsoftLogin();
+  ipcMain.handle('microsoft-login', async (_, options = {}) => {
+    if (options == null || typeof options !== 'object') throw new Error('Invalid Microsoft login request');
+    const mode = options.mode === 'reauth' ? 'reauth' : 'add';
+    const accountKey = typeof options.accountKey === 'string' && options.accountKey.length <= 200 ? options.accountKey : '';
+    return microsoftLogin({ mode, accountKey });
   });
 
   ipcMain.handle('offline-login', async (_, username) => {
@@ -1473,6 +1538,9 @@ function setupIPC() {
 
     registry.push(entry);
     writeJSON(INSTANCES_FILE, registry);
+    // Start the required runtime immediately. Launch uses the same shared promise,
+    // so pressing Play while this is running waits instead of starting a second download.
+    void prepareJavaForInstance(entry.gameVersion);
     return entry;
   });
 
@@ -1819,7 +1887,11 @@ function setupIPC() {
       });
     } catch (e) {
       const msg = (e && e.message) || String(e);
-      mainWindow?.webContents.send('launch-error', new Error(msg));
+      diagnosticLog('ERROR', `Launch preparation failed for ${instance.name}: ${e?.stack || msg}`);
+      const reported = /java/i.test(msg)
+        ? `${msg} Launcher logs: ${LOG_FILE}`
+        : msg;
+      mainWindow?.webContents.send('launch-error', new Error(reported));
       mainWindow?.webContents.send('launch-log', '[ERROR] ' + msg);
       mainWindow?.webContents.send('launch-metrics', { stage: 'error', progress: 0 });
       mcClient = null;
@@ -2537,7 +2609,9 @@ function setupIPC() {
       warnings.push({
         code: 'OLD_JAVA',
         message: `MC ${gameVersion} needs Java ${requiredJava}+; detected Java versions: ${detected}`,
-        detail: 'Install a compatible Java version or select it in Settings',
+        detail: process.platform === 'win32'
+          ? `Pine will download and verify Java ${requiredJava} automatically before launch`
+          : 'Install a compatible Java version or select it in Settings',
       });
     }
 

@@ -1653,6 +1653,28 @@ html.reduced-motion *::after {
 .perf-mods-label { font-size: var(--text-caption); color: var(--text-md); margin-bottom: var(--s-2); font-weight: 500; }
 .perf-mods-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; contain: layout paint style; overscroll-behavior: contain; }
 
+/* The creation sheet is an active scrolling surface. Baked near-opaque glass
+   avoids recompositing the entire launcher and modal backdrop for every wheel
+   frame while retaining the same tint, border, and highlight treatment. */
+#modal-overlay {
+  background: rgba(3, 4, 8, .78);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+#modal-overlay .modal {
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(124,92,255,.09), transparent 48%),
+    rgba(14, 15, 22, .97);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  contain: layout paint style;
+}
+#modal-overlay .modal-body { overscroll-behavior: contain; }
+#modal-overlay .perf-mod-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
 /* ── Modal progress ──────────────────────────────────────── */
 .modal-progress {
   padding: var(--s-3) var(--s-6) var(--s-4);
@@ -1753,8 +1775,9 @@ html.reduced-motion *::after {
 .account-switch-main .avatar img { width: 100%; height: 100%; object-fit: cover; }
 .account-switch-main .account-menu-info { display: flex; min-width: 0; flex-direction: column; }
 .account-switch-main .account-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-delete { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 30px; border: 0; border-radius: 8px; background: transparent; color: var(--text-lo); cursor: pointer; opacity: .65; }
+.account-delete, .account-reauth { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 30px; border: 0; border-radius: 8px; background: transparent; color: var(--text-lo); cursor: pointer; opacity: .65; }
 .account-delete:hover { color: var(--danger); background: var(--danger-dim); opacity: 1; }
+.account-reauth:hover { color: var(--accent); background: var(--accent-dim); opacity: 1; }
 
 /* ── Confetti ────────────────────────────────────────────── */
 .confetti-piece {
@@ -1806,6 +1829,7 @@ html.reduced-motion *::after {
   gap: 14px;
   width: 100%;
   margin-bottom: var(--s-6);
+  contain: layout paint style;
 }
 .destination-card {
   position: relative;
@@ -1822,15 +1846,16 @@ html.reduced-motion *::after {
     radial-gradient(120% 105% at 0% 0%, rgba(255,255,255,.19), transparent 38%),
     radial-gradient(80% 90% at 100% 110%, rgba(92,224,255,.1), transparent 54%),
     linear-gradient(145deg, rgba(255,255,255,.095), rgba(255,255,255,.035) 52%, rgba(124,92,255,.055));
-  -webkit-backdrop-filter: blur(30px) saturate(185%) contrast(108%);
-  backdrop-filter: blur(30px) saturate(185%) contrast(108%);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   box-shadow:
-    0 22px 52px rgba(0,0,0,.3),
-    0 2px 8px rgba(0,0,0,.18),
+    0 16px 34px rgba(0,0,0,.26),
     inset 0 1px 0 rgba(255,255,255,.32),
-    inset 0 -1px 0 rgba(255,255,255,.07),
-    inset 1px 0 0 rgba(255,255,255,.1);
+    inset 0 -1px 0 rgba(255,255,255,.07);
   transition: transform var(--dur-cinema) var(--ease-spring), border-color var(--dur-base) var(--ease-ios), box-shadow var(--dur-cinema) var(--ease-ios), background-position var(--dur-cinema) var(--ease-ios);
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: auto 188px;
 }
 .destination-card::before {
   content: '';
@@ -1855,9 +1880,9 @@ html.reduced-motion *::after {
   top: -34px;
   left: 18%;
   border-radius: 50%;
-  background: rgba(255,255,255,.2);
-  filter: blur(20px);
-  opacity: .42;
+  background: radial-gradient(ellipse at center, rgba(255,255,255,.2), rgba(255,255,255,.08) 45%, transparent 72%);
+  filter: none;
+  opacity: .46;
   pointer-events: none;
   transform: rotate(-8deg);
   transition: left var(--dur-cinema) var(--ease-spring), opacity var(--dur-base) var(--ease-ios);
@@ -1897,7 +1922,7 @@ html.reduced-motion *::after {
 .destination-title-action {
   width: 25px; height: 25px; flex: 0 0 25px; display: grid; place-items: center;
   border: 1px solid rgba(255,255,255,.08); border-radius: 50%; background: rgba(255,255,255,.045); color: var(--text-lo); cursor: pointer;
-  -webkit-backdrop-filter: blur(12px) saturate(170%); backdrop-filter: blur(12px) saturate(170%);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
   transition: color var(--dur-fast) var(--ease-ios), background var(--dur-fast) var(--ease-ios), border-color var(--dur-fast) var(--ease-ios), transform var(--dur-fast) var(--ease-spring);
 }
 .destination-title-action:hover { color: var(--text-hi); background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.25); transform: translateY(-1px) scale(1.04); box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 6px 14px rgba(0,0,0,.16); }
@@ -1930,9 +1955,9 @@ html.reduced-motion *::after {
   border: 1px solid rgba(255,255,255,.19);
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.045));
-  backdrop-filter: blur(24px) saturate(190%) contrast(106%);
-  -webkit-backdrop-filter: blur(24px) saturate(190%) contrast(106%);
-  box-shadow: 0 12px 28px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.26), inset 0 -1px 0 rgba(255,255,255,.05);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 8px 18px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.26), inset 0 -1px 0 rgba(255,255,255,.05);
 }
 .destination-action {
   position: relative;

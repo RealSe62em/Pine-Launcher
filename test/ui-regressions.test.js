@@ -91,7 +91,8 @@ test('destination cards support deleted instances, copy, rename, and smooth deta
   assert.match(main, /fs\.promises\.rm\(deletionTarget/);
   assert.match(components, /destination-card\.has-detail \.destination-address/);
   assert.match(components, /@keyframes destination-name-set/);
-  assert.match(components, /backdrop-filter:\s*blur\(30px\) saturate\(185%\) contrast\(108%\)/);
+  assert.match(components, /\.destination-card\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.match(components, /\.destination-card\s*\{[\s\S]*?content-visibility:\s*auto/);
   assert.match(components, /destination-card::after/);
 });
 
@@ -128,4 +129,39 @@ test('CurseForge and private integration settings are not exposed in the launche
   assert.doesNotMatch(renderer, /data-cat="integrations"|set-curseforge-key|searchCurseForge\(/i);
   assert.doesNotMatch(website, /CurseForge/i);
   assert.match(renderer, /api\.searchMods\(query, facets, state\.searchOffset, SEARCH_LIMIT, sort\)/);
+});
+
+test('high-density home and performance surfaces avoid live scrolling blur', () => {
+  assert.match(read('renderer/styles/shell.css'), /\.main\s*\{[\s\S]*?scroll-behavior:\s*auto/);
+  assert.match(components, /#modal-overlay\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.match(components, /#modal-overlay \.modal\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.match(components, /\.perf-mods-list\s*\{[^}]*contain:\s*layout paint style/);
+  assert.match(components, /\.destination-actions\s*\{[\s\S]*?backdrop-filter:\s*none/);
+});
+
+test('Microsoft account addition forces a chooser and saved accounts can re-authenticate safely', () => {
+  assert.match(main, /prompt=select_account/);
+  assert.match(main, /authData\.profile\.uuid\.toLowerCase\(\) !== expectedAccount\.profile\.uuid\.toLowerCase\(\)/);
+  assert.match(preload, /microsoftLogin:\s*\(options\)/);
+  assert.match(renderer, /data-act="reauth-account"/);
+  assert.match(renderer, /api\.microsoftLogin\(\{ mode: 'reauth', accountKey: key \}\)/);
+  assert.match(components, /\.account-reauth:hover/);
+});
+
+test('installing Discover content without an instance gives guidance and a create action', () => {
+  assert.match(renderer, /function showInstallNeedsInstanceWarning\(\)/);
+  assert.match(renderer, /Create an instance first, then return to Discover and select the mod you want to install/);
+  assert.match(renderer, /data-create-instance/);
+  assert.match(renderer, /event\.target\.closest\('\[data-create-instance\]'\)[\s\S]*?openCreateModal\(\)/);
+});
+
+test('managed Java installation starts with instance creation and safely retries interrupted downloads', () => {
+  assert.match(main, /void prepareJavaForInstance\(entry\.gameVersion\)/);
+  assert.match(main, /managedJavaInstallPromises\.get\(javaMajor\)/);
+  assert.match(main, /await pipeline\(Readable\.fromWeb\(res\.body\)/);
+  assert.match(main, /Java \$\{javaMajor\} automatic installation failed after 3 attempts/);
+  assert.match(main, /Launch preparation failed for \$\{instance\.name\}/);
+  assert.match(main, /Launcher logs: \$\{LOG_FILE\}/);
+  assert.match(preload, /onJavaInstallProgress/);
+  assert.match(renderer, /api\.onJavaInstallProgress/);
 });
