@@ -1,7 +1,7 @@
 const RELEASES = {
-  universal: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.16/PineLauncherSetup.exe',
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.16/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.16/PineLauncherSetup-arm64.exe'
+  universal: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.17/PineLauncherSetup.exe',
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.17/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.17/PineLauncherSetup-arm64.exe'
 };
 document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.universal; });
 
