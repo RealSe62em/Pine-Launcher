@@ -97,6 +97,13 @@ test('downloaded updates restart through the NSIS updater', () => {
   assert.equal(updater.installs, 1);
 });
 
+test('Windows ARM64 installations use their architecture-specific update feed', () => {
+  const arm = manager({ arch: 'arm64' });
+  const x64 = manager({ arch: 'x64' });
+  assert.equal(arm.updater.channel, 'latest-arm64');
+  assert.notEqual(x64.updater.channel, 'latest-arm64');
+});
+
 test('a downloaded update cannot be replaced by another check before restart', async () => {
   const { updater, value } = manager();
   updater.emit('update-downloaded', { version: '1.1.10' });

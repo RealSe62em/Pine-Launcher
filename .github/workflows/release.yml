@@ -40,8 +40,21 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Build x64, ARM64, and universal installers
-        run: npm run build:installer
+      - name: Build x64 installer
+        run: npm run build:installer:x64
+
+      - name: Preserve x64 updater metadata
+        shell: pwsh
+        run: Move-Item -LiteralPath dist-native/latest.yml -Destination dist-native/latest-x64.yml -Force
+
+      - name: Build ARM64 installer
+        run: npm run build:installer:arm64
+
+      - name: Preserve architecture-specific updater metadata
+        shell: pwsh
+        run: |
+          Move-Item -LiteralPath dist-native/latest.yml -Destination dist-native/latest-arm64.yml -Force
+          Copy-Item -LiteralPath dist-native/latest-x64.yml -Destination dist-native/latest.yml -Force
 
       - name: Verify packaged source and create checksums
         shell: pwsh
@@ -59,11 +72,13 @@ jobs:
           if (-not (Select-String -Path 'dist-native/latest.yml' -Pattern "version: $expected" -Quiet)) {
             throw 'latest.yml does not match the package version'
           }
-          if (-not (Select-String -Path 'dist-native/latest.yml' -Pattern '^path: PineLauncherSetup\.exe$' -Quiet)) {
-            throw 'latest.yml must point installed apps at the universal Windows installer'
+          if (-not (Select-String -Path 'dist-native/latest.yml' -Pattern '^path: PineLauncherSetup-x64\.exe$' -Quiet)) {
+            throw 'latest.yml must point x64 installed apps at the x64 installer'
+          }
+          if (-not (Select-String -Path 'dist-native/latest-arm64.yml' -Pattern '^path: PineLauncherSetup-arm64\.exe$' -Quiet)) {
+            throw 'latest-arm64.yml must point ARM64 installed apps at the ARM64 installer'
           }
           $requiredUpdateAssets = @(
-            'dist-native/PineLauncherSetup.exe.blockmap',
             'dist-native/PineLauncherSetup-x64.exe.blockmap',
             'dist-native/PineLauncherSetup-arm64.exe.blockmap'
           )
@@ -93,6 +108,7 @@ jobs:
             dist-native/PineLauncherSetup*.exe
             dist-native/PineLauncherSetup*.blockmap
             dist-native/latest.yml
+            dist-native/latest-arm64.yml
             dist-native/SHA256SUMS.txt
 
       - name: Publish tagged release assets
@@ -104,4 +120,5 @@ jobs:
             dist-native/PineLauncherSetup*.exe
             dist-native/PineLauncherSetup*.blockmap
             dist-native/latest.yml
+            dist-native/latest-arm64.yml
             dist-native/SHA256SUMS.txt

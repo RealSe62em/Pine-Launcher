@@ -165,3 +165,211 @@ test('managed Java installation starts with instance creation and safely retries
   assert.match(preload, /onJavaInstallProgress/);
   assert.match(renderer, /api\.onJavaInstallProgress/);
 });
+
+test('instance backups stay inside the instance header experience with safe update hooks', () => {
+  assert.match(html, /id="instance-backups-btn"[\s\S]*?href="#i-backup"/);
+  assert.match(renderer, /function openBackupPanel\(\)/);
+  assert.match(renderer, /Entire instance/);
+  assert.match(renderer, /Worlds only/);
+  assert.match(renderer, /Contains worlds from a newer Minecraft version/);
+  assert.match(renderer, /setInstanceBackupRetention/);
+  assert.match(preload, /createInstanceBackup/);
+  assert.match(main, /beginProtectedInstanceUpdate\(instance, `Before updating/);
+  assert.match(main, /recoverInterruptedRestores\(BACKUPS_DIR\)/);
+  assert.match(main, /recoverInterruptedInstanceUpdates\(\)/);
+  assert.match(components, /\.backup-item-actions/);
+});
+
+test('complete duplication is branded, transactional, and independently registered', () => {
+  assert.match(html, /id="edit-sheet-duplicate"/);
+  assert.match(renderer, /function openDuplicateDialog\(\)/);
+  assert.match(renderer, /same worlds, mods, settings, servers, and custom files/);
+  assert.match(preload, /duplicateInstance/);
+  assert.match(main, /copyInstanceTransactional/);
+  assert.match(main, /duplicatedFrom/);
+});
+
+test('close-on-launch preserves and restores the same launcher window', () => {
+  assert.match(main, /function hideLauncherForGame\(\)/);
+  assert.match(main, /mainWindow\.hide\(\)/);
+  assert.match(main, /function restoreLauncherAfterGame\(\)/);
+  assert.match(main, /mainWindow\.show\(\);[\s\S]*?mainWindow\.focus\(\)/);
+  assert.doesNotMatch(main, /settings\.launchBehavior === 'Close on launch'[\s\S]{0,180}mainWindow\?\.close\(\)/);
+});
+
+test('world management and crash explanations use Pine-native surfaces', () => {
+  assert.match(renderer, /async function explainCrash\(/);
+  assert.match(renderer, /function loadWorlds\(\)[\s\S]*?getInstanceWorldDetails/);
+  assert.match(renderer, /data-world-action="duplicate"/);
+  assert.match(renderer, /data-world-action="export"/);
+  assert.match(renderer, /Nothing is uploaded unless/);
+  assert.match(components, /\.crash-assistant-modal/);
+  assert.match(components, /\.world-card/);
+});
+
+test('crash assistant offers guarded recovery, private sharing, and frozen-game control', () => {
+  assert.match(preload, /uploadCrashLog/);
+  assert.match(preload, /repairInstanceFiles/);
+  assert.match(preload, /terminateGame/);
+  assert.match(main, /ipcMain\.handle\('upload-crash-log'/);
+  assert.match(main, /collectInstanceDiagnostics\(getInstanceDir\(instance\), log\)/);
+  assert.match(main, /redactSensitiveLog\(diagnostics\.log\)/);
+  assert.match(main, /confirmed !== true/);
+  assert.match(main, /ipcMain\.handle\('repair-instance-files'/);
+  assert.match(main, /createAutomaticInstanceBackup\(instance, 'Before repairing instance files'\)/);
+  assert.match(main, /ipcMain\.handle\('terminate-game'/);
+  assert.match(main, /taskkill[\s\S]*?'\/T'[\s\S]*?'\/F'/);
+  assert.match(renderer, /data-disable-suspect/);
+  assert.match(renderer, /Before disabling suspected mod/);
+  assert.match(renderer, /data-increase-memory/);
+  assert.match(renderer, /data-restore-point/);
+  assert.match(renderer, /Share anonymized log/);
+  assert.match(renderer, /Anyone with the resulting link may view it/);
+  assert.match(html, /id="dp-stop-game"/);
+  assert.match(components, /\.crash-recovery-grid/);
+});
+
+test('Pine and Modrinth archives expose validated branded import flows', () => {
+  assert.match(html, /id="library-import-btn"/);
+  assert.match(renderer, /function openPineImport\(\)/);
+  assert.match(preload, /importModrinthArchive/);
+  assert.match(main, /modrinth\.index\.json/);
+  assert.match(main, /Hash verification failed/);
+  assert.match(main, /The archive contains an unsafe path/);
+  assert.match(components, /\.export-choice\.selected/);
+});
+
+test('launcher discovery covers major launchers and clients without duplicate imports', () => {
+  for (const label of ['Lunar Client', 'Badlion Client', 'Feather / Dawn Client', 'Fast Client', 'TLauncher', 'SKlauncher', 'Technic Launcher', 'FTB App', 'PolyMC', 'LabyMod']) {
+    assert.match(main, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(main, /function discoverLauncherCandidates/);
+  assert.match(main, /const seen = new Set\(\)/);
+});
+
+test('Library sorting and instance actions use Pine navigation surfaces', () => {
+  assert.match(html, /id="library-sort-indicator"/);
+  assert.match(html, /class="library-sort-option active"/);
+  assert.doesNotMatch(html, /<select id="library-sort"/);
+  assert.match(renderer, /function moveLibrarySortIndicator\(\)/);
+  assert.match(html, /class="sheet-action-dock"/);
+  assert.match(components, /\.library-sort-indicator/);
+  assert.match(components, /\.sheet-action-indicator/);
+});
+
+test('Library groups persist independently and render as four-tile mosaics', () => {
+  assert.match(html, /id="library-make-group-btn"/);
+  assert.match(html, /id="library-groups-grid"/);
+  assert.match(html, /id="modal-group"/);
+  assert.match(html, /<select id="edit-group"/);
+  assert.match(preload, /listGroups/);
+  assert.match(preload, /createGroup/);
+  assert.match(main, /const GROUPS_FILE/);
+  assert.match(main, /ipcMain\.handle\('create-group'/);
+  assert.match(renderer, /members\.length > 4[\s\S]*?members\.length - 3/);
+  assert.match(renderer, /Array\.from\(\{ length: 4 \}/);
+  assert.match(components, /\.group-card\s*\{[\s\S]*?aspect-ratio:\s*1/);
+  assert.match(components, /\.group-mosaic\s*\{[\s\S]*?grid-template-columns:\s*1fr 1fr/);
+});
+
+test('deleting a group keeps its instances and returns them to the main Library', () => {
+  assert.match(preload, /deleteGroup/);
+  assert.match(main, /ipcMain\.handle\('delete-group'/);
+  assert.match(main, /instance\.group = ''/);
+  assert.match(main, /return \{ deleted: true, name, ungrouped \}/);
+  assert.match(renderer, /function openDeleteGroupModal/);
+  assert.match(renderer, /The group will be removed, not its instances/);
+  assert.match(renderer, /data-delete-group/);
+  assert.match(components, /\.group-card-delete/);
+  assert.match(components, /\.library-group-delete/);
+});
+
+test('global launcher search indexes instance tags and group names', () => {
+  assert.match(renderer, /const searchable = \[inst\.name, inst\.group, inst\.loader, inst\.gameVersion, \.\.\.tags\]/);
+  assert.match(renderer, /tags\.map\(tag => `#\$\{tag\}`\)/);
+  assert.match(renderer, /kind: 'group'/);
+  assert.match(html, /Search instances, tags, servers/);
+});
+
+test('managed modpacks expose complete lifecycle controls and preserve user files', () => {
+  assert.match(preload, /getManagedPackStatus/);
+  assert.match(preload, /changeManagedPackVersion/);
+  assert.match(preload, /rollbackManagedPack/);
+  assert.match(preload, /installModrinthModpack/);
+  assert.match(main, /ipcMain\.handle\('get-managed-pack-status'/);
+  assert.match(main, /ipcMain\.handle\('change-managed-pack-version'/);
+  assert.match(main, /ipcMain\.handle\('rollback-managed-pack'/);
+  assert.match(main, /const previousManaged = managedFilesForInstance\(instance\)[\s\S]*?removeManagedFiles\(staging, previousManaged\)/);
+  assert.match(main, /userAddedFiles: nextOwnership\.userAdded/);
+  assert.match(main, /createAutomaticInstanceBackup\(instance, `Before changing/);
+  assert.match(main, /assertManagedMutationAllowed/);
+  assert.match(renderer, /Update pack/);
+  assert.match(renderer, /Change version/);
+  assert.match(renderer, /Reinstall pack/);
+  assert.match(renderer, /Roll back to/);
+  assert.match(renderer, /keep worlds and user-added files/);
+  assert.match(components, /\.managed-pack-card/);
+  assert.match(components, /\.pack-health-grid/);
+});
+
+test('NeoForge has verified installation, exact compatibility, and a complete loader lifecycle', () => {
+  assert.match(renderer, /id: 'neoforge', label: 'NeoForge'/);
+  assert.match(main, /async function prepareNeoForge/);
+  assert.match(main, /neoforge-\$\{version\}-installer\.jar/);
+  assert.match(main, /findNeoForgeProfile/);
+  assert.match(main, /isNeoForgeVersionForMinecraft/);
+  assert.match(main, /NeoForge installer failed checksum verification/);
+  assert.match(main, /ipcMain\.handle\('get-neoforge-status'/);
+  assert.match(main, /ipcMain\.handle\('change-neoforge-version'/);
+  assert.match(main, /ipcMain\.handle\('repair-neoforge'/);
+  assert.match(main, /ipcMain\.handle\('rollback-neoforge'/);
+  assert.match(main, /createAutomaticInstanceBackup\(instance, reason\)/);
+  assert.match(main, /restoreBackup\(\{ backupsDir: BACKUPS_DIR, instance, instanceDir, id: backup\.id \}\)/);
+  assert.match(main, /withNeoForgeOperation/);
+  assert.match(main, /Wait for the NeoForge operation to finish before launching/);
+  assert.match(preload, /getNeoForgeStatus/);
+  assert.match(preload, /changeNeoForgeVersion/);
+  assert.match(preload, /repairNeoForge/);
+  assert.match(preload, /rollbackNeoForge/);
+  assert.match(renderer, /function loadNeoForgePanel/);
+  assert.match(renderer, /data-neoforge-repair/);
+  assert.match(renderer, /data-neoforge-rollback/);
+  assert.match(components, /\.neoforge-loader-card/);
+  assert.doesNotMatch(main, /NeoForge launching is not available/);
+});
+
+test('step five adds selective copies, bulk organization, and complete playtime surfaces', () => {
+  assert.match(html, /id="library-select-btn"/);
+  assert.match(html, /id="library-bulk-bar"/);
+  assert.match(html, /data-sort="playtime"/);
+  assert.match(preload, /bulkUpdateInstances/);
+  assert.match(preload, /bulkDeleteInstances/);
+  assert.match(main, /ipcMain\.handle\('bulk-update-instances'/);
+  assert.match(main, /ipcMain\.handle\('bulk-delete-instances'/);
+  assert.match(main, /createDuplicationFilter\(options\.components\)/);
+  assert.match(renderer, /data-copy-component/);
+  assert.match(renderer, /lastSessionSeconds/);
+  assert.match(components, /\.instance-card\.selected/);
+  assert.match(components, /\.duplicate-component-grid/);
+});
+
+test('step six manages worlds with guarded renames, data packs, screenshots, and downgrades', () => {
+  assert.match(html, /id="worlds-backup-btn"/);
+  assert.match(html, /id="worlds-screenshots-btn"/);
+  assert.match(preload, /renameWorld/);
+  assert.match(preload, /installWorldDatapackFile/);
+  assert.match(preload, /installModrinthDatapack/);
+  assert.match(main, /ipcMain\.handle\('rename-world'/);
+  assert.match(main, /ipcMain\.handle\('install-world-datapack-file'/);
+  assert.match(main, /ipcMain\.handle\('install-modrinth-datapack'/);
+  assert.match(main, /WORLD_DOWNGRADE_CONFIRMATION_REQUIRED/);
+  assert.match(main, /Before opening \$\{world\.name\} in older Minecraft/);
+  assert.match(renderer, /function openWorldDatapackChooser/);
+  assert.match(renderer, /world-downgrade-warning/);
+  assert.match(components, /\.world-downgrade-warning/);
+  assert.match(renderer, /const actionButton = event\.currentTarget/);
+  assert.match(renderer, /actionButton\.isConnected[\s\S]*?actionButton\.disabled = false/);
+  assert.match(renderer, /class="world-action-dock"/);
+  assert.match(renderer, /class="world-more-menu"/);
+  assert.match(components, /#worlds-grid[\s\S]*?minmax\(min\(470px, 100%\), 1fr\)/);
+});

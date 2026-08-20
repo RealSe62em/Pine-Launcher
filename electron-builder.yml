@@ -19,17 +19,14 @@ files:
   - package.json
   - renderer/**
   - lib/**
+  - "!scripts/**"
   - "!installer/**"
   - "!test/**"
   - "!dist*/**"
   - "!build/**"
   - "!settings.json"
 win:
-  target:
-    - target: nsis
-      arch:
-        - x64
-        - arm64
+  target: nsis
   icon: build/icon.ico
   artifactName: PineLauncherSetup-${arch}.exe
 nsis:

@@ -21,14 +21,28 @@ const { createUpdateManager } = require('./lib/updater');
 const { DiscordPresence, isPrivateServerAddress, normalizeServerIcon, parseGamePresenceLine, readSavedServers, serverDisplayAddress } = require('./lib/discord-presence');
 const { deleteAccount, normalizeAuthStore, publicAccounts, selectAccount, selectedAccount, upsertAccount } = require('./lib/account-store');
 const { destinationKey, listWorlds, newestWorld, rankDestinations, readActivity, recordDestination, removeDestination, sanitizeDestination } = require('./lib/activity-store');
+const { createBackup, deleteBackup, listBackups, pruneAutomaticBackups, recoverInterruptedRestores, restoreBackup } = require('./lib/instance-backups');
+const { copyInstanceTransactional, createDuplicationFilter, inspectTree } = require('./lib/instance-transfer');
+const { replaceLevelName, validateDatapackArchive } = require('./lib/world-management');
+const { buildTransferPlan, createTransferInclude, transferPlanSummary } = require('./lib/transfer-plan');
+const { inspectLauncherMetadata } = require('./lib/import-adapters');
+const { buildLightweightManifest, buildModrinthIndex, hashDescriptor } = require('./lib/pack-export');
+const { inspectManagedState, managedFileRecord, normalizePackPath, normalizedManagedFiles, removeManagedFiles, snapshotPackMetadata } = require('./lib/managed-pack');
+const { collectInstanceDiagnostics, diagnoseCrash, redactSensitiveLog } = require('./lib/crash-assistant');
+const { compareNeoForgeVersions, isNeoForgeVersionForMinecraft, isStableNeoForgeVersion, validateNeoForgeProfile } = require('./lib/neoforge');
+const { createLoaderProviderRegistry } = require('./lib/loader-provider');
+const { createNeoForgeProvider } = require('./lib/neoforge-provider');
 const portableFetch = (...args) => net.fetch(...args);
 installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
 
 let mainWindow;
 let updateManager;
 let mcClient = null;
+let activeGameProcess = null;
 let minecraftProcessStarted = false;
 let activeInstanceName = null;
+let launcherHiddenForGame = false;
+let appIsQuitting = false;
 let sharedSeedPromise = null;
 const DISCORD_APPLICATION_ID = '1536830830499078275';
 const discordPresence = new DiscordPresence(DISCORD_APPLICATION_ID, { logger: diagnosticLog });
@@ -52,13 +66,32 @@ const GLOBAL_LIBRARIES_DIR = path.join(GLOBAL_DIR, 'libraries');
 const GLOBAL_VERSIONS_DIR = path.join(GLOBAL_DIR, 'versions');
 const INSTANCES_FILE = path.join(INSTANCES_DIR, 'registry.json');
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
+const GROUPS_FILE = path.join(app.getPath('userData'), 'groups.json');
 const DESTINATION_CATALOG_FILE = path.join(app.getPath('userData'), 'recent-destinations.json');
 function getAuthFile() { return path.join(app.getPath('userData'), 'auth.json'); }
 const MOD_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'mods');
+const MANAGED_PACK_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'managed-packs');
 const LOG_DIR = path.join(app.getPath('userData'), 'logs');
+const BACKUPS_DIR = path.join(app.getPath('userData'), 'backups');
 const LOG_FILE = path.join(LOG_DIR, 'latest.log');
 const LAUNCH_VALIDATION_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'launch-validation.json');
 const launchValidationCache = new ValidationCache(LAUNCH_VALIDATION_CACHE_FILE);
+const managedPackValidationCache = new ValidationCache(path.join(app.getPath('userData'), 'cache', 'managed-pack-validation.json'));
+const activeNeoForgeOperations = new Set();
+const activeTransfers = new Map();
+
+async function withNeoForgeOperation(instanceName, task) {
+  const key = sanitizeName(instanceName).toLowerCase();
+  if (activeNeoForgeOperations.has(key)) throw new Error('Another NeoForge operation is already running for this instance');
+  activeNeoForgeOperations.add(key);
+  try { return await task(); }
+  finally { activeNeoForgeOperations.delete(key); }
+}
+
+function assertNeoForgeIdle(instanceName) {
+  const key = sanitizeName(instanceName).toLowerCase();
+  if (activeNeoForgeOperations.has(key)) throw new Error('Wait for the NeoForge operation to finish');
+}
 
 function diagnosticLog(level, message) {
   ensureDir(LOG_DIR);
@@ -174,6 +207,42 @@ function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+function sanitizeGroupName(value, { optional = false } = {}) {
+  const name = String(value || '').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 48);
+  if (!name && !optional) throw new Error('Enter a group name');
+  return name;
+}
+
+function readGroups({ includeInstanceGroups = true } = {}) {
+  const stored = readJSON(GROUPS_FILE);
+  const groups = [];
+  const seen = new Set();
+  const add = (value, created = null) => {
+    const name = sanitizeGroupName(typeof value === 'object' ? value?.name : value, { optional: true });
+    const key = name.toLocaleLowerCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    groups.push({ name, created: created || (typeof value === 'object' ? value?.created : null) || new Date().toISOString() });
+  };
+  if (Array.isArray(stored)) stored.forEach(group => add(group));
+  if (includeInstanceGroups) {
+    const registry = readJSON(INSTANCES_FILE) || [];
+    registry.forEach(instance => add(instance?.group, instance?.created));
+  }
+  return groups;
+}
+
+function ensureGroupExists(value) {
+  const name = sanitizeGroupName(value, { optional: true });
+  if (!name) return '';
+  const groups = readGroups();
+  if (!groups.some(group => group.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    groups.push({ name, created: new Date().toISOString() });
+  }
+  writeJSON(GROUPS_FILE, groups);
+  return groups.find(group => group.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.name || name;
+}
+
 function destinationCatalogId(value) {
   const instanceRef = String(value?.instanceId || value?.instanceName || '').trim();
   const key = String(value?.key || destinationKey(value)).trim();
@@ -281,6 +350,255 @@ function getInstanceDirByName(name, ...segments) {
   const instance = registry.find(item => item.name === safeName);
   if (!instance) throw new Error('Instance not found');
   return getInstanceDir(instance, ...segments);
+}
+
+function getRegisteredInstance(name) {
+  const safeName = sanitizeName(name);
+  const registry = readJSON(INSTANCES_FILE) || [];
+  const instance = registry.find(item => item.name === safeName);
+  if (!instance) throw new Error('Instance not found');
+  return { instance, registry };
+}
+
+function managedFilesForInstance(instance) {
+  const records = [];
+  try { records.push(...normalizedManagedFiles(instance?.modpack?.managedFiles || [])); } catch {}
+  if (records.length || instance?.modpack?.source !== 'curseforge') return records;
+  const root = getInstanceDir(instance);
+  const metadata = readJSON(path.join(root, 'mods_meta.json')) || {};
+  const expected = new Set((instance.modpack.managedFiles || []).map(item => `${Number(item.projectId)}:${Number(item.fileId)}`));
+  for (const [filename, item] of Object.entries(metadata)) {
+    const projectId = Number(String(item.projectId || '').replace(/^curseforge:/, ''));
+    const fileId = Number(item.installedVersion);
+    if (!expected.has(`${projectId}:${fileId}`)) continue;
+    try { records.push(managedFileRecord(root, `mods/${filename}`, { projectId, fileId, kind: 'download' })); } catch {}
+  }
+  return records;
+}
+
+function assertManagedMutationAllowed(instance, relative) {
+  if (instance?.modpack?.lockState !== 'locked') return;
+  const key = normalizePackPath(relative).toLowerCase();
+  if (managedFilesForInstance(instance).some(file => file.path.toLowerCase() === key)) {
+    throw new Error('This file belongs to a locked modpack. Unlock the pack in Instance Settings before changing it.');
+  }
+}
+
+function instancePackSnapshot(instance) {
+  return {
+    gameVersion: instance.gameVersion,
+    profile: instance.profile,
+    loader: instance.loader,
+    loaderVersion: instance.loaderVersion,
+    modpack: snapshotPackMetadata(instance.modpack),
+  };
+}
+
+function sanitizeImportedPackMetadata(value) {
+  if (!value || typeof value !== 'object' || !['modrinth', 'curseforge'].includes(value.source)) return null;
+  let managedFiles = [];
+  try {
+    managedFiles = normalizedManagedFiles(value.managedFiles).slice(0, 10000).map(file => ({
+      path: file.path,
+      fileSize: Math.max(0, Number(file.fileSize) || 0),
+      hashes: Object.fromEntries(Object.entries(file.hashes || {}).filter(([algorithm, hash]) => ['sha1', 'sha256', 'sha512'].includes(algorithm) && /^[a-f0-9]{32,128}$/i.test(String(hash))).map(([algorithm, hash]) => [algorithm, String(hash).toLowerCase()])),
+      downloads: (file.downloads || []).map(secureDownloadUrl).filter(Boolean).slice(0, 4),
+      kind: file.kind === 'override' ? 'override' : 'download',
+      projectId: file.projectId ?? null,
+      fileId: file.fileId ?? null,
+    }));
+  } catch { return null; }
+  return {
+    source: value.source,
+    projectId: value.projectId == null ? null : String(value.projectId).slice(0, 120),
+    apiVersionId: value.apiVersionId == null ? null : String(value.apiVersionId).slice(0, 120),
+    fileId: value.fileId == null ? null : Number(value.fileId),
+    name: String(value.name || '').slice(0, 160),
+    installedVersion: String(value.installedVersion || '').slice(0, 120),
+    versionName: String(value.versionName || '').slice(0, 160),
+    lockState: ['locked', 'unlocked', 'unpaired'].includes(value.lockState) ? value.lockState : 'locked',
+    importedAt: new Date().toISOString(),
+    managedFiles,
+    userAddedFiles: [], modifiedManagedFiles: [], history: [],
+  };
+}
+
+async function managedPackVersions(instance) {
+  const pack = instance?.modpack;
+  if (!pack || pack.lockState === 'unpaired') return [];
+  if (pack.source === 'modrinth' && pack.projectId) {
+    const versions = await modrinthFetch(`/project/${encodeURIComponent(pack.projectId)}/version?include_changelog=false`);
+    return (versions || []).filter(version => (version.files || []).some(file => String(file.filename || '').toLowerCase().endsWith('.mrpack'))).slice(0, 50).map(version => ({
+      id: String(version.id), name: String(version.name || version.version_number || version.id), number: String(version.version_number || ''), published: version.date_published || null,
+      gameVersions: version.game_versions || [], loaders: version.loaders || [], current: String(version.id) === String(pack.apiVersionId || ''),
+    }));
+  }
+  if (pack.source === 'curseforge' && Number.isSafeInteger(Number(pack.projectId))) {
+    const response = await curseForgeFetch(`/mods/${Number(pack.projectId)}/files?pageSize=50`);
+    return (response.data || []).slice(0, 50).map(file => ({
+      id: String(file.id), name: String(file.displayName || file.fileName || file.id), number: String(file.id), published: file.fileDate || null,
+      gameVersions: file.gameVersions || [], loaders: [], current: String(file.id) === String(pack.fileId || pack.installedVersion || ''),
+    }));
+  }
+  return [];
+}
+
+async function downloadManagedPackVersion(instance, requestedVersionId, onProgress) {
+  const pack = instance.modpack;
+  ensureDir(MANAGED_PACK_CACHE_DIR);
+  if (pack.source === 'modrinth') {
+    if (!pack.projectId) throw new Error('This local .mrpack has no Modrinth project link, so Pine cannot change its version automatically');
+    const version = await modrinthFetch(`/version/${encodeURIComponent(requestedVersionId)}`);
+    if (String(version.project_id) !== String(pack.projectId)) throw new Error('The selected version does not belong to this modpack');
+    const file = (version.files || []).find(item => item.primary && String(item.filename).toLowerCase().endsWith('.mrpack'))
+      || (version.files || []).find(item => String(item.filename).toLowerCase().endsWith('.mrpack'));
+    const url = secureDownloadUrl(file?.url);
+    if (!file || !url) throw new Error('This Modrinth version has no downloadable .mrpack');
+    const archivePath = path.join(MANAGED_PACK_CACHE_DIR, `modrinth-${safeRemoteFilename(String(version.id))}-${safeRemoteFilename(file.filename)}`);
+    await fetchWithRetry(url, archivePath, progress => onProgress?.({ message: `Downloading ${version.name || version.version_number}`, percent: progress.percent || 0 }));
+    const algorithm = file.hashes?.sha512 ? 'sha512' : file.hashes?.sha1 ? 'sha1' : null;
+    if (algorithm) {
+      const actual = crypto.createHash(algorithm).update(fs.readFileSync(archivePath)).digest('hex');
+      if (actual.toLowerCase() !== String(file.hashes[algorithm]).toLowerCase()) throw new Error('The downloaded Modrinth pack failed verification');
+    }
+    return { archivePath, apiVersionId: String(version.id), versionName: String(version.name || version.version_number || version.id), versionNumber: String(version.version_number || ''), published: version.date_published || null };
+  }
+  if (pack.source === 'curseforge') {
+    const projectId = Number(pack.projectId);
+    const fileId = Number(requestedVersionId);
+    if (!Number.isSafeInteger(projectId) || !Number.isSafeInteger(fileId)) throw new Error('The managed CurseForge pack link is invalid');
+    const file = (await curseForgeFetch(`/mods/${projectId}/files/${fileId}`)).data;
+    let url = file?.downloadUrl;
+    if (!url) { try { url = (await curseForgeFetch(`/mods/${projectId}/files/${fileId}/download-url`)).data; } catch {} }
+    url = secureDownloadUrl(url);
+    if (!url) throw new Error('This CurseForge pack version cannot be downloaded automatically');
+    const archivePath = path.join(MANAGED_PACK_CACHE_DIR, `curseforge-${projectId}-${fileId}.zip`);
+    await fetchWithRetry(url, archivePath, progress => onProgress?.({ message: `Downloading ${file.displayName || file.fileName}`, percent: progress.percent || 0 }));
+    verifyCurseForgeFile(file, archivePath);
+    return { archivePath, fileId, apiVersionId: String(fileId), versionName: String(file.displayName || file.fileName || fileId), versionNumber: String(fileId), published: file.fileDate || null };
+  }
+  throw new Error('This pack source does not support automatic version changes');
+}
+
+async function applyManagedPackVersion(instanceName, requestedVersionId, onProgress) {
+  const { instance, registry } = getRegisteredInstance(instanceName);
+  if (activeInstanceName === instance.name) throw new Error('Close Minecraft before changing this modpack');
+  if (!instance.modpack || instance.modpack.lockState === 'unpaired') throw new Error('This instance is not paired with a managed pack');
+  const download = await downloadManagedPackVersion(instance, requestedVersionId, onProgress);
+  const root = getInstanceDir(instance);
+  const parent = path.dirname(root);
+  const token = crypto.randomBytes(6).toString('hex');
+  const layer = path.join(parent, `.${path.basename(root)}.pine-pack-layer-${token}`);
+  const staging = path.join(parent, `.${path.basename(root)}.pine-pack-staging-${token}`);
+  const rollback = path.join(parent, `.${path.basename(root)}.pine-pack-rollback-${token}`);
+  let swapped = false;
+  try {
+    const descriptor = instance.modpack.source === 'modrinth'
+      ? await prepareModrinthPackLayer(download.archivePath, layer, onProgress)
+      : await prepareCurseForgePackLayer(download.archivePath, layer, onProgress);
+    if (!descriptor.gameVersion) throw new Error('The target pack version does not declare a Minecraft version');
+    const manifest = await fetchMinecraftVersions();
+    if (!manifest.versions?.some(item => item.id === descriptor.gameVersion)) throw new Error(`The target pack requests unknown Minecraft version ${descriptor.gameVersion}`);
+    const backup = createAutomaticInstanceBackup(instance, `Before changing ${instance.modpack.name || 'managed pack'} to ${download.versionName}`);
+    await copyInstanceTransactional({ source: root, destination: staging });
+    const previousManaged = managedFilesForInstance(instance);
+    const previousManagedMods = new Set(previousManaged.filter(file => file.path.toLowerCase().startsWith('mods/')).map(file => path.basename(file.path).toLowerCase()));
+    const oldModsMeta = readJSON(path.join(staging, 'mods_meta.json')) || {};
+    const userModsMeta = Object.fromEntries(Object.entries(oldModsMeta).filter(([filename]) => !previousManagedMods.has(filename.toLowerCase().replace(/\.disabled$/, ''))));
+    removeManagedFiles(staging, previousManaged);
+    copyPackLayer(layer, staging);
+    const nextModsMeta = readJSON(path.join(staging, 'mods_meta.json')) || {};
+    writeJSON(path.join(staging, 'mods_meta.json'), { ...userModsMeta, ...nextModsMeta });
+    inspectTree(staging);
+    const nextOwnership = inspectManagedState(staging, descriptor.managedFiles);
+    const previous = instancePackSnapshot(instance);
+    const history = Array.isArray(instance.modpack.history) ? instance.modpack.history.slice(-9) : [];
+    const nextPack = {
+      ...instance.modpack,
+      name: descriptor.packName || instance.modpack.name,
+      installedVersion: download.versionNumber || descriptor.manifestVersion || download.apiVersionId,
+      versionName: download.versionName,
+      apiVersionId: download.apiVersionId,
+      fileId: download.fileId || instance.modpack.fileId,
+      managedFiles: descriptor.managedFiles,
+      userAddedFiles: nextOwnership.userAdded.slice(0, 5000),
+      modifiedManagedFiles: [],
+      archiveCacheKey: path.basename(download.archivePath),
+      updatedAt: new Date().toISOString(),
+      availableVersion: null,
+      history: [...history, { id: crypto.randomUUID(), changedAt: new Date().toISOString(), backupId: backup.id, from: previous, toVersion: download.apiVersionId, toName: download.versionName }],
+    };
+    fs.renameSync(root, rollback);
+    fs.renameSync(staging, root);
+    swapped = true;
+    Object.assign(instance, {
+      gameVersion: descriptor.gameVersion,
+      profile: descriptor.loader === 'vanilla' ? 'vanilla' : 'custom',
+      loader: descriptor.loader,
+      loaderVersion: descriptor.loaderVersion,
+      modpack: nextPack,
+    });
+    writeJSON(INSTANCES_FILE, registry);
+    fs.rmSync(rollback, { recursive: true, force: true });
+    onProgress?.({ message: `${download.versionName} is ready`, percent: 100 });
+    return instance;
+  } catch (error) {
+    if (swapped && fs.existsSync(rollback)) {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.renameSync(rollback, root);
+    }
+    throw error;
+  } finally {
+    fs.rmSync(layer, { recursive: true, force: true });
+    fs.rmSync(staging, { recursive: true, force: true });
+    if (!swapped) fs.rmSync(rollback, { recursive: true, force: true });
+  }
+}
+
+function createAutomaticInstanceBackup(instance, reason) {
+  return createBackup({
+    backupsDir: BACKUPS_DIR,
+    instance,
+    instanceDir: getInstanceDir(instance),
+    scope: 'full',
+    kind: 'automatic',
+    reason,
+    description: reason,
+    retention: instance.backupRetention || 5,
+  });
+}
+
+const UPDATE_RECOVERY_FILE = '.pine-update-recovery.json';
+function beginProtectedInstanceUpdate(instance, reason) {
+  const backup = createAutomaticInstanceBackup(instance, reason);
+  writeJSON(getInstanceDir(instance, UPDATE_RECOVERY_FILE), {
+    format: 1,
+    backupId: backup.id,
+    reason,
+    createdAt: new Date().toISOString(),
+  });
+  return backup;
+}
+
+function finishProtectedInstanceUpdate(instance) {
+  fs.rmSync(getInstanceDir(instance, UPDATE_RECOVERY_FILE), { force: true });
+}
+
+function recoverInterruptedInstanceUpdates() {
+  const registry = readJSON(INSTANCES_FILE) || [];
+  const recovered = [];
+  for (const instance of registry) {
+    let marker;
+    try { marker = readJSON(getInstanceDir(instance, UPDATE_RECOVERY_FILE)); } catch { continue; }
+    if (!marker?.backupId || typeof marker.backupId !== 'string') continue;
+    try {
+      restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: marker.backupId });
+      recovered.push({ instance: instance.name, backupId: marker.backupId });
+    } catch (error) {
+      diagnosticLog('ERROR', `Could not recover interrupted update for ${instance.name}: ${error.stack || error.message || error}`);
+    }
+  }
+  return recovered;
 }
 
 function safeImageData(value) {
@@ -912,6 +1230,21 @@ function createWindow() {
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools();
 }
 
+function hideLauncherForGame() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  launcherHiddenForGame = true;
+  mainWindow.hide();
+}
+
+function restoreLauncherAfterGame() {
+  if (!launcherHiddenForGame || appIsQuitting) return;
+  launcherHiddenForGame = false;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 // ── Auth (Microsoft OAuth) ─────────────────────────────────────────
 const CLIENT_ID = '00000000402b5328'; // Minecraft for Windows
 const REDIRECT_URI = 'https://login.live.com/oauth20_desktop.srf';
@@ -1112,9 +1445,8 @@ async function fetchLoaderVersionsUncached(gameVersion, loader) {
       if (!res.ok) throw new Error(`NeoForge metadata returned HTTP ${res.status}`);
       const xml = await res.text();
       const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
-      const prefix = gameVersion.replace(/^1\./, '') + '.';
-      const filtered = versions.filter(v => v.startsWith(prefix));
-      return filtered.map(v => ({ version: v, name: `NeoForge ${v}`, stable: !v.includes('-beta') }));
+      const filtered = versions.filter(v => isNeoForgeVersionForMinecraft(v, gameVersion)).sort((a, b) => compareNeoForgeVersions(b, a));
+      return filtered.map(v => ({ version: v, name: `NeoForge ${v}`, stable: isStableNeoForgeVersion(v) }));
     }
     default:
       return [];
@@ -1215,6 +1547,145 @@ async function curseForgeFetch(apiPath) {
   while (curseForgeResponseCache.size > 500) curseForgeResponseCache.delete(curseForgeResponseCache.keys().next().value);
   try { return await promise; }
   catch (error) { curseForgeResponseCache.delete(apiPath); throw error; }
+}
+
+function secureDownloadUrl(values) {
+  for (const value of Array.isArray(values) ? values : [values]) {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol === 'https:') return parsed.toString();
+    } catch {}
+  }
+  return null;
+}
+
+function packLoaderFromDependencies(dependencies = {}) {
+  const loaderEntry = [
+    ['fabric', dependencies['fabric-loader']], ['quilt', dependencies['quilt-loader']],
+    ['forge', dependencies.forge], ['neoforge', dependencies.neoforge],
+  ].find(([, value]) => value);
+  return {
+    gameVersion: String(dependencies.minecraft || '').slice(0, 40),
+    loader: loaderEntry?.[0] || 'vanilla',
+    loaderVersion: loaderEntry ? String(loaderEntry[1]).slice(0, 80) : null,
+  };
+}
+
+function cacheManagedPackArchive(source, extension = '.zip') {
+  ensureDir(MANAGED_PACK_CACHE_DIR);
+  const key = `${crypto.randomUUID()}${extension.startsWith('.') ? extension : `.${extension}`}`;
+  fs.copyFileSync(source, path.join(MANAGED_PACK_CACHE_DIR, key));
+  return key;
+}
+
+function copyPackLayer(layer, destination) {
+  const plan = inspectTree(layer);
+  for (const file of plan.files) {
+    const parts = String(file.relative || '').split(path.sep).filter(Boolean);
+    const target = resolveSafePath(destination, ...parts);
+    ensureDir(path.dirname(target));
+    fs.copyFileSync(path.join(layer, file.relative), target);
+  }
+  return plan;
+}
+
+async function prepareModrinthPackLayer(archivePath, layer, onProgress) {
+  const archive = new AdmZip(archivePath);
+  let manifest;
+  try { manifest = JSON.parse(archive.getEntry('modrinth.index.json')?.getData().toString('utf8') || ''); }
+  catch { throw new Error('The Modrinth pack manifest is invalid'); }
+  if (manifest?.formatVersion !== 1 || manifest?.game !== 'minecraft' || !Array.isArray(manifest.files)) throw new Error('This is not a supported Modrinth pack');
+  ensureDir(layer);
+  const recordDetails = new Map();
+  let overrideBytes = 0;
+  let overrideFiles = 0;
+  for (const entry of archive.getEntries()) {
+    const normalized = String(entry.entryName || '').replace(/\\/g, '/');
+    if (!normalized || normalized.endsWith('/')) continue;
+    const prefix = normalized.startsWith('overrides/') ? 'overrides/' : normalized.startsWith('client-overrides/') ? 'client-overrides/' : null;
+    if (!prefix) continue;
+    const relative = normalizePackPath(normalized.slice(prefix.length));
+    const data = entry.getData();
+    overrideBytes += data.length;
+    overrideFiles += 1;
+    if (data.length > 128 * 1024 * 1024 || overrideBytes > 2 * 1024 * 1024 * 1024 || overrideFiles > 10000) throw new Error('The Modrinth pack overrides are unexpectedly large');
+    const target = resolveSafePath(layer, ...relative.split('/'));
+    ensureDir(path.dirname(target));
+    fs.writeFileSync(target, data);
+    recordDetails.set(relative.toLowerCase(), { relative, kind: 'override' });
+  }
+  for (let index = 0; index < manifest.files.length; index += 1) {
+    const file = manifest.files[index];
+    if (file?.env?.client === 'unsupported') continue;
+    const relative = normalizePackPath(file?.path);
+    const url = secureDownloadUrl(file.downloads || []);
+    if (!url) throw new Error(`No secure download is available for ${relative}`);
+    const target = resolveSafePath(layer, ...relative.split('/'));
+    ensureDir(path.dirname(target));
+    await fetchWithRetry(url, target, progress => onProgress?.({ message: `Installing ${index + 1} of ${manifest.files.length}: ${path.basename(relative)}`, percent: Math.round(((index + (progress.percent || 0) / 100) / Math.max(1, manifest.files.length)) * 100) }));
+    const algorithm = file.hashes?.sha512 ? 'sha512' : file.hashes?.sha1 ? 'sha1' : null;
+    if (algorithm) {
+      const actual = crypto.createHash(algorithm).update(fs.readFileSync(target)).digest('hex');
+      if (actual.toLowerCase() !== String(file.hashes[algorithm]).toLowerCase()) throw new Error(`Hash verification failed for ${relative}`);
+    }
+    if (Number(file.fileSize) > 0 && fs.statSync(target).size !== Number(file.fileSize)) throw new Error(`Size verification failed for ${relative}`);
+    recordDetails.set(relative.toLowerCase(), { relative, kind: 'download', hashes: file.hashes || {}, downloads: (file.downloads || []).filter(value => secureDownloadUrl(value)).slice(0, 4) });
+  }
+  const managedFiles = [...recordDetails.values()].map(details => managedFileRecord(layer, details.relative, details));
+  return { manifest, ...packLoaderFromDependencies(manifest.dependencies || {}), managedFiles, packName: String(manifest.name || '').slice(0, 160), manifestVersion: String(manifest.versionId || '').slice(0, 120) };
+}
+
+async function prepareCurseForgePackLayer(archivePath, layer, onProgress) {
+  const archive = new AdmZip(archivePath);
+  let manifest;
+  try { manifest = JSON.parse(archive.getEntry('manifest.json')?.getData().toString('utf8') || ''); }
+  catch { throw new Error('The CurseForge pack manifest is invalid'); }
+  if (!manifest?.minecraft?.version || !Array.isArray(manifest.files)) throw new Error('This is not a supported CurseForge modpack');
+  ensureDir(layer);
+  const primaryLoader = (manifest.minecraft.modLoaders || []).find(item => item.primary) || manifest.minecraft.modLoaders?.[0];
+  const loaderMatch = String(primaryLoader?.id || '').match(/^(forge|fabric|quilt|neoforge)-(.+)$/i);
+  const descriptor = { gameVersion: String(manifest.minecraft.version).slice(0, 40), loader: loaderMatch ? loaderMatch[1].toLowerCase() : 'vanilla', loaderVersion: loaderMatch ? loaderMatch[2].slice(0, 80) : null };
+  const records = [];
+  const overridesPrefix = `${String(manifest.overrides || 'overrides').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')}/`;
+  let extractedBytes = 0;
+  let extractedFiles = 0;
+  for (const entry of archive.getEntries()) {
+    const normalized = String(entry.entryName || '').replace(/\\/g, '/');
+    if (entry.isDirectory || !normalized.startsWith(overridesPrefix)) continue;
+    const relative = normalizePackPath(normalized.slice(overridesPrefix.length));
+    const data = entry.getData();
+    extractedBytes += data.length;
+    extractedFiles += 1;
+    if (data.length > 128 * 1024 * 1024 || extractedBytes > 2 * 1024 * 1024 * 1024 || extractedFiles > 10000) throw new Error('The CurseForge pack overrides are unexpectedly large');
+    const target = resolveSafePath(layer, ...relative.split('/'));
+    ensureDir(path.dirname(target));
+    fs.writeFileSync(target, data);
+    records.push(managedFileRecord(layer, relative, { kind: 'override' }));
+  }
+  const modsMeta = {};
+  const required = manifest.files.filter(item => item.required !== false);
+  for (let index = 0; index < required.length; index += 1) {
+    const item = required[index];
+    const projectId = Number(item.projectID);
+    const fileId = Number(item.fileID);
+    if (!Number.isSafeInteger(projectId) || !Number.isSafeInteger(fileId)) throw new Error('The pack contains an invalid CurseForge file reference');
+    const file = (await curseForgeFetch(`/mods/${projectId}/files/${fileId}`)).data;
+    const project = (await curseForgeFetch(`/mods/${projectId}`)).data;
+    let url = file?.downloadUrl;
+    if (!url) { try { url = (await curseForgeFetch(`/mods/${projectId}/files/${fileId}/download-url`)).data; } catch {} }
+    url = secureDownloadUrl(url);
+    if (!url) throw new Error(`${project?.name || projectId} does not allow third-party downloads`);
+    const filename = safeRemoteFilename(file.fileName);
+    const relative = `mods/${filename}`;
+    const target = resolveSafePath(layer, 'mods', filename);
+    ensureDir(path.dirname(target));
+    await fetchWithRetry(url, target, progress => onProgress?.({ message: `Installing ${index + 1} of ${required.length}: ${filename}`, percent: Math.round(((index + (progress.percent || 0) / 100) / Math.max(1, required.length)) * 100) }));
+    verifyCurseForgeFile(file, target);
+    records.push(managedFileRecord(layer, relative, { kind: 'download', projectId, fileId, downloads: [url] }));
+    modsMeta[filename] = { projectId: `curseforge:${projectId}`, title: project?.name || filename, iconUrl: project?.logo?.url || null, installedVersion: String(fileId), installedAt: new Date().toISOString(), source: 'curseforge' };
+  }
+  writeJSON(path.join(layer, 'mods_meta.json'), modsMeta);
+  return { manifest, ...descriptor, managedFiles: normalizedManagedFiles(records), packName: String(manifest.name || '').slice(0, 160), manifestVersion: String(manifest.version || '').slice(0, 120) };
 }
 
 async function fetchServerMetadata(address) {
@@ -1374,6 +1845,137 @@ async function prepareForge(instance, instanceDir, onProgress) {
   return installerPath;
 }
 
+function runJavaInstaller(javaPath, args, cwd) {
+  return new Promise((resolve, reject) => {
+    execFile(javaPath, args, {
+      cwd,
+      windowsHide: true,
+      timeout: 10 * 60 * 1000,
+      maxBuffer: 8 * 1024 * 1024,
+      encoding: 'utf8',
+    }, (error, stdout, stderr) => {
+      if (!error) return resolve({ stdout, stderr });
+      const detail = String(stderr || stdout || error.message || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 2000);
+      reject(new Error(`NeoForge installer failed${detail ? `: ${detail}` : ''}`));
+    });
+  });
+}
+
+function findNeoForgeProfile(instanceDir, gameVersion, loaderVersion) {
+  const versionsDir = path.join(instanceDir, 'versions');
+  let entries = [];
+  try { entries = fs.readdirSync(versionsDir, { withFileTypes: true }); } catch { return null; }
+  const requested = String(loaderVersion || '').toLowerCase();
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.toLowerCase().includes('neoforge')) continue;
+    const profile = readJSON(path.join(versionsDir, entry.name, `${entry.name}.json`));
+    if (!profile || profile.id !== entry.name) continue;
+    const validation = validateNeoForgeProfile(profile, gameVersion, loaderVersion);
+    if (!validation.valid || (requested && validation.installedVersion.toLowerCase() !== requested)) continue;
+    return profile.id;
+  }
+  return null;
+}
+
+function neoForgeProfileHealth(instanceDir, gameVersion, loaderVersion) {
+  const profileId = findNeoForgeProfile(instanceDir, gameVersion, loaderVersion);
+  if (!profileId) return { installed: false, valid: false, profileId: null, missingLibraries: 0, damagedLibraries: 0 };
+  const profile = readJSON(path.join(instanceDir, 'versions', profileId, `${profileId}.json`));
+  let missingLibraries = 0;
+  let damagedLibraries = 0;
+  for (const library of profile?.libraries || []) {
+    const artifact = library?.downloads?.artifact;
+    let relative = artifact?.path || '';
+    if (!relative && typeof library?.name === 'string') {
+      const coordinateAndExtension = library.name.split('@');
+      const parts = coordinateAndExtension[0].split(':');
+      if (parts.length >= 3 && parts.slice(0, 3).every(Boolean)) {
+        const extension = coordinateAndExtension[1] || 'jar';
+        const classifier = parts[3] ? `-${parts[3]}` : '';
+        relative = `${parts[0].replace(/\./g, '/')}/${parts[1]}/${parts[2]}/${parts[1]}-${parts[2]}${classifier}.${extension}`;
+      }
+    }
+    if (!relative) continue;
+    let file;
+    try { file = resolveSafePath(instanceDir, 'libraries', ...String(relative).replace(/\\/g, '/').split('/')); }
+    catch { damagedLibraries += 1; continue; }
+    if (!fs.existsSync(file)) { missingLibraries += 1; continue; }
+    if (artifact?.sha1 && !launchValidationCache.isValid(file, `neoforge-sha1:${artifact.sha1}`, candidate => crypto.createHash('sha1').update(fs.readFileSync(candidate)).digest('hex') === artifact.sha1)) damagedLibraries += 1;
+    else if (file.toLowerCase().endsWith('.jar') && !launchValidationCache.isValid(file, 'neoforge-jar', isValidJar)) damagedLibraries += 1;
+  }
+  launchValidationCache.flush();
+  return { installed: true, valid: missingLibraries === 0 && damagedLibraries === 0, profileId, missingLibraries, damagedLibraries };
+}
+
+function removeNeoForgeVersion(instanceDir, gameVersion, loaderVersion) {
+  const versionsDir = path.join(instanceDir, 'versions');
+  let removedProfiles = 0;
+  try {
+    for (const entry of fs.readdirSync(versionsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.toLowerCase().includes('neoforge')) continue;
+      const profile = readJSON(path.join(versionsDir, entry.name, `${entry.name}.json`));
+      const validation = validateNeoForgeProfile(profile, gameVersion, loaderVersion);
+      if (validation.installedVersion !== String(loaderVersion)) continue;
+      fs.rmSync(path.join(versionsDir, entry.name), { recursive: true, force: true });
+      removedProfiles += 1;
+    }
+  } catch {}
+  const libraryVersion = path.join(instanceDir, 'libraries', 'net', 'neoforged', 'neoforge', String(loaderVersion));
+  fs.rmSync(libraryVersion, { recursive: true, force: true });
+  return removedProfiles;
+}
+
+async function ensureNeoForgeInstaller(version, installersDir, onProgress) {
+  const installerPath = resolveSafePath(installersDir, `neoforge-${version}-installer.jar`);
+  const checksumPath = `${installerPath}.sha256`;
+  const url = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(version)}/neoforge-${encodeURIComponent(version)}-installer.jar`;
+  let expected = '';
+  const hasStoredChecksum = fs.existsSync(checksumPath);
+  try { expected = fs.readFileSync(checksumPath, 'utf8').trim().toLowerCase(); } catch {}
+  const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (fs.existsSync(installerPath) && isValidJar(installerPath) && ((!hasStoredChecksum && !expected) || (/^[a-f0-9]{64}$/.test(expected) && hash(installerPath) === expected))) return installerPath;
+  fs.rmSync(installerPath, { force: true });
+  const checksumResponse = await portableFetch(`${url}.sha256`, { signal: AbortSignal.timeout(15000) });
+  if (!checksumResponse.ok) throw new Error(`NeoForge checksum returned HTTP ${checksumResponse.status}`);
+  expected = (await checksumResponse.text()).trim().split(/\s+/)[0].toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error('NeoForge published an invalid installer checksum');
+  await fetchWithRetry(url, installerPath, progress => onProgress?.(progress));
+  if (!isValidJar(installerPath) || hash(installerPath) !== expected) {
+    fs.rmSync(installerPath, { force: true });
+    throw new Error('The NeoForge installer failed checksum verification');
+  }
+  fs.writeFileSync(checksumPath, expected, 'utf8');
+  return installerPath;
+}
+
+async function prepareNeoForge(instance, instanceDir, javaPath, onProgress, options = {}) {
+  if (instance.loader !== 'neoforge') return null;
+  if (!isNeoForgeVersionForMinecraft(instance.loaderVersion, instance.gameVersion)) throw new Error(`NeoForge ${instance.loaderVersion} is not for Minecraft ${instance.gameVersion}`);
+  const cachedProfile = findNeoForgeProfile(instanceDir, instance.gameVersion, instance.loaderVersion);
+  const cachedHealth = neoForgeProfileHealth(instanceDir, instance.gameVersion, instance.loaderVersion);
+  if (cachedProfile && cachedHealth.valid && !options.force) return cachedProfile;
+  const installersDir = resolveSafePath(instanceDir, 'installers');
+  ensureDir(installersDir);
+  const version = String(instance.loaderVersion || '');
+  if (options.force) removeNeoForgeVersion(instanceDir, instance.gameVersion, version);
+  const installerPath = await ensureNeoForgeInstaller(version, installersDir, onProgress);
+  onProgress?.({ percent: 100, label: 'Installing NeoForge' });
+  await runJavaInstaller(javaPath, ['-jar', installerPath, '--install-client', instanceDir], instanceDir);
+  const profile = findNeoForgeProfile(instanceDir, instance.gameVersion, instance.loaderVersion);
+  if (!profile) throw new Error(`NeoForge ${version} did not create a valid profile for Minecraft ${instance.gameVersion}`);
+  return profile;
+}
+
+let loaderProviderRegistry = null;
+function getLoaderProviders() {
+  if (!loaderProviderRegistry) {
+    loaderProviderRegistry = createLoaderProviderRegistry([
+      createNeoForgeProvider({ prepare: prepareNeoForge, health: neoForgeProfileHealth, remove: removeNeoForgeVersion }),
+    ]);
+  }
+  return loaderProviderRegistry;
+}
+
 // ── IPC Handlers ────────────────────────────────────────────────────
 function setupIPC() {
   ipcMain.handle('get-update-state', async () => updateManager?.getState());
@@ -1397,6 +1999,96 @@ function setupIPC() {
     }
     const detail = lastError?.message ? ` (${lastError.message})` : '';
     throw new Error('Windows did not accept the copied text. Close other clipboard tools and try again.' + detail);
+  });
+
+  ipcMain.handle('analyze-crash', async (_, instanceName, log) => {
+    if (typeof log !== 'string' || log.length > 10 * 1024 * 1024) throw new Error('The selected log is too large to analyze');
+    let instance = null;
+    if (instanceName) {
+      try { instance = getRegisteredInstance(instanceName).instance; } catch {}
+    }
+    let mods = [];
+    if (instance) {
+      try { mods = await getInstanceModsList(instance.name); } catch {}
+    }
+    const settings = readJSON(SETTINGS_FILE) || {};
+    const currentMemoryMb = instance ? memoryMegabytes(resolveLaunchMemory(instance, settings).max) : 0;
+    const safeSystemLimit = Math.max(4096, Math.floor((os.totalmem() / 1024 / 1024) * 0.7 / 1024) * 1024);
+    const recommendedMemoryMb = currentMemoryMb ? Math.min(Math.max(currentMemoryMb + 2048, 4096), safeSystemLimit) : 0;
+    const diagnostics = instance ? collectInstanceDiagnostics(getInstanceDir(instance), log) : { log, sources: [] };
+    return { ...diagnoseCrash(diagnostics.log, {
+      instance: instance?.name || '',
+      gameVersion: instance?.gameVersion || '',
+      loader: instance?.loader || '',
+      mods,
+      currentMemoryMb,
+      recommendedMemoryMb,
+    }), sources: diagnostics.sources };
+  });
+
+  ipcMain.handle('upload-crash-log', async (_, instanceName, log, confirmed = false) => {
+    if (confirmed !== true) throw new Error('Confirm the anonymized upload first');
+    if (typeof log !== 'string' || !log.trim() || log.length > 10 * 1024 * 1024) throw new Error('The selected log cannot be uploaded');
+    let instance = null;
+    if (instanceName) {
+      try { instance = getRegisteredInstance(instanceName).instance; } catch {}
+    }
+    const diagnostics = instance ? collectInstanceDiagnostics(getInstanceDir(instance), log) : { log };
+    const content = redactSensitiveLog(diagnostics.log).split(/\r?\n/).slice(-25000).join('\n');
+    const response = await portableFetch('https://api.mclo.gs/1/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': `PineLauncher/${app.getVersion()}` },
+      body: JSON.stringify({
+        content,
+        source: 'Pine Launcher',
+        metadata: [
+          { key: 'minecraft_version', label: 'Minecraft', value: instance?.gameVersion || 'Unknown', visible: true },
+          { key: 'loader', label: 'Loader', value: instance?.loader || 'Unknown', visible: true },
+        ],
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.success || !/^[A-Za-z0-9]+$/.test(result.id || '')) throw new Error(result.error || 'mclo.gs could not accept this log');
+    return { id: result.id, url: `https://mclo.gs/${result.id}`, expires: Number(result.expires) || null };
+  });
+
+  ipcMain.handle('open-support-log', async (_, url) => {
+    let parsed;
+    try { parsed = new URL(url); } catch { throw new Error('Invalid support-log link'); }
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'mclo.gs' || !/^\/[A-Za-z0-9]+$/.test(parsed.pathname)) throw new Error('Invalid support-log link');
+    await shell.openExternal(parsed.href);
+    return true;
+  });
+
+  ipcMain.handle('repair-instance-files', async (_, instanceName) => {
+    const instance = getRegisteredInstance(instanceName).instance;
+    if (activeInstanceName) throw new Error('Close Minecraft before repairing instance files');
+    const backup = createAutomaticInstanceBackup(instance, 'Before repairing instance files');
+    const removedShared = cleanCorruptedJars(GLOBAL_LIBRARIES_DIR) + cleanCorruptedJars(GLOBAL_VERSIONS_DIR);
+    const removedMods = cleanCorruptedJars(path.join(getInstanceDir(instance), 'mods'));
+    diagnosticLog('INFO', `Repaired ${instance.name}: removed ${removedShared} damaged game files and ${removedMods} damaged mod files`);
+    return { backupId: backup.id, removedShared, removedMods };
+  });
+
+  ipcMain.handle('get-game-status', async () => ({
+    active: Boolean(mcClient || activeGameProcess),
+    processStarted: Boolean(activeGameProcess && !activeGameProcess.killed),
+    instanceName: activeInstanceName || '',
+  }));
+
+  ipcMain.handle('terminate-game', async (_, instanceName, confirmed = false) => {
+    if (confirmed !== true) throw new Error('Confirm before stopping Minecraft');
+    if (!activeGameProcess || !Number.isInteger(activeGameProcess.pid)) throw new Error('Minecraft is not running');
+    if (instanceName && sanitizeName(instanceName) !== activeInstanceName) throw new Error('A different instance is running');
+    const pid = activeGameProcess.pid;
+    if (process.platform === 'win32') {
+      await new Promise((resolve, reject) => execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, error => error ? reject(error) : resolve()));
+    } else {
+      activeGameProcess.kill('SIGKILL');
+    }
+    diagnosticLog('WARN', `Minecraft process ${pid} was stopped by the user`);
+    return true;
   });
 
   ipcMain.handle('open-instance-folder', async (_, name) => {
@@ -1431,6 +2123,92 @@ function setupIPC() {
   ipcMain.handle('get-loader-versions', async (_, gameVersion, loader) => {
     return fetchLoaderVersions(gameVersion, loader);
   });
+
+  ipcMain.handle('get-neoforge-status', async (_, instanceName) => {
+    const instance = getRegisteredInstance(instanceName).instance;
+    if (instance.loader !== 'neoforge') throw new Error('This instance does not use NeoForge');
+    const health = getLoaderProviders().get('neoforge').health(getInstanceDir(instance), instance.gameVersion, instance.loaderVersion);
+    let versions = [];
+    let versionError = '';
+    try { versions = await fetchLoaderVersions(instance.gameVersion, 'neoforge'); }
+    catch (error) { versionError = error.message || String(error); }
+    const latest = versions.find(item => item.stable) || versions[0] || null;
+    const history = Array.isArray(instance.neoForgeHistory) ? instance.neoForgeHistory : [];
+    const rollback = [...history].reverse().find(item => item?.backupId && listBackups(BACKUPS_DIR, instance).some(backup => backup.id === item.backupId)) || null;
+    return {
+      gameVersion: instance.gameVersion,
+      installedVersion: instance.loaderVersion,
+      health,
+      versions: versions.slice(0, 200),
+      latestVersion: latest?.version && compareNeoForgeVersions(latest.version, instance.loaderVersion) > 0 ? latest.version : null,
+      latestName: latest?.name || '',
+      lockedByPack: instance.modpack?.lockState === 'locked',
+      rollbackVersion: rollback?.fromVersion || null,
+      versionError,
+    };
+  });
+
+  async function installRegisteredNeoForge(instanceName, requestedVersion, { force = false, reason = 'Before updating NeoForge' } = {}) {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    if (instance.loader !== 'neoforge') throw new Error('This instance does not use NeoForge');
+    if (activeInstanceName) throw new Error('Close Minecraft before changing NeoForge');
+    const version = String(requestedVersion || '').trim();
+    if (!isNeoForgeVersionForMinecraft(version, instance.gameVersion)) throw new Error(`NeoForge ${version || 'version'} is not for Minecraft ${instance.gameVersion}`);
+    if (!force && instance.modpack?.lockState === 'locked') throw new Error('This modpack controls its NeoForge version. Update the complete pack or unlock it first.');
+    let available = [];
+    try { available = await fetchLoaderVersions(instance.gameVersion, 'neoforge'); }
+    catch (error) { if (!force || version !== instance.loaderVersion) throw error; }
+    if (available.length && !available.some(item => item.version === version)) throw new Error(`NeoForge ${version} is not published for Minecraft ${instance.gameVersion}`);
+    const backup = createAutomaticInstanceBackup(instance, reason);
+    const instanceDir = getInstanceDir(instance);
+    const previousVersion = instance.loaderVersion;
+    try {
+      const settings = readJSON(SETTINGS_FILE) || {};
+      const requiredJava = await getRequiredJava(instance.gameVersion);
+      const configuredJava = instance.javaPath || settings.javaPath || '';
+      const selected = await resolveJavaForLaunch(requiredJava, configuredJava, update => mainWindow?.webContents.send('install-progress', { instanceName: instance.name, phase: 'downloading', message: update.label || 'Preparing Java for NeoForge', percent: Math.min(18, Math.round((update.percent || 0) * 0.18)) }));
+      const candidate = { ...instance, loaderVersion: version };
+      mainWindow?.webContents.send('install-progress', { instanceName: instance.name, phase: 'downloading', message: `Preparing NeoForge ${version}`, percent: 20 });
+      await getLoaderProviders().get('neoforge').prepare(candidate, instanceDir, selected.java.path, update => mainWindow?.webContents.send('install-progress', { instanceName: instance.name, phase: 'downloading', message: update.label || `Installing NeoForge ${version}`, percent: Math.min(95, 20 + Math.round((update.percent || 0) * 0.75)) }), { force });
+      const health = getLoaderProviders().get('neoforge').health(instanceDir, instance.gameVersion, version);
+      if (!health.installed || !health.valid) throw new Error(`NeoForge ${version} did not pass launch-profile validation`);
+      if (previousVersion !== version) getLoaderProviders().get('neoforge').remove(instanceDir, instance.gameVersion, previousVersion);
+      const index = registry.findIndex(item => item.id === instance.id);
+      const history = Array.isArray(registry[index].neoForgeHistory) ? registry[index].neoForgeHistory : [];
+      registry[index] = {
+        ...registry[index], loaderVersion: version, loaderUpdatedAt: new Date().toISOString(),
+        neoForgeHistory: previousVersion !== version ? [...history, { id: crypto.randomUUID(), backupId: backup.id, fromVersion: previousVersion, toVersion: version, changedAt: new Date().toISOString() }].slice(-10) : history,
+      };
+      writeJSON(INSTANCES_FILE, registry);
+      mainWindow?.webContents.send('install-progress', { instanceName: instance.name, phase: 'done', message: `NeoForge ${version} is ready`, percent: 100 });
+      return { instance: registry[index], health, backupId: backup.id, previousVersion };
+    } catch (error) {
+      try { restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir, id: backup.id }); }
+      catch (restoreError) { diagnosticLog('ERROR', `Could not restore ${instance.name} after NeoForge failure: ${restoreError.stack || restoreError.message || restoreError}`); }
+      throw error;
+    }
+  }
+
+  ipcMain.handle('change-neoforge-version', async (_, instanceName, version) => withNeoForgeOperation(instanceName, () => installRegisteredNeoForge(instanceName, version, { reason: `Before changing NeoForge to ${String(version).slice(0, 80)}` })));
+  ipcMain.handle('repair-neoforge', async (_, instanceName) => withNeoForgeOperation(instanceName, async () => {
+    const instance = getRegisteredInstance(instanceName).instance;
+    return installRegisteredNeoForge(instance.name, instance.loaderVersion, { force: true, reason: `Before reinstalling NeoForge ${instance.loaderVersion}` });
+  }));
+  ipcMain.handle('rollback-neoforge', async (_, instanceName) => withNeoForgeOperation(instanceName, async () => {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    if (instance.loader !== 'neoforge') throw new Error('This instance does not use NeoForge');
+    if (activeInstanceName) throw new Error('Close Minecraft before rolling back NeoForge');
+    if (instance.modpack?.lockState === 'locked') throw new Error('This modpack controls its NeoForge version. Roll back the complete pack instead.');
+    const history = Array.isArray(instance.neoForgeHistory) ? instance.neoForgeHistory : [];
+    const changeIndex = [...history].map((item, index) => ({ item, index })).reverse().find(({ item }) => item?.backupId && listBackups(BACKUPS_DIR, instance).some(backup => backup.id === item.backupId));
+    if (!changeIndex) throw new Error('No NeoForge rollback is available');
+    createAutomaticInstanceBackup(instance, `Before rolling back NeoForge to ${changeIndex.item.fromVersion}`);
+    restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: changeIndex.item.backupId });
+    const registryIndex = registry.findIndex(item => item.id === instance.id);
+    registry[registryIndex] = { ...registry[registryIndex], loaderVersion: changeIndex.item.fromVersion, loaderUpdatedAt: new Date().toISOString(), neoForgeHistory: history.slice(0, changeIndex.index) };
+    writeJSON(INSTANCES_FILE, registry);
+    return registry[registryIndex];
+  }));
 
   ipcMain.handle('microsoft-login', async (_, options = {}) => {
     if (options == null || typeof options !== 'object') throw new Error('Invalid Microsoft login request');
@@ -1528,6 +2306,8 @@ function setupIPC() {
       iconData: null,
       bannerData: null,
       bannerBlurDir: 'left',
+      group: ensureGroupExists(data.group),
+      tags: [],
     };
 
     const iconData = safeImageData(data.iconData);
@@ -1544,7 +2324,756 @@ function setupIPC() {
     return entry;
   });
 
+  ipcMain.handle('duplicate-instance', async (_, sourceName, options = {}) => {
+    const safeSourceName = sanitizeName(sourceName);
+    const newName = sanitizeName(options.name);
+    if (newName === safeSourceName) throw new Error('Choose a different name for the copy');
+    if (activeInstanceName === safeSourceName) throw new Error('Close Minecraft before duplicating this instance');
+
+    ensureDir(INSTANCES_DIR);
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const source = registry.find(item => item.name === safeSourceName);
+    if (!source) throw new Error('Source instance not found');
+    if (registry.some(item => item.name.toLowerCase() === newName.toLowerCase())) {
+      throw new Error(`Instance "${newName}" already exists`);
+    }
+
+    const customRoot = options.customRoot ? normalizeInstanceRoot(options.customRoot, { create: true }) : (source.customRoot || '');
+    const sourceDir = getInstanceDir(source);
+    const destinationDir = resolveSafePath(customRoot || INSTANCES_DIR, newName);
+    const operationId = typeof options.operationId === 'string' && /^[a-zA-Z0-9-]{8,80}$/.test(options.operationId) ? options.operationId : crypto.randomUUID();
+    const controller = new AbortController();
+    if (activeTransfers.has(operationId)) throw new Error('A transfer with this identifier is already running');
+    activeTransfers.set(operationId, controller);
+    let result;
+    try {
+      result = await copyInstanceTransactional({
+        source: sourceDir,
+        destination: destinationDir,
+        include: createDuplicationFilter(options.components),
+        signal: controller.signal,
+        onProgress: progress => {
+          if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('duplicate-progress', { operationId, sourceName: safeSourceName, name: newName, ...progress });
+        },
+      });
+    } finally { activeTransfers.delete(operationId); }
+
+    const entry = {
+      ...source,
+      id: crypto.randomUUID(),
+      name: newName,
+      path: destinationDir,
+      customRoot,
+      created: new Date().toISOString(),
+      lastPlayed: null,
+      lastOpened: null,
+      lastSessionSeconds: 0,
+      totalPlaytimeSeconds: 0,
+      favorite: false,
+      neoForgeHistory: [],
+      duplicatedFrom: String(source.id || source.name),
+    };
+    if (options.components?.mods === false) entry.modpack = null;
+    try {
+      const latestRegistry = readJSON(INSTANCES_FILE) || [];
+      if (latestRegistry.some(item => item.name.toLowerCase() === newName.toLowerCase())) {
+        throw new Error(`Instance "${newName}" was created while the copy was running`);
+      }
+      latestRegistry.push(entry);
+      writeJSON(INSTANCES_FILE, latestRegistry);
+      diagnosticLog('INFO', `Duplicated ${safeSourceName} as ${newName} (${result.files} files, ${result.bytes} bytes)`);
+      return entry;
+    } catch (error) {
+      fs.rmSync(destinationDir, { recursive: true, force: true });
+      throw error;
+    }
+  });
+
+  ipcMain.handle('cancel-transfer', async (_, operationId) => {
+    const id = String(operationId || '');
+    const controller = activeTransfers.get(id);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  });
+
+  function sanitizeBulkNames(values) {
+    if (!Array.isArray(values) || !values.length || values.length > 100) throw new Error('Select between 1 and 100 instances');
+    return [...new Set(values.map(sanitizeName))];
+  }
+
+  ipcMain.handle('bulk-update-instances', async (_, requestedNames, action = {}) => {
+    const names = sanitizeBulkNames(requestedNames);
+    const keys = new Set(names.map(name => name.toLowerCase()));
+    if (names.some(name => activeInstanceName === name || activeNeoForgeOperations.has(name.toLowerCase()))) {
+      throw new Error('Close Minecraft and wait for instance operations before changing the selection');
+    }
+    const registry = readJSON(INSTANCES_FILE) || [];
+    if (registry.filter(item => keys.has(item.name.toLowerCase())).length !== names.length) throw new Error('One or more selected instances no longer exist');
+    let change;
+    if (action.type === 'favorite') change = { favorite: Boolean(action.value) };
+    else if (action.type === 'group') change = { group: ensureGroupExists(action.value) };
+    else throw new Error('Unsupported bulk action');
+    const updated = registry.map(item => keys.has(item.name.toLowerCase()) ? { ...item, ...change } : item);
+    writeJSON(INSTANCES_FILE, updated);
+    return updated.filter(item => keys.has(item.name.toLowerCase()));
+  });
+
+  ipcMain.handle('bulk-delete-instances', async (_, requestedNames) => {
+    const names = sanitizeBulkNames(requestedNames);
+    const keys = new Set(names.map(name => name.toLowerCase()));
+    if (names.some(name => activeInstanceName === name || activeNeoForgeOperations.has(name.toLowerCase()))) {
+      throw new Error('Close Minecraft and wait for instance operations before deleting the selection');
+    }
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const selected = registry.filter(item => keys.has(item.name.toLowerCase()));
+    if (selected.length !== names.length) throw new Error('One or more selected instances no longer exist');
+    const staged = [];
+    try {
+      for (const instance of selected) {
+        const source = getInstanceDir(instance);
+        if (!fs.existsSync(source)) continue;
+        const target = resolveSafePath(path.dirname(source), `.pine-bulk-deleting-${crypto.randomUUID()}-${path.basename(source)}`);
+        await fs.promises.rename(source, target);
+        staged.push({ source, target });
+      }
+      writeJSON(INSTANCES_FILE, registry.filter(item => !keys.has(item.name.toLowerCase())));
+    } catch (error) {
+      for (const item of [...staged].reverse()) {
+        try { if (fs.existsSync(item.target) && !fs.existsSync(item.source)) await fs.promises.rename(item.target, item.source); } catch {}
+      }
+      throw error;
+    }
+    for (const item of staged) fs.promises.rm(item.target, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 }).catch(error => diagnosticLog('WARN', `Bulk cleanup failed: ${error.message}`));
+    return { deleted: selected.length };
+  });
+
+  async function resolveExportableContent(instance, root) {
+    const metadata = readJSON(path.join(root, 'mods_meta.json')) || {};
+    const resolved = [];
+    const represented = new Set();
+    const omitted = [];
+    const entries = Object.entries(metadata).slice(0, 2000);
+    for (const [key, info] of entries) {
+      const explicitType = key.includes(':') ? key.slice(0, key.indexOf(':')) : info.projectType || 'mod';
+      const filename = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
+      const folder = explicitType === 'resourcepack' ? 'resourcepacks' : explicitType === 'shader' ? 'shaderpacks' : explicitType === 'datapack' ? 'datapacks' : 'mods';
+      let relative;
+      try { relative = normalizePackPath(`${folder}/${safeRemoteFilename(filename.replace(/\.disabled$/i, ''))}`); } catch { continue; }
+      const local = resolveSafePath(root, ...relative.split('/'));
+      const disabled = `${local}.disabled`;
+      const actualLocal = fs.existsSync(local) ? local : fs.existsSync(disabled) ? disabled : null;
+      if (!actualLocal) continue;
+      const projectId = String(info.projectId || '');
+      try {
+        let remoteFile = null;
+        if (projectId.startsWith('curseforge:')) {
+          const fileId = Number(info.installedVersion);
+          if (Number.isSafeInteger(fileId) && fileId > 0) remoteFile = (await curseForgeFetch(`/mods/${Number(projectId.slice(11))}/files/${fileId}`)).data;
+          let downloadUrl = secureDownloadUrl(remoteFile?.downloadUrl);
+          if (!downloadUrl && remoteFile?.id) {
+            try { downloadUrl = secureDownloadUrl((await curseForgeFetch(`/mods/${Number(projectId.slice(11))}/files/${remoteFile.id}/download-url`)).data); } catch {}
+          }
+          if (downloadUrl) remoteFile = { ...remoteFile, url: downloadUrl };
+        } else if (projectId && info.installedVersion) {
+          const version = await modrinthFetch(`/version/${encodeURIComponent(info.installedVersion)}`);
+          remoteFile = (version.files || []).find(file => file.filename === path.basename(local)) || (version.files || []).find(file => file.primary) || version.files?.[0];
+        }
+        const url = secureDownloadUrl(remoteFile?.url || remoteFile?.downloadUrl);
+        if (!url) throw new Error('provider does not offer a redistributable download URL');
+        const localData = fs.readFileSync(actualLocal);
+        const hashes = { ...(remoteFile.hashes || {}), sha1: crypto.createHash('sha1').update(localData).digest('hex') };
+        resolved.push({ path: relative, hashes, downloads: [url], fileSize: localData.length, env: { client: 'required', server: 'unsupported' } });
+        represented.add(relative.toLowerCase());
+      } catch (error) {
+        omitted.push({ path: relative, reason: `Not referenced automatically: ${error.message || error}` });
+      }
+    }
+    for (const folder of ['mods', 'resourcepacks', 'shaderpacks']) {
+      const directory = path.join(root, folder);
+      let files = [];
+      try { files = fs.readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isFile()); } catch {}
+      for (const file of files) {
+        const relative = `${folder}/${file.name.replace(/\.disabled$/i, '')}`;
+        if (!represented.has(relative.toLowerCase()) && !omitted.some(item => item.path.toLowerCase() === relative.toLowerCase())) {
+          omitted.push({ path: relative, reason: 'No verified provider/version reference is recorded; the file was not bundled automatically' });
+        }
+      }
+    }
+    return { files: resolved, omitted };
+  }
+
+  function shareableOverrideFiles(root) {
+    const allowedRoots = new Set(['config', 'defaultconfigs', 'scripts', 'kubejs']);
+    const allowedTopFiles = new Set(['options.txt', 'optionsof.txt', 'optionsshaders.txt']);
+    return inspectTree(root).files.filter(file => {
+      const portable = file.relative.split(path.sep).join('/');
+      const top = portable.split('/')[0].toLowerCase();
+      return allowedRoots.has(top) || allowedTopFiles.has(portable.toLowerCase());
+    });
+  }
+
+  ipcMain.handle('export-instance', async (_, instanceName, options = {}) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before exporting this instance');
+    const mode = ['shareable', 'mrpack', 'manifest'].includes(options.mode) ? options.mode : 'complete';
+    const safeBase = instance.name.replace(/[<>:"/\\|?*]/g, '_');
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: mode === 'complete' ? 'Export complete Pine instance' : mode === 'shareable' ? 'Export shareable Pine pack' : mode === 'mrpack' ? 'Export Modrinth pack' : 'Export lightweight Pine manifest',
+      defaultPath: mode === 'mrpack' ? `${safeBase}.mrpack` : mode === 'manifest' ? `${safeBase}.pine.json` : `${safeBase}${mode === 'shareable' ? '-pack' : ''}.pine.zip`,
+      filters: mode === 'mrpack' ? [{ name: 'Modrinth modpack', extensions: ['mrpack'] }] : mode === 'manifest' ? [{ name: 'Pine manifest', extensions: ['json'] }] : [{ name: 'Pine instance archive', extensions: ['zip'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const source = getInstanceDir(instance);
+    if (mode === 'mrpack' || mode === 'manifest') {
+      const content = await resolveExportableContent(instance, source);
+      const overrides = shareableOverrideFiles(source);
+      if (mode === 'manifest') {
+        const descriptors = overrides.map(file => ({ path: file.relative.split(path.sep).join('/'), ...hashDescriptor(path.join(source, file.relative)) }));
+        const manifest = buildLightweightManifest(instance, content.files, descriptors, content.omitted);
+        await writeJsonAtomic(result.filePath, manifest);
+        return { filePath: result.filePath, mode, omitted: content.omitted };
+      }
+      const archive = new AdmZip();
+      archive.addFile('modrinth.index.json', Buffer.from(JSON.stringify(buildModrinthIndex(instance, content.files, { versionId: options.versionId, summary: options.summary }), null, 2)));
+      for (const file of overrides) {
+        const portable = file.relative.split(path.sep).join('/');
+        archive.addLocalFile(path.join(source, file.relative), `overrides/${path.posix.dirname(portable) === '.' ? '' : path.posix.dirname(portable)}`);
+      }
+      archive.addFile('.pine-export-report.json', Buffer.from(JSON.stringify({ product: 'Pine Launcher', exportedAt: new Date().toISOString(), omitted: content.omitted }, null, 2)));
+      archive.writeZip(result.filePath);
+      return { filePath: result.filePath, mode, omitted: content.omitted };
+    }
+    const plan = inspectTree(source);
+    const includeExportFile = createTransferInclude();
+    const omittedTopLevel = new Set(mode === 'shareable'
+      ? ['saves', 'screenshots', 'logs', 'crash-reports', 'quickPlay', '.pine-activity.json', 'servers.dat']
+      : []);
+    const archive = new AdmZip();
+    for (const file of plan.files) {
+      const top = file.relative.split(path.sep)[0];
+      if (omittedTopLevel.has(top) || !includeExportFile(file.relative)) continue;
+      archive.addLocalFile(path.join(source, file.relative), path.dirname(file.relative) === '.' ? '' : path.dirname(file.relative));
+    }
+    archive.addFile('.pine-export.json', Buffer.from(JSON.stringify({
+      format: 1,
+      product: 'Pine Launcher',
+      mode,
+      exportedAt: new Date().toISOString(),
+      instance: {
+        name: instance.name,
+        gameVersion: instance.gameVersion,
+        profile: instance.profile,
+        loader: instance.loader,
+        loaderVersion: instance.loaderVersion,
+        minMemory: instance.minMemory,
+        maxMemory: instance.maxMemory,
+        memoryOverride: instance.memoryOverride,
+        javaPath: instance.javaPath,
+        jvmArgs: instance.jvmArgs,
+        windowWidth: instance.windowWidth,
+        windowHeight: instance.windowHeight,
+        iconData: instance.iconData,
+        bannerData: instance.bannerData,
+        bannerBlurDir: instance.bannerBlurDir,
+        group: instance.group || '',
+        tags: instance.tags || [],
+        modpack: mode === 'complete' ? snapshotPackMetadata(instance.modpack) : null,
+      },
+    }, null, 2)));
+    archive.writeZip(result.filePath);
+    return { filePath: result.filePath, mode, omitted: [] };
+  });
+
+  ipcMain.handle('choose-instance-import', async () => {
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a Pine instance archive',
+      properties: ['openFile'],
+      filters: [{ name: 'Minecraft instance archives and manifests', extensions: ['zip', 'mrpack', 'json'] }],
+    });
+    if (selected.canceled || !selected.filePaths[0]) return null;
+    const file = selected.filePaths[0];
+    if (path.extname(file).toLowerCase() === '.json') {
+      const manifest = readJSON(file);
+      if (manifest?.format !== 1 || manifest?.product !== 'Pine Launcher' || manifest?.kind !== 'lightweight-manifest' || !manifest.instance?.gameVersion || !Array.isArray(manifest.content)) {
+        throw new Error('This is not a supported Pine lightweight manifest');
+      }
+      return { file, kind: 'pine-manifest', manifest };
+    }
+    let archive;
+    try { archive = new AdmZip(file); } catch { throw new Error('The selected file is not a readable ZIP archive'); }
+    const pineEntry = archive.getEntry('.pine-export.json');
+    const modrinthEntry = archive.getEntry('modrinth.index.json');
+    const manifestEntry = pineEntry || modrinthEntry;
+    if (!manifestEntry) throw new Error('This archive is not a supported Pine or Modrinth pack');
+    let manifest;
+    try { manifest = JSON.parse(manifestEntry.getData().toString('utf8')); } catch { throw new Error('The Pine archive manifest is invalid'); }
+    if (pineEntry) {
+      if (manifest?.format !== 1 || manifest?.product !== 'Pine Launcher' || !manifest.instance?.gameVersion) throw new Error('The Pine archive format is not supported');
+      return { file, kind: 'pine', manifest };
+    }
+    if (manifest?.formatVersion !== 1 || manifest?.game !== 'minecraft' || !manifest.dependencies?.minecraft) throw new Error('The Modrinth pack format is not supported');
+    return { file, kind: 'modrinth', manifest };
+  });
+
+  ipcMain.handle('import-pine-manifest', async (_, options = {}) => {
+    const safeName = sanitizeName(options.name);
+    const manifest = readJSON(String(options.file || ''));
+    if (manifest?.format !== 1 || manifest?.product !== 'Pine Launcher' || manifest?.kind !== 'lightweight-manifest' || !Array.isArray(manifest.content)) throw new Error('The Pine manifest is invalid');
+    if (manifest.content.length > 5000) throw new Error('The Pine manifest contains too many files');
+    const registry = readJSON(INSTANCES_FILE) || [];
+    if (registry.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" already exists`);
+    const customRoot = options.customRoot ? normalizeInstanceRoot(options.customRoot, { create: true }) : '';
+    const destination = resolveSafePath(customRoot || INSTANCES_DIR, safeName);
+    const staging = path.join(path.dirname(destination), `.${safeName}.pine-manifest-${crypto.randomBytes(6).toString('hex')}`);
+    if (fs.existsSync(destination)) throw new Error('The destination instance folder already exists');
+    ensureDir(staging);
+    try {
+      let expectedBytes = 0;
+      for (const item of manifest.content) {
+        const relative = normalizePackPath(item.path);
+        const declaredSize = Math.max(0, Number(item.fileSize) || 0);
+        expectedBytes += declaredSize;
+        if (expectedBytes > 4 * 1024 * 1024 * 1024) throw new Error('The Pine manifest exceeds the 4 GB download safety limit');
+        const url = secureDownloadUrl(item.downloads || []);
+        if (!url) throw new Error(`No secure download is available for ${relative}`);
+        const target = resolveSafePath(staging, ...relative.split('/'));
+        ensureDir(path.dirname(target));
+        await fetchWithRetry(url, target, progress => sendInstallProgress(safeName, 'downloading', `Downloading ${path.basename(relative)}`, progress.percent));
+        if (declaredSize && fs.statSync(target).size !== declaredSize) throw new Error(`Size verification failed for ${relative}`);
+        const algorithm = item.hashes?.sha512 ? 'sha512' : item.hashes?.sha256 ? 'sha256' : item.hashes?.sha1 ? 'sha1' : null;
+        if (!algorithm) throw new Error(`No supported verification hash is available for ${relative}`);
+        const actual = crypto.createHash(algorithm).update(fs.readFileSync(target)).digest('hex');
+        if (actual.toLowerCase() !== String(item.hashes[algorithm]).toLowerCase()) throw new Error(`Hash verification failed for ${relative}`);
+      }
+      inspectTree(staging);
+      fs.renameSync(staging, destination);
+      const source = manifest.instance || {};
+      const loader = ['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'].includes(source.loader) ? source.loader : 'vanilla';
+      const defaults = readJSON(SETTINGS_FILE) || {};
+      const entry = {
+        id: crypto.randomUUID(), name: safeName, path: destination, customRoot,
+        gameVersion: String(source.gameVersion || '').slice(0, 40), profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader,
+        loaderVersion: loader === 'vanilla' ? null : String(source.loaderVersion || '').slice(0, 80), created: new Date().toISOString(), lastPlayed: null,
+        minMemory: sanitizeMemory(source.minMemory, sanitizeMemory(defaults.minMemory, '2G')), maxMemory: sanitizeMemory(source.maxMemory, sanitizeMemory(defaults.maxMemory, '4G')),
+        memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
+        importedFrom: { type: 'pine-manifest', importedAt: new Date().toISOString(), omittedOverrides: Array.isArray(manifest.overrides) ? manifest.overrides.length : 0 },
+      };
+      const latest = readJSON(INSTANCES_FILE) || [];
+      if (latest.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" was created while importing`);
+      latest.push(entry);
+      writeJSON(INSTANCES_FILE, latest);
+      return entry;
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true });
+      fs.rmSync(destination, { recursive: true, force: true });
+      throw error;
+    }
+  });
+
+  function inspectExistingInstanceFolder(folder, launcherHint = '') {
+    const metadataRoot = path.resolve(folder);
+    const prismMetadata = readJSON(path.join(metadataRoot, 'mmc-pack.json'));
+    const root = prismMetadata && fs.existsSync(path.join(metadataRoot, '.minecraft'))
+      ? path.join(metadataRoot, '.minecraft')
+      : metadataRoot;
+    const markers = ['options.txt', 'servers.dat', 'saves', 'mods', 'resourcepacks', 'shaderpacks', 'screenshots', 'config'];
+    const present = markers.filter(name => fs.existsSync(path.join(root, name)));
+    const prismPack = prismMetadata || readJSON(path.join(root, 'mmc-pack.json'));
+    const detected = inspectLauncherMetadata(metadataRoot, root, launcherHint);
+    const { source, name, gameVersion, loader, loaderVersion } = detected;
+    if (!present.length && !prismPack) throw new Error('The selected folder does not look like a Minecraft instance');
+    const countDirectories = child => { try { return fs.readdirSync(path.join(root, child), { withFileTypes: true }).filter(entry => entry.isDirectory()).length; } catch { return 0; } };
+    const countFiles = (child, pattern) => { try { return fs.readdirSync(path.join(root, child), { withFileTypes: true }).filter(entry => entry.isFile() && pattern.test(entry.name)).length; } catch { return 0; } };
+    const transferPlan = buildTransferPlan({
+      source: root,
+      sourceFormat: source.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      sourceLauncher: source,
+      defaults: { mods: false, configuration: false },
+      warnings: gameVersion ? [] : [{ code: 'VERSION_UNKNOWN', message: 'Minecraft version could not be detected and must be selected before importing.' }],
+    });
+    return {
+      folder: root, source, adapter: detected.adapter, confidence: detected.confidence, evidence: detected.evidence,
+      name: name.slice(0, 120), gameVersion, loader, loaderVersion,
+      counts: {
+        worlds: countDirectories('saves'), mods: countFiles('mods', /\.jar(?:\.disabled)?$/i),
+        resourcepacks: countFiles('resourcepacks', /\.(?:zip|jar)$/i), shaderpacks: countFiles('shaderpacks', /\.(?:zip|jar)$/i),
+        screenshots: countFiles('screenshots', /\.(?:png|jpg|jpeg)$/i), servers: readSavedServers(root).length,
+      },
+      worlds: listWorlds(path.join(root, 'saves')).map(world => ({ identifier: world.identifier, name: world.name, version: world.version })),
+      present,
+      transfer: transferPlanSummary(transferPlan),
+    };
+  }
+
+  ipcMain.handle('choose-existing-instance-folder', async () => {
+    const selected = await dialog.showOpenDialog(mainWindow, { title: 'Choose an existing Minecraft instance folder', properties: ['openDirectory'] });
+    if (selected.canceled || !selected.filePaths[0]) return null;
+    return inspectExistingInstanceFolder(selected.filePaths[0]);
+  });
+
+  function knownLauncherFolders() {
+    const appData = app.getPath('appData');
+    const home = app.getPath('home');
+    const localData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    const sharedMinecraft = path.join(appData, '.minecraft');
+    return [
+      { key: 'official', label: 'Official Minecraft Launcher', folders: [sharedMinecraft], direct: true },
+      { key: 'prism', label: 'Prism Launcher', folders: [path.join(appData, 'PrismLauncher', 'instances')] },
+      { key: 'multimc', label: 'MultiMC', folders: [path.join(appData, 'MultiMC', 'instances')] },
+      { key: 'polymc', label: 'PolyMC', folders: [path.join(appData, 'PolyMC', 'instances')] },
+      { key: 'modrinth', label: 'Modrinth App', folders: [path.join(appData, 'com.modrinth.theseus', 'profiles'), path.join(appData, 'ModrinthApp', 'profiles')] },
+      { key: 'curseforge', label: 'CurseForge', folders: [path.join(home, 'curseforge', 'minecraft', 'Instances')] },
+      { key: 'gdlauncher', label: 'GDLauncher', folders: [path.join(appData, 'gdlauncher_next', 'instances'), path.join(appData, 'gdlauncher', 'instances')] },
+      { key: 'atlauncher', label: 'ATLauncher', folders: [path.join(appData, 'ATLauncher', 'instances')] },
+      { key: 'technic', label: 'Technic Launcher', folders: [path.join(appData, '.technic', 'modpacks')] },
+      { key: 'ftb', label: 'FTB App', folders: [path.join(localData, '.ftba', 'instances'), path.join(home, '.ftba', 'instances'), path.join(appData, 'FTBA', 'instances')] },
+      {
+        key: 'lunar', label: 'Lunar Client', folders: [path.join(home, '.lunarclient', 'profiles'), sharedMinecraft], maxDepth: 3,
+        presenceFolders: [path.join(home, '.lunarclient'), path.join(localData, 'Programs', 'lunarclient')],
+      },
+      {
+        key: 'badlion', label: 'Badlion Client', folders: [sharedMinecraft], direct: true,
+        presenceFolders: [path.join(appData, 'Badlion Client'), path.join(localData, 'Badlion Client'), path.join(localData, 'Programs', 'Badlion Client')],
+      },
+      {
+        key: 'feather', label: 'Feather / Dawn Client', folders: [path.join(appData, '.feather'), path.join(home, '.feather'), sharedMinecraft], maxDepth: 3,
+        presenceFolders: [path.join(appData, '.feather'), path.join(home, '.feather'), path.join(localData, 'Programs', 'Feather Launcher'), path.join(localData, 'Programs', 'Dawn')],
+      },
+      {
+        key: 'labymod', label: 'LabyMod', folders: [sharedMinecraft, path.join(appData, 'LabyMod')], maxDepth: 3,
+        presenceFolders: [path.join(appData, 'LabyMod'), path.join(localData, 'LabyMod'), path.join(localData, 'Programs', 'LabyMod Launcher')],
+      },
+      {
+        key: 'fastclient', label: 'Fast Client', folders: [path.join(appData, 'FastClient'), path.join(localData, 'FastClient'), path.join(home, '.fastclient'), sharedMinecraft], maxDepth: 3,
+        presenceFolders: [path.join(appData, 'FastClient'), path.join(localData, 'FastClient'), path.join(home, '.fastclient'), path.join(localData, 'Programs', 'FastClient')],
+      },
+      {
+        key: 'tlauncher', label: 'TLauncher', folders: [path.join(appData, '.tlauncher', 'legacy', 'Minecraft', 'game'), sharedMinecraft], direct: true,
+        presenceFolders: [path.join(appData, '.tlauncher'), path.join(appData, 'TLauncher')],
+      },
+      {
+        key: 'legacy', label: 'Legacy Launcher', folders: [path.join(appData, '.tlauncher', 'legacy', 'Minecraft', 'game'), sharedMinecraft], direct: true,
+        presenceFolders: [path.join(appData, '.tlauncher', 'legacy'), path.join(appData, 'tlegacy')],
+      },
+      {
+        key: 'sklauncher', label: 'SKlauncher', folders: [path.join(appData, 'sklauncher'), sharedMinecraft], maxDepth: 3,
+        presenceFolders: [path.join(appData, 'sklauncher'), path.join(localData, 'Programs', 'SKlauncher')],
+      },
+      { key: 'crystal', label: 'Crystal Launcher', folders: [path.join(appData, 'Crystal-Launcher', 'instances'), path.join(appData, '.crystal-launcher', 'instances')] },
+      { key: 'hmcl', label: 'HMCL', folders: [path.join(appData, '.hmcl', 'instances'), path.join(home, '.hmcl', 'instances')], maxDepth: 3 },
+    ];
+  }
+
+  ipcMain.handle('get-known-launcher-folders', async () => knownLauncherFolders().map(item => ({
+    key: item.key, label: item.label, folders: item.folders,
+    available: (item.presenceFolders || item.folders).some(folder => fs.existsSync(folder)),
+  })));
+
+  function discoverLauncherCandidates(folder, launcher) {
+    if (!fs.existsSync(folder)) return [];
+    if (launcher.direct) return [folder];
+    const maxDepth = Math.max(1, Math.min(3, Number(launcher.maxDepth || 1)));
+    const candidates = [];
+    const queue = [{ folder, depth: 0 }];
+    let visited = 0;
+    const looksLikeInstance = candidate => {
+      const markers = ['mmc-pack.json', 'instance.cfg', 'manifest.json', 'options.txt', 'servers.dat', 'saves', 'mods', 'resourcepacks', 'shaderpacks'];
+      return markers.some(name => fs.existsSync(path.join(candidate, name))) || fs.existsSync(path.join(candidate, '.minecraft'));
+    };
+    while (queue.length && visited < 500) {
+      const current = queue.shift();
+      visited += 1;
+      if (looksLikeInstance(current.folder)) {
+        candidates.push(current.folder);
+        continue;
+      }
+      if (current.depth >= maxDepth) continue;
+      let entries = [];
+      try { entries = fs.readdirSync(current.folder, { withFileTypes: true }); } catch {}
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        queue.push({ folder: path.join(current.folder, entry.name), depth: current.depth + 1 });
+      }
+    }
+    return candidates;
+  }
+
+  ipcMain.handle('scan-known-launcher-folders', async (_, requestedKeys = []) => {
+    const allowed = new Set((Array.isArray(requestedKeys) ? requestedKeys : []).map(String));
+    const found = [];
+    const seen = new Set();
+    for (const launcher of knownLauncherFolders().filter(item => allowed.has(item.key))) {
+      for (const folder of launcher.folders) {
+        const candidates = discoverLauncherCandidates(folder, launcher);
+        for (const candidate of candidates) {
+          let canonical;
+          try { canonical = fs.realpathSync.native(candidate).toLowerCase(); } catch { canonical = path.resolve(candidate).toLowerCase(); }
+          if (seen.has(canonical)) continue;
+          try {
+            const inspected = inspectExistingInstanceFolder(candidate, launcher.label);
+            const inspectedKey = path.resolve(inspected.folder).toLowerCase();
+            if (seen.has(inspectedKey)) continue;
+            seen.add(canonical);
+            seen.add(inspectedKey);
+            found.push({ ...inspected, launcher: launcher.label });
+          } catch {}
+        }
+      }
+    }
+    return found;
+  });
+
+  ipcMain.handle('import-existing-instance-folder', async (_, options = {}) => {
+    const sourceInfo = inspectExistingInstanceFolder(String(options.folder || ''));
+    const safeName = sanitizeName(options.name);
+    const gameVersion = String(options.gameVersion || sourceInfo.gameVersion || '').slice(0, 40);
+    const loader = ['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'].includes(options.loader) ? options.loader : sourceInfo.loader;
+    const loaderVersion = loader === 'vanilla' ? null : String(options.loaderVersion || sourceInfo.loaderVersion || '').slice(0, 80);
+    if (!gameVersion) throw new Error('Choose the Minecraft version used by this instance');
+    if (loader !== 'vanilla' && !loaderVersion) throw new Error(`Choose the ${loader} version used by this instance`);
+    const newerWorlds = sourceInfo.worlds.filter(world => world.version && compareSemver(world.version, gameVersion) > 0);
+    if (newerWorlds.length && options.confirmNewerWorlds !== true) {
+      throw new Error(`${newerWorlds.length} world${newerWorlds.length === 1 ? '' : 's'} were last opened in a newer Minecraft version. Confirm the downgrade risk before importing.`);
+    }
+    const registry = readJSON(INSTANCES_FILE) || [];
+    if (registry.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" already exists`);
+    const customRoot = options.customRoot ? normalizeInstanceRoot(options.customRoot, { create: true }) : '';
+    const destination = resolveSafePath(customRoot || INSTANCES_DIR, safeName);
+    const included = createTransferInclude(options.selection, { mods: false, configuration: false });
+    const result = await copyInstanceTransactional({ source: sourceInfo.folder, destination, include: included });
+    const defaults = readJSON(SETTINGS_FILE) || {};
+    const entry = {
+      id: crypto.randomUUID(), name: safeName, path: destination, customRoot, gameVersion,
+      profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
+      created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
+      memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
+      importedFrom: { type: 'existing-folder', source: sourceInfo.source, importedAt: new Date().toISOString(), files: result.files, bytes: result.bytes },
+    };
+    try {
+      const latest = readJSON(INSTANCES_FILE) || [];
+      if (latest.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" was created while importing`);
+      latest.push(entry);
+      writeJSON(INSTANCES_FILE, latest);
+      return entry;
+    } catch (error) {
+      fs.rmSync(destination, { recursive: true, force: true });
+      throw error;
+    }
+  });
+
+  ipcMain.handle('import-pine-archive', async (_, options = {}) => {
+    const safeName = sanitizeName(options.name);
+    const archivePath = String(options.file || '');
+    if (!path.isAbsolute(archivePath) || !fs.existsSync(archivePath)) throw new Error('Import archive not found');
+    const archive = new AdmZip(archivePath);
+    const manifestEntry = archive.getEntry('.pine-export.json');
+    let manifest;
+    try { manifest = JSON.parse(manifestEntry?.getData().toString('utf8') || ''); } catch { throw new Error('The Pine archive manifest is invalid'); }
+    if (manifest?.format !== 1 || manifest?.product !== 'Pine Launcher') throw new Error('This is not a supported Pine archive');
+    const registry = readJSON(INSTANCES_FILE) || [];
+    if (registry.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" already exists`);
+    const customRoot = options.customRoot ? normalizeInstanceRoot(options.customRoot, { create: true }) : '';
+    const destination = resolveSafePath(customRoot || INSTANCES_DIR, safeName);
+    if (fs.existsSync(destination)) throw new Error('The destination instance folder already exists');
+    const staging = path.join(path.dirname(destination), `.${safeName}.pine-import-${crypto.randomBytes(6).toString('hex')}`);
+    fs.mkdirSync(staging, { recursive: false });
+    try {
+      for (const entry of archive.getEntries()) {
+        const normalized = String(entry.entryName || '').replace(/\\/g, '/');
+        if (!normalized || normalized === '.pine-export.json') continue;
+        if (normalized.startsWith('/') || normalized.split('/').includes('..')) throw new Error('The archive contains an unsafe path');
+      }
+      archive.extractAllTo(staging, true);
+      fs.rmSync(path.join(staging, '.pine-export.json'), { force: true });
+      inspectTree(staging);
+      fs.renameSync(staging, destination);
+      const source = manifest.instance || {};
+      const loader = ['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'].includes(source.loader) ? source.loader : 'vanilla';
+      const gameVersion = String(source.gameVersion || '').trim().slice(0, 40);
+      if (!/^\d+(?:\.\d+){1,3}(?:[-_a-z0-9.]*)?$/i.test(gameVersion)) throw new Error('The archive contains an invalid Minecraft version');
+      const minMemory = sanitizeMemory(source.minMemory, '2G');
+      const maxMemory = sanitizeMemory(source.maxMemory, '4G');
+      const entry = {
+        id: crypto.randomUUID(), name: safeName, path: destination, customRoot,
+        created: new Date().toISOString(), lastPlayed: null, favorite: false,
+        gameVersion,
+        loader,
+        loaderVersion: loader === 'vanilla' ? null : String(source.loaderVersion || '').slice(0, 80),
+        profile: loader === 'vanilla' ? 'vanilla' : 'custom',
+        minMemory,
+        maxMemory: memoryMegabytes(maxMemory) >= memoryMegabytes(minMemory) ? maxMemory : minMemory,
+        memoryOverride: Boolean(source.memoryOverride),
+        javaPath: typeof source.javaPath === 'string' ? source.javaPath.slice(0, 1024) : null,
+        jvmArgs: typeof source.jvmArgs === 'string' ? source.jvmArgs.slice(0, 4096) : '',
+        windowWidth: Math.min(7680, Math.max(320, Number.parseInt(source.windowWidth, 10) || 1280)),
+        windowHeight: Math.min(4320, Math.max(240, Number.parseInt(source.windowHeight, 10) || 720)),
+        iconData: safeImageData(source.iconData) || null,
+        bannerData: safeImageData(source.bannerData) || null,
+        bannerBlurDir: ['left', 'right', 'center', 'none'].includes(source.bannerBlurDir) ? source.bannerBlurDir : 'left',
+        group: String(source.group || '').replace(/[\r\n\0]+/g, ' ').trim().slice(0, 48),
+        tags: [...new Set((Array.isArray(source.tags) ? source.tags : []).map(tag => String(tag).replace(/[\r\n\0,]+/g, ' ').trim().slice(0, 32)).filter(Boolean))].slice(0, 12),
+        modpack: sanitizeImportedPackMetadata(source.modpack),
+        importedFrom: { type: 'pine-archive', mode: manifest.mode || 'complete', importedAt: new Date().toISOString() },
+      };
+      const latest = readJSON(INSTANCES_FILE) || [];
+      if (latest.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" was created while importing`);
+      latest.push(entry);
+      writeJSON(INSTANCES_FILE, latest);
+      return entry;
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true });
+      if (!registry.some(item => item.name.toLowerCase() === safeName.toLowerCase())) fs.rmSync(destination, { recursive: true, force: true });
+      throw error;
+    }
+  });
+
+  async function importModrinthPackArchive(options = {}) {
+    const safeName = sanitizeName(options.name);
+    const archivePath = String(options.file || '');
+    if (!path.isAbsolute(archivePath) || !fs.existsSync(archivePath)) throw new Error('Modrinth pack not found');
+    const archive = new AdmZip(archivePath);
+    let manifest;
+    try { manifest = JSON.parse(archive.getEntry('modrinth.index.json')?.getData().toString('utf8') || ''); }
+    catch { throw new Error('The Modrinth pack manifest is invalid'); }
+    if (manifest?.formatVersion !== 1 || manifest?.game !== 'minecraft' || !Array.isArray(manifest.files)) throw new Error('This is not a supported Modrinth pack');
+    const dependencies = manifest.dependencies || {};
+    const gameVersion = String(dependencies.minecraft || '').slice(0, 40);
+    const loaderEntry = [
+      ['fabric', dependencies['fabric-loader']], ['quilt', dependencies['quilt-loader']],
+      ['forge', dependencies.forge], ['neoforge', dependencies.neoforge],
+    ].find(([, value]) => value);
+    const loader = loaderEntry?.[0] || 'vanilla';
+    const loaderVersion = loaderEntry ? String(loaderEntry[1]).slice(0, 80) : null;
+    const registry = readJSON(INSTANCES_FILE) || [];
+    if (registry.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" already exists`);
+    const customRoot = options.customRoot ? normalizeInstanceRoot(options.customRoot, { create: true }) : '';
+    const destination = resolveSafePath(customRoot || INSTANCES_DIR, safeName);
+    if (fs.existsSync(destination)) throw new Error('The destination instance folder already exists');
+    const staging = path.join(path.dirname(destination), `.${safeName}.mrpack-${crypto.randomBytes(6).toString('hex')}`);
+    fs.mkdirSync(staging, { recursive: false });
+    const managedFiles = [];
+    try {
+      let overrideBytes = 0;
+      for (const entry of archive.getEntries()) {
+        const normalized = String(entry.entryName || '').replace(/\\/g, '/');
+        if (!normalized || normalized.endsWith('/')) continue;
+        const prefix = normalized.startsWith('overrides/') ? 'overrides/' : normalized.startsWith('client-overrides/') ? 'client-overrides/' : null;
+        if (!prefix) continue;
+        const relative = normalized.slice(prefix.length);
+        if (!relative || relative.startsWith('/') || relative.split('/').includes('..')) throw new Error('The Modrinth pack contains an unsafe override path');
+        const data = entry.getData();
+        overrideBytes += data.length;
+        if (data.length > 128 * 1024 * 1024 || overrideBytes > 2 * 1024 * 1024 * 1024) throw new Error('The Modrinth pack overrides are unexpectedly large');
+        const target = resolveSafePath(staging, ...relative.split('/'));
+        ensureDir(path.dirname(target));
+        fs.writeFileSync(target, data);
+        managedFiles.push(managedFileRecord(staging, relative, { kind: 'override' }));
+      }
+      let index = 0;
+      for (const file of manifest.files) {
+        if (file?.env?.client === 'unsupported') continue;
+        index += 1;
+        const relative = String(file?.path || '').replace(/\\/g, '/');
+        if (!relative || relative.startsWith('/') || relative.split('/').includes('..')) throw new Error('The Modrinth pack contains an unsafe file path');
+        const url = (file.downloads || []).map(value => { try { return new URL(value); } catch { return null; } }).find(value => value?.protocol === 'https:');
+        if (!url) throw new Error(`No secure download is available for ${relative}`);
+        const target = resolveSafePath(staging, ...relative.split('/'));
+        ensureDir(path.dirname(target));
+        await fetchWithRetry(url.toString(), target, progress => sendInstallProgress(safeName, 'downloading', `Installing ${index} of ${manifest.files.length}: ${path.basename(relative)}`, Math.round(((index - 1 + (progress.percent || 0) / 100) / Math.max(1, manifest.files.length)) * 95)));
+        const expectedAlgorithm = file.hashes?.sha512 ? 'sha512' : file.hashes?.sha1 ? 'sha1' : null;
+        if (expectedAlgorithm) {
+          const actual = crypto.createHash(expectedAlgorithm).update(fs.readFileSync(target)).digest('hex');
+          if (actual.toLowerCase() !== String(file.hashes[expectedAlgorithm]).toLowerCase()) throw new Error(`Hash verification failed for ${relative}`);
+        }
+        if (Number(file.fileSize) > 0 && fs.statSync(target).size !== Number(file.fileSize)) throw new Error(`Size verification failed for ${relative}`);
+        managedFiles.push(managedFileRecord(staging, relative, {
+          kind: 'download', hashes: file.hashes || {},
+          downloads: (file.downloads || []).filter(value => secureDownloadUrl(value)).slice(0, 4),
+        }));
+      }
+      inspectTree(staging);
+      fs.renameSync(staging, destination);
+      const defaults = readJSON(SETTINGS_FILE) || {};
+      const entry = {
+        id: crypto.randomUUID(), name: safeName, path: destination, customRoot, gameVersion,
+        profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
+        created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
+        memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
+        modpack: {
+          source: 'modrinth', projectId: options.projectId ? String(options.projectId).slice(0, 120) : null,
+          apiVersionId: options.apiVersionId ? String(options.apiVersionId).slice(0, 120) : null,
+          name: String(manifest.name || safeName).slice(0, 160), installedVersion: String(options.versionNumber || manifest.versionId || '').slice(0, 120),
+          versionName: String(options.versionName || manifest.name || '').slice(0, 160), lockState: 'locked', importedAt: new Date().toISOString(),
+          managedFiles: normalizedManagedFiles(managedFiles), archiveCacheKey: options.archiveCacheKey ? path.basename(options.archiveCacheKey) : cacheManagedPackArchive(archivePath, '.mrpack'), history: [],
+        },
+      };
+      const latest = readJSON(INSTANCES_FILE) || [];
+      if (latest.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" was created while importing`);
+      latest.push(entry);
+      writeJSON(INSTANCES_FILE, latest);
+      sendInstallProgress(safeName, 'done', 'Modrinth pack imported', 100);
+      return entry;
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true });
+      fs.rmSync(destination, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  ipcMain.handle('import-modrinth-archive', async (_, options = {}) => importModrinthPackArchive(options));
+
+  ipcMain.handle('install-modrinth-modpack', async (_, options = {}) => {
+    const projectId = String(options.projectId || '').trim().slice(0, 120);
+    const versionId = String(options.versionId || '').trim().slice(0, 120);
+    if (!projectId || !versionId) throw new Error('Choose a Modrinth modpack version');
+    const project = await modrinthFetch(`/project/${encodeURIComponent(projectId)}`);
+    if (project.project_type !== 'modpack') throw new Error('The selected project is not a modpack');
+    const seed = { name: sanitizeName(options.name), modpack: { source: 'modrinth', projectId } };
+    const download = await downloadManagedPackVersion(seed, versionId, progress => sendInstallProgress(seed.name, 'downloading', progress.message, progress.percent));
+    return importModrinthPackArchive({
+      file: download.archivePath, name: seed.name, customRoot: options.customRoot || '', projectId,
+      apiVersionId: download.apiVersionId, versionName: download.versionName, versionNumber: download.versionNumber, archiveCacheKey: path.basename(download.archivePath),
+    });
+  });
+
   ipcMain.handle('get-instances-dir', async () => INSTANCES_DIR);
+
+  ipcMain.handle('list-groups', async () => {
+    const groups = readGroups();
+    writeJSON(GROUPS_FILE, groups);
+    return groups;
+  });
+
+  ipcMain.handle('create-group', async (_, requestedName) => {
+    const name = sanitizeGroupName(requestedName);
+    const groups = readGroups();
+    if (groups.some(group => group.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      throw new Error(`A group named "${name}" already exists`);
+    }
+    const group = { name, created: new Date().toISOString() };
+    groups.push(group);
+    writeJSON(GROUPS_FILE, groups);
+    return group;
+  });
+
+  ipcMain.handle('delete-group', async (_, requestedName) => {
+    const name = sanitizeGroupName(requestedName);
+    const key = name.toLocaleLowerCase();
+    const groups = readGroups();
+    if (!groups.some(group => group.name.toLocaleLowerCase() === key)) throw new Error('Group not found');
+
+    const registry = readJSON(INSTANCES_FILE) || [];
+    let ungrouped = 0;
+    for (const instance of registry) {
+      if (String(instance.group || '').toLocaleLowerCase() !== key) continue;
+      instance.group = '';
+      ungrouped += 1;
+    }
+    writeJSON(INSTANCES_FILE, registry);
+    writeJSON(GROUPS_FILE, groups.filter(group => group.name.toLocaleLowerCase() !== key));
+    return { deleted: true, name, ungrouped };
+  });
 
   ipcMain.handle('choose-instance-location', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -1571,9 +3100,186 @@ function setupIPC() {
         inst.path = canonicalPath;
         changed = true;
       }
+      if (inst.modpack && !['locked', 'unlocked', 'unpaired'].includes(inst.modpack.lockState)) {
+        inst.modpack.lockState = 'locked';
+        changed = true;
+      }
+      if (inst.modpack && !Array.isArray(inst.modpack.history)) {
+        inst.modpack.history = [];
+        changed = true;
+      }
+      if (inst.loader === 'neoforge' && !Array.isArray(inst.neoForgeHistory)) {
+        inst.neoForgeHistory = [];
+        changed = true;
+      }
     }
     if (changed) writeJSON(INSTANCES_FILE, registry);
     return registry;
+  });
+
+  ipcMain.handle('list-instance-backups', async (_, instanceName) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    return {
+      retention: Math.min(20, Math.max(1, Number.parseInt(instance.backupRetention, 10) || 5)),
+      backups: listBackups(BACKUPS_DIR, instance).map(backup => ({
+        ...backup,
+        hasNewerWorlds: (backup.worldVersions || []).some(version => compareSemver(version, instance.gameVersion) > 0),
+      })),
+    };
+  });
+
+  ipcMain.handle('create-instance-backup', async (_, instanceName, options = {}) => {
+    assertNeoForgeIdle(instanceName);
+    const { instance } = getRegisteredInstance(instanceName);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before creating a backup of this instance');
+    const scope = options.scope === 'worlds' ? 'worlds' : 'full';
+    const backup = createBackup({
+      backupsDir: BACKUPS_DIR,
+      instance,
+      instanceDir: getInstanceDir(instance),
+      scope,
+      kind: 'manual',
+      description: options.description,
+      retention: instance.backupRetention || 5,
+    });
+    diagnosticLog('INFO', `Created ${scope} backup ${backup.id} for ${instance.name}`);
+    return backup;
+  });
+
+  ipcMain.handle('set-instance-backup-retention', async (_, instanceName, value) => {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    const retention = Math.min(20, Math.max(1, Number.parseInt(value, 10) || 5));
+    instance.backupRetention = retention;
+    writeJSON(INSTANCES_FILE, registry);
+    pruneAutomaticBackups(BACKUPS_DIR, instance, retention);
+    return retention;
+  });
+
+  ipcMain.handle('repair-managed-pack', async (_, instanceName) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before repairing this pack');
+    if (!instance.modpack || instance.modpack.lockState === 'unpaired') throw new Error('This instance is not paired with a managed pack');
+    const managed = managedFilesForInstance(instance);
+    const root = getInstanceDir(instance);
+    const state = inspectManagedState(root, managed, { validationCache: managedPackValidationCache });
+    managedPackValidationCache.flush();
+    const invalidPaths = new Set([...state.missing, ...state.modified].map(value => value.toLowerCase()));
+    const invalid = managed.filter(file => invalidPaths.has(file.path.toLowerCase()));
+    if (!invalid.length) return { repaired: 0, checked: managed.length, userAdded: state.userAdded.length };
+    createAutomaticInstanceBackup(instance, `Before repairing ${instance.modpack.name || 'managed pack'}`);
+    let repaired = 0;
+    const cachedLayer = path.join(path.dirname(root), `.${path.basename(root)}.pine-repair-layer-${crypto.randomBytes(6).toString('hex')}`);
+    let layerPrepared = false;
+    try {
+      for (const file of invalid) {
+        const relative = normalizePackPath(file.path);
+        let url = secureDownloadUrl(file.downloads || []);
+        if (!url && instance.modpack.source === 'curseforge' && Number.isSafeInteger(Number(file.projectId)) && Number.isSafeInteger(Number(file.fileId))) {
+          try {
+            const remote = (await curseForgeFetch(`/mods/${Number(file.projectId)}/files/${Number(file.fileId)}`)).data;
+            url = secureDownloadUrl(remote?.downloadUrl);
+            if (!url) url = secureDownloadUrl((await curseForgeFetch(`/mods/${Number(file.projectId)}/files/${Number(file.fileId)}/download-url`)).data);
+          } catch {}
+        }
+        const target = resolveSafePath(root, ...relative.split('/'));
+        ensureDir(path.dirname(target));
+        if (url) {
+          await fetchWithRetry(url, target, progress => sendInstallProgress(instance.name, 'downloading', `Repairing ${path.basename(relative)}`, Math.round(((repaired + (progress.percent || 0) / 100) / invalid.length) * 100)));
+        } else {
+          const archive = instance.modpack.archiveCacheKey ? resolveSafePath(MANAGED_PACK_CACHE_DIR, path.basename(instance.modpack.archiveCacheKey)) : null;
+          if (!archive || !fs.existsSync(archive)) throw new Error(`The cached pack source needed to repair ${relative} is unavailable`);
+          if (!layerPrepared) {
+            if (instance.modpack.source === 'modrinth') await prepareModrinthPackLayer(archive, cachedLayer);
+            else await prepareCurseForgePackLayer(archive, cachedLayer);
+            layerPrepared = true;
+          }
+          const source = resolveSafePath(cachedLayer, ...relative.split('/'));
+          if (!fs.existsSync(source)) throw new Error(`The cached pack no longer contains ${relative}`);
+          fs.copyFileSync(source, target);
+        }
+        const algorithm = file.hashes?.sha512 ? 'sha512' : file.hashes?.sha256 ? 'sha256' : file.hashes?.sha1 ? 'sha1' : null;
+        if (algorithm) {
+          const actual = crypto.createHash(algorithm).update(fs.readFileSync(target)).digest('hex');
+          if (actual.toLowerCase() !== String(file.hashes[algorithm]).toLowerCase()) throw new Error(`Repair verification failed for ${relative}`);
+        }
+        repaired += 1;
+      }
+    } finally {
+      fs.rmSync(cachedLayer, { recursive: true, force: true });
+    }
+    return { repaired, checked: managed.length, userAdded: state.userAdded.length };
+  });
+
+  ipcMain.handle('get-managed-pack-status', async (_, instanceName) => {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    if (!instance.modpack) return null;
+    const files = inspectManagedState(getInstanceDir(instance), managedFilesForInstance(instance), { validationCache: managedPackValidationCache });
+    managedPackValidationCache.flush();
+    let versions = [];
+    let versionError = null;
+    try { versions = await managedPackVersions(instance); } catch (error) { versionError = error.message || String(error); }
+    const currentId = String(instance.modpack.apiVersionId || instance.modpack.fileId || '');
+    const latest = versions[0] && versions[0].id !== currentId ? versions[0] : null;
+    instance.modpack.lastChecked = new Date().toISOString();
+    instance.modpack.availableVersion = latest ? { id: latest.id, name: latest.name } : null;
+    instance.modpack.userAddedFiles = files.userAdded.slice(0, 5000);
+    instance.modpack.modifiedManagedFiles = files.modified.slice(0, 5000);
+    writeJSON(INSTANCES_FILE, registry);
+    const history = (instance.modpack.history || []).map(item => ({ id: item.id, changedAt: item.changedAt, backupId: item.backupId, fromName: item.from?.modpack?.versionName || item.from?.modpack?.installedVersion || 'Previous version', toName: item.toName }));
+    return { pack: instance.modpack, files: { ...files, missing: files.missing.length, modified: files.modified.length, userAdded: files.userAdded.length }, versions, latest, versionError, history };
+  });
+
+  ipcMain.handle('change-managed-pack-version', async (_, instanceName, versionId) => {
+    const safeVersion = String(versionId || '').trim().slice(0, 160);
+    if (!safeVersion) throw new Error('Choose a pack version');
+    return applyManagedPackVersion(instanceName, safeVersion, progress => sendInstallProgress(sanitizeName(instanceName), 'downloading', progress.message, progress.percent));
+  });
+
+  ipcMain.handle('rollback-managed-pack', async (_, instanceName) => {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before rolling back this modpack');
+    if (!instance.modpack || instance.modpack.lockState === 'unpaired') throw new Error('This instance is not paired with a managed pack');
+    const history = Array.isArray(instance.modpack.history) ? instance.modpack.history : [];
+    const change = history[history.length - 1];
+    if (!change?.backupId || !change.from) throw new Error('No managed pack rollback is available');
+    if (!listBackups(BACKUPS_DIR, instance).some(backup => backup.id === change.backupId)) throw new Error('The restore point for this pack version is no longer available');
+    createAutomaticInstanceBackup(instance, `Before rolling back ${instance.modpack.name || 'managed pack'}`);
+    restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: change.backupId });
+    Object.assign(instance, {
+      gameVersion: change.from.gameVersion,
+      profile: change.from.profile,
+      loader: change.from.loader,
+      loaderVersion: change.from.loaderVersion,
+      modpack: { ...change.from.modpack, history: history.slice(0, -1), rolledBackAt: new Date().toISOString() },
+    });
+    writeJSON(INSTANCES_FILE, registry);
+    return instance;
+  });
+
+  ipcMain.handle('delete-instance-backup', async (_, instanceName, id) => {
+    assertNeoForgeIdle(instanceName);
+    const { instance } = getRegisteredInstance(instanceName);
+    if (typeof id !== 'string' || id.length > 100) throw new Error('Invalid backup');
+    return deleteBackup(BACKUPS_DIR, instance, id);
+  });
+
+  ipcMain.handle('restore-instance-backup', async (_, instanceName, id, confirmedNewerWorlds = false) => {
+    assertNeoForgeIdle(instanceName);
+    const { instance } = getRegisteredInstance(instanceName);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before restoring this instance');
+    if (typeof id !== 'string' || id.length > 100) throw new Error('Invalid backup');
+    const selected = listBackups(BACKUPS_DIR, instance).find(backup => backup.id === id);
+    if (!selected) throw new Error('Backup not found');
+    const hasNewerWorlds = (selected.worldVersions || []).some(version => compareSemver(version, instance.gameVersion) > 0);
+    if (hasNewerWorlds && !confirmedNewerWorlds) {
+      const error = new Error('This backup contains worlds last opened in a newer Minecraft version. Restoring and opening them here may permanently damage them.');
+      error.code = 'NEWER_WORLD_BACKUP';
+      throw error;
+    }
+    createAutomaticInstanceBackup(instance, `Before restoring backup from ${selected.createdAt}`);
+    const restored = restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id });
+    diagnosticLog('INFO', `Restored backup ${id} for ${instance.name}`);
+    return restored;
   });
 
   ipcMain.handle('get-recent-destinations', async () => {
@@ -1711,6 +3417,7 @@ function setupIPC() {
 
   ipcMain.handle('update-instance', async (_, name, data) => {
     const safeName = sanitizeName(name);
+    assertNeoForgeIdle(safeName);
     const registry = readJSON(INSTANCES_FILE) || [];
     const idx = registry.findIndex(i => i.name === safeName);
     if (idx < 0) throw new Error(`Instance "${safeName}" not found`);
@@ -1741,6 +3448,16 @@ function setupIPC() {
     if (iconData !== undefined) clean.iconData = iconData;
     if (bannerData !== undefined) clean.bannerData = bannerData;
     if (['left', 'right', 'center', 'none'].includes(data?.bannerBlurDir)) clean.bannerBlurDir = data.bannerBlurDir;
+    if (Object.prototype.hasOwnProperty.call(data || {}, 'favorite')) clean.favorite = Boolean(data.favorite);
+    if (Object.prototype.hasOwnProperty.call(data || {}, 'group')) clean.group = ensureGroupExists(data.group);
+    if (Object.prototype.hasOwnProperty.call(data || {}, 'tags')) {
+      clean.tags = [...new Set((Array.isArray(data.tags) ? data.tags : String(data.tags || '').split(','))
+        .map(tag => String(tag).replace(/[\r\n\0,]+/g, ' ').trim().slice(0, 32)).filter(Boolean))].slice(0, 12);
+    }
+    if (registry[idx].modpack && ['locked', 'unlocked', 'unpaired'].includes(data?.modpackLockState)) {
+      clean.modpack = { ...registry[idx].modpack, lockState: data.modpackLockState };
+      if (data.modpackLockState === 'unpaired') clean.modpack.unpairedAt = new Date().toISOString();
+    }
     if (memoryMegabytes(clean.minMemory || registry[idx].minMemory || '2G') > memoryMegabytes(clean.maxMemory || registry[idx].maxMemory || '4G')) {
       throw new Error('Minimum memory cannot exceed maximum memory');
     }
@@ -1751,6 +3468,7 @@ function setupIPC() {
 
   ipcMain.handle('delete-instance', async (_, name) => {
     const safeName = sanitizeName(name);
+    assertNeoForgeIdle(safeName);
     if (activeInstanceName === safeName) throw new Error('Stop Minecraft before deleting this instance');
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
@@ -1782,10 +3500,12 @@ function setupIPC() {
   ipcMain.handle('launch-instance', async (_, name, requestedDestination = null) => {
     if (mcClient) throw new Error('Minecraft is already launching or running');
     const safeName = sanitizeName(name);
+    if (activeNeoForgeOperations.has(safeName.toLowerCase())) throw new Error('Wait for the NeoForge operation to finish before launching');
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error(`Instance "${safeName}" not found`);
 
+    const confirmedNewerWorld = requestedDestination?.confirmNewerWorld === true;
     let quickDestination = null;
     if (requestedDestination != null) {
       quickDestination = sanitizeDestination(requestedDestination);
@@ -1818,6 +3538,14 @@ function setupIPC() {
       if (!fs.existsSync(worldDir) || !fs.statSync(worldDir).isDirectory()) {
         activeInstanceName = null;
         throw new Error('That world is no longer available in this instance');
+      }
+      const world = listWorlds(path.join(instanceDir, 'saves')).find(item => item.identifier === quickDestination.identifier);
+      if (world?.version && compareSemver(world.version, instance.gameVersion) > 0 && !confirmedNewerWorld) {
+        activeInstanceName = null;
+        throw new Error(`WORLD_DOWNGRADE_CONFIRMATION_REQUIRED: ${world.name} was last played in Minecraft ${world.version}, newer than this instance (${instance.gameVersion})`);
+      }
+      if (world?.version && compareSemver(world.version, instance.gameVersion) > 0 && confirmedNewerWorld) {
+        createBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir, scope: 'worlds', kind: 'automatic', reason: `Before opening ${world.name} in older Minecraft ${instance.gameVersion}`, retention: instance.backupRetention || 5 });
       }
     }
     ensureDir(GLOBAL_DIR);
@@ -1856,6 +3584,7 @@ function setupIPC() {
     setPresenceContext({ type: 'launching', instance, startTimestamp: presenceStartTimestamp }, settings);
 
     mcClient = new Client();
+    activeGameProcess = null;
     minecraftProcessStarted = false;
 
     let customLoader;
@@ -1878,10 +3607,12 @@ function setupIPC() {
         console.warn(`[Java] Configured runtime is incompatible; using Java ${selectedJava.major} at ${selectedJava.path}`);
       }
       await ensureSharedMinecraftVersion(instance.gameVersion, reportPreparation);
-      if (instance.loader === 'neoforge') {
-        throw new Error('NeoForge launching is not available in this build yet. Create a Fabric, Quilt, Forge, or Vanilla instance.');
-      }
       customLoader = await buildLoaderUrl(instance, instanceDir);
+      if (instance.loader === 'neoforge') {
+        customLoader = await getLoaderProviders().get('neoforge').prepare(instance, instanceDir, selectedJava.path, p => {
+          mainWindow?.webContents.send('launch-metrics', { stage: 'building', progress: Math.min(88, 20 + Math.round((p.percent || 0) * 0.68)), currentFile: p.label || 'NeoForge installer' });
+        });
+      }
       forgeInstaller = await prepareForge(instance, instanceDir, (p) => {
         mainWindow?.webContents.send('launch-metrics', { stage: 'downloading', progress: Math.min(20, Math.round((p.percent || 0) * 0.2)), currentFile: 'Forge installer' });
       });
@@ -1923,7 +3654,7 @@ function setupIPC() {
       },
       overrides: {
         assetRoot: GLOBAL_ASSETS_DIR,
-        libraryRoot: GLOBAL_LIBRARIES_DIR,
+        libraryRoot: instance.loader === 'neoforge' ? path.join(instanceDir, 'libraries') : GLOBAL_LIBRARIES_DIR,
         maxSockets: Math.max(2, parseInt(settings.dlLimit, 10) || 4),
       },
       cache: path.join(GLOBAL_DIR, 'cache'),
@@ -1948,6 +3679,21 @@ function setupIPC() {
       let terminalEventHandled = false;
       let lastLauncherFailure = '';
       let runtimeMismatchMessage = '';
+      let gameStartedAt = 0;
+      let sessionRecorded = false;
+      const recordPlaySession = () => {
+        if (sessionRecorded || !gameStartedAt) return;
+        sessionRecorded = true;
+        const seconds = Math.max(1, Math.round((Date.now() - gameStartedAt) / 1000));
+        try {
+          const currentRegistry = readJSON(INSTANCES_FILE) || [];
+          const current = currentRegistry.find(item => item.id === instance.id || item.name === instance.name);
+          if (!current) return;
+          current.lastSessionSeconds = seconds;
+          current.totalPlaytimeSeconds = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Number(current.totalPlaytimeSeconds) || 0) + seconds);
+          writeJSON(INSTANCES_FILE, currentRegistry);
+        } catch (error) { diagnosticLog('WARN', `Could not save playtime for ${instance.name}: ${error.message}`); }
+      };
       const recordedDestinations = new Set();
       const saveDestination = destination => {
         const clean = sanitizeDestination(destination);
@@ -2127,6 +3873,7 @@ function setupIPC() {
       // ── data: Minecraft stdout/stderr (post-Java-launch) ───
       mcClient.on('data', (e) => {
         minecraftProcessStarted = true;
+        if (!gameStartedAt) gameStartedAt = Date.now();
         diagnosticLog('GAME', e);
         mainWindow?.webContents.send('launch-data', e);
         if (!presenceGameStarted) {
@@ -2157,7 +3904,7 @@ function setupIPC() {
             emitMetrics(true);
             if (!launchBehaviorApplied && settings.launchBehavior === 'Close on launch') {
               launchBehaviorApplied = true;
-              mainWindow?.close();
+              hideLauncherForGame();
             }
             return;
           }
@@ -2181,19 +3928,25 @@ function setupIPC() {
                    + cleanCorruptedJars(GLOBAL_VERSIONS_DIR)
                    + cleanCorruptedJars(getInstanceDir(instance, 'mods'));
         if (fixed > 0) mainWindow?.webContents.send('launch-fixed', fixed);
+        recordPlaySession();
         mcClient = null;
+        activeGameProcess = null;
         minecraftProcessStarted = false;
         activeInstanceName = null;
         setPresenceContext({ type: 'launcher' }, settings);
+        restoreLauncherAfterGame();
         reject(e);
       });
       mcClient.on('close', (code) => {
         if (terminalEventHandled) return;
         terminalEventHandled = true;
+        recordPlaySession();
         mcClient = null;
+        activeGameProcess = null;
         minecraftProcessStarted = false;
         activeInstanceName = null;
         setPresenceContext({ type: 'launcher' }, settings);
+        restoreLauncherAfterGame();
         if (Number.isInteger(code) && code !== 0) {
           const error = new Error(runtimeMismatchMessage || `Minecraft crashed with exit code ${code}. Check the launcher logs at: ${LOG_FILE}`);
           diagnosticLog('ERROR', error.message);
@@ -2223,6 +3976,7 @@ function setupIPC() {
         if (!processHandle && !terminalEventHandled) {
           throw new Error(lastLauncherFailure || 'Minecraft preparation stopped before Java could start. Check the network and try again.');
         }
+        if (processHandle && Number.isInteger(processHandle.pid)) activeGameProcess = processHandle;
       }).catch((e) => {
         if (terminalEventHandled) return;
         terminalEventHandled = true;
@@ -2230,10 +3984,13 @@ function setupIPC() {
         mainWindow?.webContents.send('launch-error', e);
         mainWindow?.webContents.send('launch-log', '[ERROR] ' + (e.message || e));
         mainWindow?.webContents.send('launch-metrics', { ...metrics, stage: 'error' });
+        recordPlaySession();
         mcClient = null;
+        activeGameProcess = null;
         minecraftProcessStarted = false;
         activeInstanceName = null;
         setPresenceContext({ type: 'launcher' }, settings);
+        restoreLauncherAfterGame();
         reject(e);
       });
     });
@@ -2332,25 +4089,40 @@ function setupIPC() {
     }
     ensureDir(destinationDir);
     const destination = resolveSafePath(destinationDir, filename);
-    await fetchWithRetry(url, destination, progress => sendInstallProgress(instance.name, 'downloading', `Downloading ${filename}`, progress.percent));
-    try { verifyCurseForgeFile(file, destination); } catch (error) { fs.rmSync(destination, { force: true }); throw error; }
-    if (type === 'mod' && !isValidJar(destination)) { fs.rmSync(destination, { force: true }); throw new Error('The downloaded mod is not a valid JAR'); }
-    if (type === 'mod' && options.replaceFilename) {
-      const previous = safeRemoteFilename(options.replaceFilename);
-      if (previous !== filename && /\.jar(?:\.disabled)?$/i.test(previous)) {
-        fs.rmSync(resolveSafePath(destinationDir, previous), { force: true });
+    const updateBackup = type === 'mod' && options.replaceFilename
+      ? beginProtectedInstanceUpdate(instance, `Before updating ${project.name || filename}`)
+      : null;
+    try {
+      await fetchWithRetry(url, destination, progress => sendInstallProgress(instance.name, 'downloading', `Downloading ${filename}`, progress.percent));
+      try { verifyCurseForgeFile(file, destination); } catch (error) { fs.rmSync(destination, { force: true }); throw error; }
+      if (type === 'mod' && !isValidJar(destination)) { fs.rmSync(destination, { force: true }); throw new Error('The downloaded mod is not a valid JAR'); }
+      if (type === 'mod' && options.replaceFilename) {
+        const previous = safeRemoteFilename(options.replaceFilename);
+        if (previous !== filename && /\.jar(?:\.disabled)?$/i.test(previous)) {
+          fs.rmSync(resolveSafePath(destinationDir, previous), { force: true });
+        }
       }
+      const metaFile = getInstanceDir(instance, type === 'mod' ? 'mods_meta.json' : 'content_meta.json');
+      const metadata = readJSON(metaFile) || {};
+      const info = { projectId: `curseforge:${id}`, title: project.name || filename, iconUrl: project.logo?.url || null, installedVersion: String(fileId), installedAt: new Date().toISOString(), source: 'curseforge' };
+      if (type === 'mod') {
+        if (options.replaceFilename) delete metadata[safeRemoteFilename(options.replaceFilename).replace(/\.disabled$/i, '')];
+        metadata[filename] = info;
+      }
+      else metadata[`${type}:${filename}`] = { ...info, projectType: type };
+      writeJSON(metaFile, metadata);
+      if (updateBackup) finishProtectedInstanceUpdate(instance);
+      return { filename, projectId: `curseforge:${id}` };
+    } catch (error) {
+      if (updateBackup) {
+        try {
+          restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: updateBackup.id });
+        } catch (restoreError) {
+          diagnosticLog('ERROR', `Could not roll back failed CurseForge update for ${instance.name}: ${restoreError.stack || restoreError.message || restoreError}`);
+        }
+      }
+      throw error;
     }
-    const metaFile = getInstanceDir(instance, type === 'mod' ? 'mods_meta.json' : 'content_meta.json');
-    const metadata = readJSON(metaFile) || {};
-    const info = { projectId: `curseforge:${id}`, title: project.name || filename, iconUrl: project.logo?.url || null, installedVersion: String(fileId), installedAt: new Date().toISOString(), source: 'curseforge' };
-    if (type === 'mod') {
-      if (options.replaceFilename) delete metadata[safeRemoteFilename(options.replaceFilename).replace(/\.disabled$/i, '')];
-      metadata[filename] = info;
-    }
-    else metadata[`${type}:${filename}`] = { ...info, projectType: type };
-    writeJSON(metaFile, metadata);
-    return { filename, projectId: `curseforge:${id}` };
   });
 
   ipcMain.handle('get-instance-worlds', async (_, instanceName) => {
@@ -2358,6 +4130,164 @@ function setupIPC() {
     try {
       return fs.readdirSync(savesDir, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
     } catch { return []; }
+  });
+
+  function safeWorldIdentifier(value) {
+    const folder = String(value || '').trim();
+    if (!folder || folder === '.' || folder === '..' || path.basename(folder) !== folder || /[\r\n\0]/.test(folder)) {
+      throw new Error('Invalid world folder');
+    }
+    return folder;
+  }
+
+  ipcMain.handle('get-instance-world-details', async (_, instanceName) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    return listWorlds(getInstanceDir(instance, 'saves')).map(world => ({ ...world, downgradeRisk: Boolean(world.version && compareSemver(world.version, instance.gameVersion) > 0) }));
+  });
+
+  ipcMain.handle('get-world-launch-risk', async (_, instanceName, identifier) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    const folder = safeWorldIdentifier(identifier);
+    const world = listWorlds(getInstanceDir(instance, 'saves')).find(item => item.identifier === folder);
+    if (!world) throw new Error('World not found');
+    return { risk: Boolean(world.version && compareSemver(world.version, instance.gameVersion) > 0), worldVersion: world.version, instanceVersion: instance.gameVersion, name: world.name };
+  });
+
+  ipcMain.handle('rename-world', async (_, instanceName, identifier, requestedName) => {
+    const safeName = sanitizeName(instanceName);
+    if (activeInstanceName === safeName) throw new Error('Close Minecraft before renaming a world');
+    const { instance } = getRegisteredInstance(safeName);
+    const levelFile = resolveSafePath(getInstanceDir(instance, 'saves'), safeWorldIdentifier(identifier), 'level.dat');
+    if (!fs.existsSync(levelFile)) throw new Error('World metadata was not found');
+    createBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), scope: 'worlds', kind: 'automatic', reason: `Before renaming world ${identifier}`, retention: instance.backupRetention || 5 });
+    const updated = replaceLevelName(fs.readFileSync(levelFile), requestedName);
+    const temporary = `${levelFile}.${process.pid}.tmp`;
+    const previous = `${levelFile}.${process.pid}.previous`;
+    fs.writeFileSync(temporary, updated);
+    try {
+      fs.renameSync(levelFile, previous);
+      fs.renameSync(temporary, levelFile);
+      fs.rmSync(previous, { force: true });
+    } catch (error) {
+      fs.rmSync(temporary, { force: true });
+      if (!fs.existsSync(levelFile) && fs.existsSync(previous)) fs.renameSync(previous, levelFile);
+      throw error;
+    }
+    return listWorlds(getInstanceDir(instance, 'saves')).find(world => world.identifier === identifier);
+  });
+
+  ipcMain.handle('open-instance-screenshots', async (_, instanceName) => {
+    const folder = getInstanceDirByName(sanitizeName(instanceName), 'screenshots');
+    ensureDir(folder);
+    const error = await shell.openPath(folder);
+    if (error) throw new Error(error);
+    return true;
+  });
+
+  function worldDatapacksDirectory(instanceName, identifier) {
+    return resolveSafePath(getInstanceDirByName(sanitizeName(instanceName), 'saves'), safeWorldIdentifier(identifier), 'datapacks');
+  }
+
+  function backupWorldsBeforeDatapack(instance, label) {
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before changing a world data pack');
+    return createBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), scope: 'worlds', kind: 'automatic', reason: label, retention: instance.backupRetention || 5 });
+  }
+
+  ipcMain.handle('install-world-datapack-file', async (_, instanceName, identifier) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    const result = await dialog.showOpenDialog(mainWindow, { title: 'Choose a Minecraft data pack', properties: ['openFile'], filters: [{ name: 'Minecraft data pack', extensions: ['zip'] }] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const source = result.filePaths[0];
+    validateDatapackArchive(source);
+    const targetDir = worldDatapacksDirectory(instance.name, identifier);
+    ensureDir(targetDir);
+    const target = resolveSafePath(targetDir, safeRemoteFilename(path.basename(source)));
+    if (fs.existsSync(target)) throw new Error('A data pack with this filename is already installed in the world');
+    backupWorldsBeforeDatapack(instance, `Before adding data pack to ${identifier}`);
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.copyFileSync(source, temporary);
+    validateDatapackArchive(temporary);
+    fs.renameSync(temporary, target);
+    return { filename: path.basename(target) };
+  });
+
+  ipcMain.handle('install-modrinth-datapack', async (_, instanceName, identifier, requestedProjectId) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    const projectId = String(requestedProjectId || '').trim().slice(0, 120);
+    const project = await modrinthFetch(`/project/${encodeURIComponent(projectId)}`);
+    if (project.project_type !== 'datapack') throw new Error('That Modrinth project is not a data pack');
+    const versions = await modrinthFetch(`/project/${encodeURIComponent(project.id)}/version?game_versions=${encodeURIComponent(JSON.stringify([instance.gameVersion]))}`);
+    const version = versions.find(item => item.files?.length);
+    const file = version?.files?.find(item => item.primary) || version?.files?.[0];
+    if (!file?.url || new URL(file.url).protocol !== 'https:') throw new Error(`No compatible download is available for Minecraft ${instance.gameVersion}`);
+    const targetDir = worldDatapacksDirectory(instance.name, identifier);
+    ensureDir(targetDir);
+    const target = resolveSafePath(targetDir, safeRemoteFilename(file.filename));
+    if (fs.existsSync(target)) throw new Error('This data pack is already installed in the world');
+    backupWorldsBeforeDatapack(instance, `Before adding ${project.title || 'data pack'} to ${identifier}`);
+    const temporary = `${target}.${process.pid}.tmp`;
+    try {
+      await fetchWithRetry(file.url, temporary, () => {});
+      const algorithm = file.hashes?.sha512 ? 'sha512' : file.hashes?.sha1 ? 'sha1' : null;
+      if (algorithm) {
+        const actual = crypto.createHash(algorithm).update(fs.readFileSync(temporary)).digest('hex');
+        if (actual !== file.hashes[algorithm]) throw new Error('The downloaded data pack did not pass verification');
+      }
+      validateDatapackArchive(temporary);
+      fs.renameSync(temporary, target);
+    } catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
+    return { filename: path.basename(target), title: project.title };
+  });
+
+  ipcMain.handle('open-world-folder', async (_, instanceName, identifier) => {
+    const folder = resolveSafePath(getInstanceDirByName(sanitizeName(instanceName), 'saves'), safeWorldIdentifier(identifier));
+    if (!fs.existsSync(folder)) throw new Error('World not found');
+    const error = await shell.openPath(folder);
+    if (error) throw new Error(error);
+    return true;
+  });
+
+  ipcMain.handle('duplicate-world', async (_, instanceName, identifier) => {
+    const safeName = sanitizeName(instanceName);
+    if (activeInstanceName === safeName) throw new Error('Close Minecraft before duplicating a world');
+    const savesDir = getInstanceDirByName(safeName, 'saves');
+    const sourceFolder = safeWorldIdentifier(identifier);
+    const source = resolveSafePath(savesDir, sourceFolder);
+    if (!fs.existsSync(source)) throw new Error('World not found');
+    let suffix = ' Copy';
+    let destination = resolveSafePath(savesDir, `${sourceFolder}${suffix}`);
+    let number = 2;
+    while (fs.existsSync(destination)) destination = resolveSafePath(savesDir, `${sourceFolder}${suffix} ${number++}`);
+    const result = await copyInstanceTransactional({ source, destination });
+    return { identifier: path.basename(destination), files: result.files, bytes: result.bytes };
+  });
+
+  ipcMain.handle('delete-world', async (_, instanceName, identifier) => {
+    const safeName = sanitizeName(instanceName);
+    if (activeInstanceName === safeName) throw new Error('Close Minecraft before deleting a world');
+    const { instance } = getRegisteredInstance(safeName);
+    const world = resolveSafePath(getInstanceDir(instance, 'saves'), safeWorldIdentifier(identifier));
+    if (!fs.existsSync(world)) throw new Error('World not found');
+    createBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), scope: 'worlds', kind: 'automatic', reason: `Before deleting world ${path.basename(world)}`, retention: instance.backupRetention || 5 });
+    fs.rmSync(world, { recursive: true, force: true });
+    return true;
+  });
+
+  ipcMain.handle('export-world', async (_, instanceName, identifier) => {
+    const safeName = sanitizeName(instanceName);
+    const folder = safeWorldIdentifier(identifier);
+    const source = resolveSafePath(getInstanceDirByName(safeName, 'saves'), folder);
+    if (!fs.existsSync(source)) throw new Error('World not found');
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Minecraft world',
+      defaultPath: `${folder}.zip`,
+      filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const archive = new AdmZip();
+    archive.addLocalFolder(source, folder);
+    archive.writeZip(result.filePath);
+    return result.filePath;
   });
 
   ipcMain.handle('import-curseforge-modpack', async (_, options = {}) => {
@@ -2396,11 +4326,12 @@ function setupIPC() {
     const loaderVersion = loaderMatch ? loaderMatch[2] : null;
     const versions = await fetchMinecraftVersions();
     if (!versions.versions?.some(item => item.id === gameVersion)) throw new Error(`The modpack requests unknown Minecraft version ${gameVersion}`);
-    if (!['vanilla', 'fabric', 'quilt', 'forge'].includes(loader)) throw new Error(`The modpack loader ${loader} is not supported yet`);
+    if (!['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'].includes(loader)) throw new Error(`The modpack loader ${loader} is not supported yet`);
     const instanceDir = resolveSafePath(INSTANCES_DIR, name);
     if (fs.existsSync(instanceDir) && fs.readdirSync(instanceDir).length) throw new Error(`The instance folder ${name} is not empty`);
     ensureDir(instanceDir);
     const written = [];
+    const managedPackFiles = [];
     try {
       ensureDir(path.join(instanceDir, 'mods'));
       ensureDir(path.join(instanceDir, 'saves'));
@@ -2421,6 +4352,7 @@ function setupIPC() {
         ensureDir(path.dirname(destination));
         fs.writeFileSync(destination, entry.getData());
         written.push(destination);
+        managedPackFiles.push(managedFileRecord(instanceDir, parts.join('/'), { kind: 'override' }));
       }
       const modsMeta = {};
       const manifestFiles = Array.isArray(manifest.files) ? manifest.files : [];
@@ -2442,14 +4374,20 @@ function setupIPC() {
         await fetchWithRetry(modUrl, destination, progress => sendInstallProgress(name, 'downloading', `Installing ${index + 1} of ${manifestFiles.length}: ${filename}`, 20 + Math.round(((index + (progress.percent || 0) / 100) / Math.max(1, manifestFiles.length)) * 75)));
         try { verifyCurseForgeFile(modFile, destination); } catch (error) { fs.rmSync(destination, { force: true }); throw error; }
         written.push(destination);
+        managedPackFiles.push(managedFileRecord(instanceDir, `mods/${filename}`, { kind: 'download', projectId: modId, fileId: modFileId, downloads: [modUrl] }));
         modsMeta[filename] = { projectId: `curseforge:${modId}`, title: project?.name || filename, iconUrl: project?.logo?.url || null, installedVersion: String(modFileId), installedAt: new Date().toISOString(), source: 'curseforge' };
       }
       writeJSON(path.join(instanceDir, 'mods_meta.json'), modsMeta);
       const defaults = readJSON(SETTINGS_FILE) || {};
       const entry = {
-        name, path: instanceDir, customRoot: '', gameVersion, profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
+        id: crypto.randomUUID(), name, path: instanceDir, customRoot: '', gameVersion, profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
         created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
-        memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left', modpack: { source: 'curseforge', projectId, fileId },
+        memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
+        modpack: {
+          source: 'curseforge', projectId, fileId, installedVersion: String(fileId), lockState: 'locked',
+          versionName: String(file.displayName || file.fileName || fileId).slice(0, 160), importedAt: new Date().toISOString(),
+          managedFiles: normalizedManagedFiles(managedPackFiles), archiveCacheKey: cacheManagedPackArchive(archivePath, '.zip'), history: [],
+        },
       };
       registry.push(entry);
       writeJSON(INSTANCES_FILE, registry);
@@ -2534,9 +4472,8 @@ function setupIPC() {
           if (r.ok) {
             const xml = await r.text();
             const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
-            const prefix = gameVersion.replace(/^1\./, '') + '.';
-            const known = versions.some(v => v.startsWith(prefix) && v === loaderVersion);
-            if (!known && !versions.some(v => v.startsWith(prefix))) return 'Installed NeoForge ' + loaderVersion + ' may not be compatible with MC ' + gameVersion;
+            const known = versions.includes(loaderVersion) && isNeoForgeVersionForMinecraft(loaderVersion, gameVersion);
+            if (!known) return 'Installed NeoForge ' + loaderVersion + ' may not be compatible with MC ' + gameVersion;
           } else return `NeoForge metadata returned HTTP ${r.status}`;
         } catch { return 'Could not verify the NeoForge loader version because the metadata service is unavailable'; }
         return null;
@@ -2854,11 +4791,16 @@ function setupIPC() {
       throw new Error(msg);
     }
 
+    const updateBackup = options.createBackup === true
+      ? beginProtectedInstanceUpdate(instance, options.backupReason || 'Before updating instance content')
+      : null;
+
     try {
       // Disable conflicting files before starting
       if (disableFiles?.length) {
       for (const f of disableFiles) {
           const safeFile = safeRemoteFilename(f);
+          assertManagedMutationAllowed(instance, `mods/${safeFile.endsWith('.disabled') ? safeFile.slice(0, -9) : safeFile}`);
           const fullPath = resolveSafePath(modsDir, safeFile);
           if (fs.existsSync(fullPath) && !fullPath.endsWith('.disabled')) {
             const backup = fullPath + '.disabled';
@@ -2914,6 +4856,7 @@ function setupIPC() {
         installed.push({ filename: result.file.filename, projectId: result.version.project_id });
       }
 
+      if (updateBackup) finishProtectedInstanceUpdate(instance);
       sendInstallProgress(instanceName, 'done', `Installed ${installed.length} file${installed.length > 1 ? 's' : ''}`, 100);
       return { installed, primary: installed[0] || null };
     } catch (e) {
@@ -2937,6 +4880,13 @@ function setupIPC() {
         }
         fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
       } catch {}
+      if (updateBackup) {
+        try {
+          restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: updateBackup.id });
+        } catch (restoreError) {
+          diagnosticLog('ERROR', `Could not roll back failed update for ${instance.name}: ${restoreError.stack || restoreError.message || restoreError}`);
+        }
+      }
       throw e;
     }
   });
@@ -2962,6 +4912,8 @@ function setupIPC() {
     if (!safeFile.endsWith('.jar') && !safeFile.endsWith('.jar.disabled')) {
       throw new Error('Invalid mod filename');
     }
+    const instance = getRegisteredInstance(safeName).instance;
+    assertManagedMutationAllowed(instance, `mods/${safeFile.endsWith('.disabled') ? safeFile.slice(0, -9) : safeFile}`);
     const modsDir = getInstanceDirByName(safeName, 'mods');
     const suppliedPath = resolveSafePath(modsDir, safeFile);
     const enabledPath = suppliedPath.endsWith('.disabled') ? suppliedPath.slice(0, -9) : suppliedPath;
@@ -3124,6 +5076,8 @@ function setupIPC() {
     if (type === 'mod') throw new Error('Use the mod toggle action');
     const item = (await getInstanceContentList(instanceName, type)).find(entry => entry.key === key);
     if (!item) throw new Error('Content file not found');
+    const instance = getRegisteredInstance(instanceName).instance;
+    assertManagedMutationAllowed(instance, path.relative(getInstanceDir(instance), item.path).split(path.sep).join('/').replace(/\.disabled$/, ''));
     const enabledPath = item.path.endsWith('.disabled') ? item.path.slice(0, -9) : item.path;
     const disabledPath = `${enabledPath}.disabled`;
     if (fs.existsSync(enabledPath)) fs.renameSync(enabledPath, disabledPath);
@@ -3135,6 +5089,8 @@ function setupIPC() {
     if (type === 'mod') throw new Error('Use the mod removal action');
     const item = (await getInstanceContentList(instanceName, type)).find(entry => entry.key === key);
     if (!item) throw new Error('Content file not found');
+    const instance = getRegisteredInstance(instanceName).instance;
+    assertManagedMutationAllowed(instance, path.relative(getInstanceDir(instance), item.path).split(path.sep).join('/').replace(/\.disabled$/, ''));
     const enabledPath = item.path.endsWith('.disabled') ? item.path.slice(0, -9) : item.path;
     const disabledPath = `${enabledPath}.disabled`;
     if (fs.existsSync(enabledPath)) fs.rmSync(enabledPath, { force: true, recursive: item.isDirectory });
@@ -3160,6 +5116,8 @@ function setupIPC() {
     if (!safeFile.endsWith('.jar') && !safeFile.endsWith('.jar.disabled')) {
       throw new Error('Invalid mod filename');
     }
+    const instance = getRegisteredInstance(safeName).instance;
+    assertManagedMutationAllowed(instance, `mods/${safeFile.endsWith('.disabled') ? safeFile.slice(0, -9) : safeFile}`);
     const modsDir = getInstanceDirByName(safeName, 'mods');
     const filePath = resolveSafePath(modsDir, safeFile);
     const enabledPath = filePath.endsWith('.disabled') ? filePath.slice(0, -9) : filePath;
@@ -3368,6 +5326,12 @@ app.whenReady().then(() => {
   migrateSettings();
   migrateUserDataDir();
   migrateInstances();
+  for (const target of recoverInterruptedRestores(BACKUPS_DIR)) {
+    diagnosticLog('WARN', `Recovered an interrupted instance restore: ${target}`);
+  }
+  for (const recovery of recoverInterruptedInstanceUpdates()) {
+    diagnosticLog('WARN', `Restored ${recovery.instance} after an interrupted update using backup ${recovery.backupId}`);
+  }
   createWindow();
   updateManager = createUpdateManager({
     autoUpdater,
@@ -3408,6 +5372,7 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  appIsQuitting = true;
   updateManager?.dispose();
   discordPresence.destroy();
   // The game process is intentionally detached. Only cancel a launch that has

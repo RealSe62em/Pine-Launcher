@@ -444,6 +444,10 @@
   font-variant-numeric: tabular-nums lining-nums;
   min-width: 64px;
 }
+.dp-stop-game { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--accent-red) 28%, var(--border-subtle)); border-radius: var(--r-pill); background: color-mix(in srgb, var(--accent-red) 10%, transparent); color: color-mix(in srgb, var(--accent-red) 82%, white); font: inherit; font-size: var(--text-caption); font-weight: 650; cursor: pointer; transition: transform var(--dur-fast) var(--ease-ios), background var(--dur-fast) var(--ease-ios); }
+.dp-stop-game:hover { background: color-mix(in srgb, var(--accent-red) 20%, transparent); transform: translateY(-1px); }
+.dp-stop-game:active { transform: scale(.95); }
+.dp-stop-game[hidden] { display: none; }
 .dp-pct { font-size: var(--text-headline); font-weight: 700; color: var(--text-hi); letter-spacing: var(--tracking-tight); }
 .dp-sub { font-size: 10px; color: var(--text-lo); display: flex; gap: 6px; }
 

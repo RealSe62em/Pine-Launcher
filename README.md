@@ -17,7 +17,6 @@ Pine Launcher is a Windows Minecraft launcher with isolated instances, Microsoft
 
 1. Download the newest installer from the [Releases](https://github.com/RealSe62em/Pine-Launcher/releases) page.
 2. Run the installer that matches your Windows PC:
-   - `PineLauncherSetup.exe` — universal installer; recommended for most people.
    - `PineLauncherSetup-x64.exe` — Intel or AMD 64-bit PCs.
    - `PineLauncherSetup-arm64.exe` — Windows on ARM PCs.
 3. Follow the installer prompts, then open Pine Launcher from the Start menu or desktop shortcut.
@@ -26,14 +25,15 @@ Pine supports Windows 10 and Windows 11. The launcher downloads and verifies the
 
 ## Features
 
-- Separate Vanilla, Fabric, Quilt, and Forge instances.
+- Separate Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
 - Multiple Microsoft and offline accounts with individual switching and deletion.
 - Modrinth discovery plus optional CurseForge mods, packs, and data packs using an approved API key.
 - A polished frequently visited grid with real server/world details and one-click Play.
 - Shared verified caches for game assets, libraries, versions, and mods—so matching files are reused instead of downloaded again for every new instance.
 - Clear launch stages and selectable, copyable logs for troubleshooting.
-
-NeoForge is not currently offered until its installer/profile flow is implemented and tested.
+- Transactional instance copies and imports with cancellation, category selection, private-data exclusion, and rollback of partial work.
+- Pine archives, lightweight Pine manifests, and standards-compatible Modrinth `.mrpack` import/export.
+- Automatic restore points, world management, managed-pack lifecycle controls, and privacy-safe crash diagnosis.
 
 CurseForge requires an approved third-party API key. Add it under **Settings → Integrations** or set `PINE_CURSEFORGE_API_KEY`; Pine does not ship a private developer key in source control.
 
@@ -49,7 +49,7 @@ The current installer is unsigned. Windows may therefore show an "Unknown publis
 
 - **Java error:** Pine installs the Java runtime required by the Minecraft version. You can also choose a custom Java executable in Settings.
 - **Launch failure:** Open the instance **Logs** tab and copy the selectable log text when asking for help.
-- **Installer problem:** Download the newest installer again and choose the x64 or ARM64 build if the universal installer does not suit your PC.
+- **Installer problem:** Download the newest installer again and choose x64 for Intel/AMD PCs or ARM64 for Windows on ARM.
 - **Uninstall:** Use **Installed apps** in Windows Settings or Control Panel. Worlds and other user data are retained.
 
 ## Building from source on Windows
