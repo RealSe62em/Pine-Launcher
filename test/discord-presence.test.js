@@ -1,8 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
 const {
   DiscordPresence,
+  discordIpcEndpoints,
   encodeFrame,
   isPrivateServerAddress,
   normalizeServerIcon,
@@ -11,6 +14,13 @@ const {
   serverDisplayAddress,
   serverDisplayName,
 } = require('../lib/discord-presence');
+
+test('uses native Discord IPC endpoints on Windows and Linux', () => {
+  assert.equal(discordIpcEndpoints({ platform: 'win32', maxPipeIndex: 0 })[0], '\\\\?\\pipe\\discord-ipc-0');
+  const linux = discordIpcEndpoints({ platform: 'linux', maxPipeIndex: 0 });
+  assert.ok(linux.some(endpoint => endpoint.endsWith('/discord-ipc-0')));
+  assert.ok(linux.every(endpoint => !endpoint.includes('\\\\?\\pipe')));
+});
 
 test('encodes Discord IPC frames', () => {
   const frame = encodeFrame(0, { v: 1, client_id: '123' });
@@ -56,8 +66,10 @@ test('recognizes game activity log lines', () => {
   assert.deepEqual(parseGamePresenceLine('Disconnected'), { type: 'menu' });
 });
 
-test('completes a Discord desktop handshake and publishes activity', async () => {
-  const pipePrefix = `\\\\?\\pipe\\pine-discord-presence-test-${process.pid}-${Date.now()}-`;
+test('completes a Discord desktop handshake and publishes activity', async t => {
+  const pipePrefix = process.platform === 'win32'
+    ? `\\\\?\\pipe\\pine-discord-presence-test-${process.pid}-${Date.now()}-`
+    : path.join(os.tmpdir(), `pine-discord-${process.pid}-${Date.now()}-`);
   const pipe = `${pipePrefix}0`;
   let received = Buffer.alloc(0);
   let resolveActivity;
@@ -75,7 +87,15 @@ test('completes a Discord desktop handshake and publishes activity', async () =>
       }
     });
   });
-  await new Promise((resolve, reject) => server.listen(pipe, resolve).once('error', reject));
+  try {
+    await new Promise((resolve, reject) => server.listen(pipe, resolve).once('error', reject));
+  } catch (error) {
+    if (error?.code === 'EPERM') {
+      t.skip('The test sandbox does not permit local IPC sockets');
+      return;
+    }
+    throw error;
+  }
   const presence = new DiscordPresence('123', { pipePrefix, maxPipeIndex: 0 });
   presence.setEnabled(true);
   presence.setActivity({

@@ -1,9 +1,20 @@
 const RELEASES = {
-  universal: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.17/PineLauncherSetup.exe',
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.17/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.1.17/PineLauncherSetup-arm64.exe'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.0/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.0/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.0/PineLauncher-1.2.0-linux-amd64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.0/PineLauncher-1.2.0-archlinux-x64.pacman'
 };
-document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.universal; });
+const FALLBACK_VERSION = '1.2.0';
+function compareVersions(left, right) {
+  const parts = value => String(value).split('.').map(part => Number.parseInt(part, 10) || 0);
+  const a = parts(left);
+  const b = parts(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0);
+  }
+  return 0;
+}
+document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.x64; });
 
 async function syncLatestRelease() {
   const response = await fetch('https://api.github.com/repos/RealSe62em/Pine-Launcher/releases/latest', {
@@ -12,13 +23,15 @@ async function syncLatestRelease() {
   if (!response.ok) return;
   const release = await response.json();
   const version = String(release.tag_name || '').replace(/^v/i, '');
+  if (!version || compareVersions(version, FALLBACK_VERSION) < 0) return;
   if (version) document.querySelectorAll('[data-release-version]').forEach((element) => { element.textContent = version; });
 
   const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
   const names = {
-    universal: 'PineLauncherSetup.exe',
     x64: 'PineLauncherSetup-x64.exe',
-    arm64: 'PineLauncherSetup-arm64.exe'
+    arm64: 'PineLauncherSetup-arm64.exe',
+    linux: `PineLauncher-${version}-linux-amd64.deb`,
+    arch: `PineLauncher-${version}-archlinux-x64.pacman`
   };
   for (const [build, name] of Object.entries(names)) {
     const asset = assets.get(name);
@@ -27,12 +40,14 @@ async function syncLatestRelease() {
     document.querySelectorAll(`.download-link[data-build="${build}"]`).forEach((link) => { link.href = asset.browser_download_url; });
   }
 
-  const universal = assets.get(names.universal);
-  if (universal?.size) {
-    const size = `${Math.round(universal.size / 1024 / 1024)} MB`;
-    document.querySelectorAll('[data-release-size]').forEach((element) => { element.textContent = size; });
+  for (const [build, name] of Object.entries(names)) {
+    const asset = assets.get(name);
+    if (!asset?.size) continue;
+    const size = `${Math.round(asset.size / 1024 / 1024)} MB`;
+    document.querySelectorAll(`[data-release-size="${build}"]`).forEach((element) => { element.textContent = size; });
   }
-  const digest = String(universal?.digest || '').match(/^sha256:([a-f0-9]{64})$/i)?.[1]?.toUpperCase();
+  const preferred = assets.get(names.x64);
+  const digest = String(preferred?.digest || '').match(/^sha256:([a-f0-9]{64})$/i)?.[1]?.toUpperCase();
   const hashButton = document.querySelector('[data-hash]');
   if (digest && hashButton) {
     hashButton.dataset.hash = digest;

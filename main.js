@@ -14,12 +14,12 @@ const { parseJavaMajor, javaMinimumFromRange, chooseCompatibleJava, versionSuppo
 const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/settings');
 const { installMclReliabilityPatches, rememberValidatedJava } = require('./lib/mcl-reliability');
 const { ValidationCache } = require('./lib/validation-cache');
-const { extractZipOnWindows } = require('./lib/runtime-extraction');
+const { extractRuntimeArchive } = require('./lib/runtime-extraction');
 const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineDuplicateModIds, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const { createUpdateManager } = require('./lib/updater');
 const { DiscordPresence, isPrivateServerAddress, normalizeServerIcon, parseGamePresenceLine, readSavedServers, serverDisplayAddress } = require('./lib/discord-presence');
-const { deleteAccount, normalizeAuthStore, publicAccounts, selectAccount, selectedAccount, upsertAccount } = require('./lib/account-store');
+const { accountKey, deleteAccount, normalizeAuthStore, publicAccounts, selectAccount, selectedAccount, upsertAccount } = require('./lib/account-store');
 const { destinationKey, listWorlds, newestWorld, rankDestinations, readActivity, recordDestination, removeDestination, sanitizeDestination } = require('./lib/activity-store');
 const { createBackup, deleteBackup, listBackups, pruneAutomaticBackups, recoverInterruptedRestores, restoreBackup } = require('./lib/instance-backups');
 const { copyInstanceTransactional, createDuplicationFilter, inspectTree } = require('./lib/instance-transfer');
@@ -614,15 +614,22 @@ function parseJvmArgs(value) {
 }
 
 // ── Safe auth storage ───────────────────────────────────────
+function secureCredentialStorageAvailable() {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  if (process.platform !== 'linux' || typeof safeStorage.getSelectedStorageBackend !== 'function') return true;
+  return safeStorage.getSelectedStorageBackend() !== 'basic_text';
+}
+
 function writeAuthStore(store) {
   const normalized = normalizeAuthStore(store);
-  if (!safeStorage.isEncryptionAvailable() && normalized.accounts.some(account => account.meta?.type !== 'offline')) {
-    throw new Error('Windows secure credential storage is unavailable, so Pine will not save Microsoft refresh tokens on this PC');
+  const secureStorage = secureCredentialStorageAvailable();
+  if (!secureStorage && normalized.accounts.some(account => account.meta?.type !== 'offline')) {
+    throw new Error(`${process.platform === 'linux' ? 'Linux Secret Service' : 'Windows secure credential storage'} is unavailable, so Pine will not save Microsoft refresh tokens on this PC`);
   }
   const json = JSON.stringify(normalized);
   const file = getAuthFile();
   ensureDir(path.dirname(file));
-  if (safeStorage.isEncryptionAvailable()) {
+  if (secureStorage) {
     const encrypted = safeStorage.encryptString(json);
     fs.writeFileSync(file, encrypted);
   } else {
@@ -635,11 +642,16 @@ function readAuthStore() {
     const file = getAuthFile();
     if (!fs.existsSync(file)) return null;
     const raw = fs.readFileSync(file);
-    if (safeStorage.isEncryptionAvailable()) {
+    if (secureCredentialStorageAvailable()) {
       const decrypted = safeStorage.decryptString(raw);
       return normalizeAuthStore(JSON.parse(decrypted));
     }
-    return normalizeAuthStore(JSON.parse(raw.toString('utf8')));
+    const plaintext = normalizeAuthStore(JSON.parse(raw.toString('utf8')));
+    plaintext.accounts = plaintext.accounts.filter(account => account.meta?.type === 'offline');
+    if (!plaintext.accounts.some(account => accountKey(account) === plaintext.selectedKey)) {
+      plaintext.selectedKey = plaintext.accounts[0] ? accountKey(plaintext.accounts[0]) : null;
+    }
+    return plaintext;
   } catch {
     return normalizeAuthStore(null);
   }
@@ -769,7 +781,7 @@ function getJavaVersionAsync(javaPath) {
   });
 }
 
-// ── Windows Java discovery ────────────────────────────────
+// ── Platform Java discovery ───────────────────────────────
 const WINDOWS_JAVA_ROOTS = (() => {
   const roots = [];
   const pf = process.env['ProgramFiles'];
@@ -815,6 +827,40 @@ function findJavaOnWindows() {
   return found;
 }
 
+function findJavaOnLinux() {
+  if (process.platform !== 'linux') return [];
+  const found = [];
+  const seen = new Set();
+  const add = candidate => {
+    if (!candidate || seen.has(candidate)) return;
+    try {
+      if (!fs.statSync(candidate).isFile()) return;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      seen.add(candidate);
+      found.push(candidate);
+    } catch {}
+  };
+  if (process.env.JAVA_HOME) add(path.join(process.env.JAVA_HOME, 'bin', 'java'));
+  for (const candidate of ['/usr/bin/java', '/usr/local/bin/java']) add(candidate);
+  const scan = (dir, depth) => {
+    if (depth < 0 || found.length > 30) return;
+    add(path.join(dir, 'bin', 'java'));
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) scan(path.join(dir, entry.name), depth - 1);
+    }
+  };
+  scan('/usr/lib/jvm', 3);
+  return found;
+}
+
+function findPlatformJava() {
+  if (process.platform === 'win32') return findJavaOnWindows();
+  if (process.platform === 'linux') return findJavaOnLinux();
+  return [];
+}
+
 
 const MANAGED_JAVA_DIR = path.join(app.getPath('userData'), 'runtimes');
 
@@ -835,9 +881,10 @@ function findJavaExecutable(root, depth = 4) {
 async function fetchAdoptiumAsset(javaMajor, imageType) {
   let lastStatus = null;
   let lastError = null;
-  for (const architecture of javaRuntimeArchitectures(process.arch)) {
+  for (const architecture of javaRuntimeArchitectures(process.arch, process.platform)) {
+    const operatingSystem = process.platform === 'linux' ? 'linux' : 'windows';
     const url = `https://api.adoptium.net/v3/assets/latest/${javaMajor}/hotspot?architecture=${architecture}`
-      + `&image_type=${imageType}&os=windows&vendor=eclipse`;
+      + `&image_type=${imageType}&os=${operatingSystem}&vendor=eclipse`;
     try {
       const response = await portableFetch(url, { signal: AbortSignal.timeout(30000) });
       lastStatus = response.status;
@@ -861,15 +908,16 @@ async function fetchAdoptiumAsset(javaMajor, imageType) {
 }
 
 async function provisionManagedJava(javaMajor, onProgress) {
-  if (process.platform !== 'win32') throw new Error('Automatic Java installation is currently available on Windows only');
+  if (!['win32', 'linux'].includes(process.platform)) throw new Error(`Automatic Java installation is not available on ${process.platform}`);
   ensureDir(MANAGED_JAVA_DIR);
-  const runtimeDir = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.arch}`);
+  const runtimeDir = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.platform}-${process.arch}`);
   const existing = findJavaExecutable(runtimeDir);
   if (existing && await getJavaVersionAsync(existing) === javaMajor) return { path: existing, major: javaMajor, managed: true };
 
   const runtimePackage = await fetchAdoptiumAsset(javaMajor, 'jre') || await fetchAdoptiumAsset(javaMajor, 'jdk');
   if (!runtimePackage) throw new Error(`No Eclipse Temurin Java ${javaMajor} runtime is available for this PC`);
-  const archive = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.arch}.zip`);
+  const archiveExtension = process.platform === 'linux' ? '.tar.gz' : '.zip';
+  const archive = path.join(MANAGED_JAVA_DIR, `temurin-${javaMajor}-${process.platform}-${process.arch}${archiveExtension}`);
   const staging = `${runtimeDir}.installing-${process.pid}`;
   let lastError;
   for (let installAttempt = 1; installAttempt <= 3; installAttempt++) {
@@ -883,8 +931,9 @@ async function provisionManagedJava(javaMajor, onProgress) {
       if (actual.toLowerCase() !== runtimePackage.checksum.toLowerCase()) throw new Error('The Java runtime checksum did not match');
       onProgress?.({ percent: 100, label: `Installing Java ${javaMajor}` });
       ensureDir(staging);
-      const extractor = await extractZipOnWindows(archive, staging);
+      const extractor = await extractRuntimeArchive(archive, staging);
       const stagedJava = findJavaExecutable(staging);
+      if (stagedJava && process.platform !== 'win32') fs.chmodSync(stagedJava, 0o755);
       if (!stagedJava || await getJavaVersionAsync(stagedJava) !== javaMajor) throw new Error(`Downloaded runtime is not Java ${javaMajor}`);
       fs.rmSync(runtimeDir, { recursive: true, force: true });
       fs.renameSync(staging, runtimeDir);
@@ -920,7 +969,7 @@ let javaDiscoveryCachedAt = 0;
 const modJavaRequirementCache = new Map();
 function getJavaCandidates() {
   if (!javaDiscoveryCache || Date.now() - javaDiscoveryCachedAt > 5 * 60 * 1000) {
-    javaDiscoveryCache = findJavaOnWindows();
+    javaDiscoveryCache = findPlatformJava();
     javaDiscoveryCachedAt = Date.now();
   }
   return javaDiscoveryCache;
@@ -1998,7 +2047,7 @@ function setupIPC() {
       await new Promise(resolve => setTimeout(resolve, 60));
     }
     const detail = lastError?.message ? ` (${lastError.message})` : '';
-    throw new Error('Windows did not accept the copied text. Close other clipboard tools and try again.' + detail);
+    throw new Error(`${process.platform === 'linux' ? 'Linux' : 'Windows'} did not accept the copied text. Close other clipboard tools and try again.` + detail);
   });
 
   ipcMain.handle('analyze-crash', async (_, instanceName, log) => {
@@ -2715,6 +2764,32 @@ function setupIPC() {
   function knownLauncherFolders() {
     const appData = app.getPath('appData');
     const home = app.getPath('home');
+    if (process.platform === 'linux') {
+      const config = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+      const data = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+      const sharedMinecraft = path.join(home, '.minecraft');
+      return [
+        { key: 'official', label: 'Official Minecraft Launcher', folders: [sharedMinecraft], direct: true },
+        { key: 'prism', label: 'Prism Launcher', folders: [path.join(data, 'PrismLauncher', 'instances'), path.join(home, '.local', 'share', 'PrismLauncher', 'instances')] },
+        { key: 'multimc', label: 'MultiMC', folders: [path.join(data, 'multimc', 'instances'), path.join(home, '.multimc', 'instances')] },
+        { key: 'polymc', label: 'PolyMC', folders: [path.join(data, 'PolyMC', 'instances')] },
+        { key: 'modrinth', label: 'Modrinth App', folders: [path.join(config, 'com.modrinth.theseus', 'profiles'), path.join(data, 'com.modrinth.theseus', 'profiles')] },
+        { key: 'curseforge', label: 'CurseForge', folders: [path.join(home, 'curseforge', 'minecraft', 'Instances')] },
+        { key: 'gdlauncher', label: 'GDLauncher', folders: [path.join(config, 'gdlauncher_next', 'instances'), path.join(config, 'gdlauncher', 'instances')] },
+        { key: 'atlauncher', label: 'ATLauncher', folders: [path.join(data, 'atlauncher', 'instances'), path.join(home, '.local', 'share', 'ATLauncher', 'instances')] },
+        { key: 'technic', label: 'Technic Launcher', folders: [path.join(home, '.technic', 'modpacks')] },
+        { key: 'ftb', label: 'FTB App', folders: [path.join(data, 'ftba', 'instances'), path.join(home, '.ftba', 'instances')] },
+        { key: 'lunar', label: 'Lunar Client', folders: [path.join(home, '.lunarclient', 'profiles'), sharedMinecraft], maxDepth: 3, presenceFolders: [path.join(home, '.lunarclient')] },
+        { key: 'feather', label: 'Feather / Dawn Client', folders: [path.join(config, '.feather'), path.join(home, '.feather'), sharedMinecraft], maxDepth: 3, presenceFolders: [path.join(home, '.feather')] },
+        { key: 'labymod', label: 'LabyMod', folders: [sharedMinecraft, path.join(config, 'LabyMod')], maxDepth: 3 },
+        { key: 'fastclient', label: 'Fast Client', folders: [path.join(config, 'FastClient'), path.join(home, '.fastclient'), sharedMinecraft], maxDepth: 3 },
+        { key: 'tlauncher', label: 'TLauncher', folders: [path.join(home, '.tlauncher', 'legacy', 'Minecraft', 'game'), sharedMinecraft], direct: true },
+        { key: 'legacy', label: 'Legacy Launcher', folders: [path.join(home, '.tlauncher', 'legacy', 'Minecraft', 'game'), sharedMinecraft], direct: true },
+        { key: 'sklauncher', label: 'SKlauncher', folders: [path.join(config, 'sklauncher'), sharedMinecraft], maxDepth: 3 },
+        { key: 'crystal', label: 'Crystal Launcher', folders: [path.join(data, 'Crystal-Launcher', 'instances'), path.join(home, '.crystal-launcher', 'instances')] },
+        { key: 'hmcl', label: 'HMCL', folders: [path.join(home, '.hmcl', 'instances'), sharedMinecraft], maxDepth: 3 },
+      ];
+    }
     const localData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
     const sharedMinecraft = path.join(appData, '.minecraft');
     return [
@@ -3576,7 +3651,7 @@ function setupIPC() {
     }
     if (!checkDiskSpace(GLOBAL_DIR, 1024 * 1024 * 1024)) {
       activeInstanceName = null;
-      throw new Error('Not enough free space in Pine Launcher shared storage. Free at least 1 GB on the Windows app-data drive.');
+      throw new Error(`Not enough free space in Pine Launcher shared storage. Free at least 1 GB on the ${process.platform === 'linux' ? 'Linux user-data filesystem' : 'Windows app-data drive'}.`);
     }
     const settings = readJSON(SETTINGS_FILE) || {};
     const presenceStartTimestamp = Date.now();

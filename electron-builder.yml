@@ -17,6 +17,7 @@ files:
   - main.js
   - preload.js
   - package.json
+  - icon.png
   - renderer/**
   - lib/**
   - "!scripts/**"
@@ -41,3 +42,69 @@ nsis:
   uninstallDisplayName: Pine Launcher
   deleteAppDataOnUninstall: false
   runAfterFinish: true
+linux:
+  syncDesktopName: true
+  target:
+    - target: deb
+      arch:
+        - x64
+        - arm64
+    - target: pacman
+      arch:
+        - x64
+  category: Game
+  icon: icon.png
+  executableName: pine-launcher
+  artifactName: PineLauncher-${version}-linux-${arch}.${ext}
+  desktop:
+    entry:
+      Name: Pine Launcher
+      Comment: Multi-instance Minecraft launcher
+      Categories: Game;
+deb:
+  packageName: pine-launcher
+  packageCategory: games
+  maintainer: Pine Launcher
+  synopsis: Multi-instance Minecraft launcher
+  description: Pine Launcher manages isolated Minecraft instances, loaders, Java runtimes, mods, packs, worlds, and backups.
+  priority: optional
+pacman:
+  packageName: pine-launcher
+  packageCategory: games
+  maintainer: Pine Launcher
+  synopsis: Multi-instance Minecraft launcher
+  description: Pine Launcher manages isolated Minecraft instances, loaders, Java runtimes, mods, packs, worlds, and backups.
+  compression: zstd
+  artifactName: PineLauncher-${version}-archlinux-${arch}.${ext}
+  # electron-builder's legacy Pacman defaults still include the removed
+  # http-parser package. These are the current Arch packages needed by the
+  # bundled Electron runtime and Pine's Secret Service integration.
+  depends:
+    - alsa-lib
+    - at-spi2-core
+    - cairo
+    - cups
+    - dbus
+    - expat
+    - gcc-libs
+    - glib2
+    - glibc
+    - gtk3
+    - libdrm
+    - libsecret
+    - libx11
+    - libxcb
+    - libxcomposite
+    - libxdamage
+    - libxext
+    - libxfixes
+    - libxkbcommon
+    - libxrandr
+    - libxss
+    - libxtst
+    - mesa
+    - nspr
+    - nss
+    - pango
+    - systemd-libs
+    - xdg-utils

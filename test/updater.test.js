@@ -97,6 +97,13 @@ test('downloaded updates restart through the NSIS updater', () => {
   assert.equal(updater.installs, 1);
 });
 
+test('Linux packages explain the Debian and Arch manual GitHub update path', () => {
+  const { value } = manager({ isPackaged: true, platform: 'linux' });
+  const state = value.start();
+  assert.equal(state.status, 'unsupported');
+  assert.match(state.message, /\.deb or \.pacman releases from GitHub/i);
+});
+
 test('Windows ARM64 installations use their architecture-specific update feed', () => {
   const arm = manager({ arch: 'arm64' });
   const x64 = manager({ arch: 'x64' });

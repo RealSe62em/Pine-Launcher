@@ -122,3 +122,59 @@ jobs:
             dist-native/latest.yml
             dist-native/latest-arm64.yml
             dist-native/SHA256SUMS.txt
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          test "v${package_version}" = "${GITHUB_REF_NAME}"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Linux packaging tools
+        run: sudo apt-get update && sudo apt-get install --yes libarchive-tools
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build Debian x64 package
+        run: npm run build:deb:x64
+
+      - name: Build Arch Linux x64 package
+        run: npm run build:pacman:x64
+
+      - name: Create Linux checksums
+        working-directory: dist-native
+        run: sha256sum PineLauncher-*-linux-*.deb PineLauncher-*-archlinux-*.pacman > SHA256SUMS-linux-x64.txt
+
+      - name: Upload Linux workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pine-Launcher-Linux-${{ github.ref_name }}
+          path: |
+            dist-native/PineLauncher-*-linux-*.deb
+            dist-native/PineLauncher-*-archlinux-*.pacman
+            dist-native/SHA256SUMS-linux-x64.txt
+
+      - name: Publish tagged Linux release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-native/PineLauncher-*-linux-*.deb
+            dist-native/PineLauncher-*-archlinux-*.pacman
+            dist-native/SHA256SUMS-linux-x64.txt

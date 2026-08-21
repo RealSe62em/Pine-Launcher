@@ -49,9 +49,26 @@ test('instance folder provides themed open and verified copy actions', () => {
   assert.match(main, /clipboard\.readText\('clipboard'\)/);
 });
 
-test('updates section hides the unrelated settings save button', () => {
+test('settings use one working header save action without sticky pane buttons', () => {
+  const settingsSource = renderer.match(/function renderSettingsLayout\(\)[\s\S]*?\n}\n\nfunction syncSettingsHeaderSave/)?.[0] || '';
   assert.match(renderer, /syncSettingsHeaderSave\(btn\.dataset\.cat\)/);
-  assert.match(renderer, /headerSave\.hidden = category === 'updates'/);
+  assert.match(renderer, /headerSave\.onclick = \(event\) => saveAllSettings\(event\.currentTarget\)/);
+  assert.match(renderer, /headerSave\.hidden = false/);
+  assert.doesNotMatch(settingsSource, /set-save-btn/);
+  assert.equal((html.match(/>Save settings</g) || []).length, 1);
+});
+
+test('the import hub remains scrollable in short launcher windows', () => {
+  assert.match(renderer, /duplicate-instance-modal import-hub-modal/);
+  assert.match(renderer, /export-choice-grid import-hub-body/);
+  assert.match(components, /\.modal-body\s*\{\s*min-height:\s*0/);
+  assert.match(components, /\.import-hub-modal\s*\{[^}]*100dvh/);
+});
+
+test('the import hub uses aligned action icons and a folder glyph', () => {
+  assert.match(renderer, /data-import-kind="folder"[^\n]*href="#i-folder"/);
+  assert.equal((renderer.match(/class="export-choice-chevron"/g) || []).length, 3);
+  assert.match(components, /\.import-hub-body \.export-choice-chevron\s*\{[^}]*margin-left:\s*auto/s);
 });
 
 test('async mod update checks immediately re-render the visible list', () => {
@@ -122,6 +139,9 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /Creative\s*<i>Forge<\/i>/);
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
+  assert.match(website, /releases\/download\/v1\.2\.0\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.0\/PineLauncherSetup-arm64\.exe/);
+  assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
 test('CurseForge and private integration settings are not exposed in the launcher UI', () => {

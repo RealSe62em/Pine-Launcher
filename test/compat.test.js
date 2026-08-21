@@ -52,6 +52,7 @@ test('maps JVM class-file versions to Java releases', () => {
 });
 
 test('ARM64 Java provisioning falls back to x64 emulation for older runtimes', () => {
-  assert.deepEqual(javaRuntimeArchitectures('arm64'), ['aarch64', 'x64']);
-  assert.deepEqual(javaRuntimeArchitectures('x64'), ['x64']);
+  assert.deepEqual(javaRuntimeArchitectures('arm64', 'win32'), ['aarch64', 'x64']);
+  assert.deepEqual(javaRuntimeArchitectures('arm64', 'linux'), ['aarch64']);
+  assert.deepEqual(javaRuntimeArchitectures('x64', 'linux'), ['x64']);
 });

@@ -2774,3 +2774,42 @@ html.reduced-motion *::after {
   .loader-version-picker > div { grid-template-columns: 1fr; }
   .loader-action-row { flex-direction: column; }
 }
+
+/* Settings use the single page-header save action. Keep the reset action in
+   normal document flow so it can never cover a field or the bottom nav. */
+.settings-actions { position: static; bottom: auto; z-index: auto; }
+
+/* Flex children default to min-height:auto, which can make compact import
+   sheets extend beyond short Windows/Linux launcher windows instead of
+   scrolling their body. */
+.modal-body { min-height: 0; }
+.import-hub-modal { max-height: calc(100dvh - 24px); }
+.import-hub-body {
+  min-height: 0;
+  padding-bottom: var(--s-5);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.import-hub-body .export-choice > span:nth-child(2) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.import-hub-body .export-choice-icon {
+  flex: 0 0 38px;
+}
+
+.import-hub-body .export-choice-icon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.import-hub-body .export-choice-chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-left: auto;
+  color: var(--accent);
+}

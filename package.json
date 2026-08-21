@@ -1,6 +1,7 @@
 {
   "name": "glaunch",
   "productName": "Pine Launcher",
+  "desktopName": "pine-launcher",
   "description": "A polished multi-instance Minecraft launcher with Modrinth and CurseForge integration",
   "version": "1.2.0",
   "main": "main.js",
@@ -11,6 +12,13 @@
     "build:installer:x64": "electron-builder --config electron-builder.yml --publish never --win nsis --x64",
     "build:installer:arm64": "electron-builder --config electron-builder.yml --publish never --win nsis --arm64",
     "build:installer": "npm run build:installer:x64 && node scripts/preserve-update-feed.js x64 && npm run build:installer:arm64 && node scripts/preserve-update-feed.js arm64",
+    "build:deb:x64": "electron-builder --config electron-builder.yml --publish never --linux deb --x64",
+    "build:deb:arm64": "electron-builder --config electron-builder.yml --publish never --linux deb --arm64",
+    "build:deb": "npm run build:deb:x64",
+    "build:pacman:x64": "electron-builder --config electron-builder.yml --publish never --linux pacman --x64",
+    "build:pacman": "npm run build:pacman:x64",
+    "build:arch": "npm run build:pacman:x64",
+    "build:all": "npm run build:installer && npm run build:deb:x64 && npm run build:deb:arm64 && npm run build:pacman:x64",
     "build": "npm run build:installer"
   },
   "author": "Pine Launcher",

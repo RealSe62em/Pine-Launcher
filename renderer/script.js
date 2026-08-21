@@ -2556,7 +2556,6 @@ function renderSettingsLayout() {
             <input id="set-dl-limit" class="input" type="number" min="2" max="16" step="1" value="${s.dlLimit || 4}">
           </div>
         </div>
-        <button class="btn btn-primary set-save-btn">Save settings</button>
       </div>
       <div class="settings-pane" data-cat="java">
         <div class="settings-card">
@@ -2583,7 +2582,6 @@ function renderSettingsLayout() {
             <input id="set-window-height" class="input" type="number" min="240" max="4320" value="${s.windowHeight || 720}">
           </div>
         </div>
-        <button class="btn btn-primary set-save-btn">Save settings</button>
       </div>
       <div class="settings-pane" data-cat="appearance">
         <div class="settings-card">
@@ -2610,7 +2608,6 @@ function renderSettingsLayout() {
           </div>
         </div>
         <div class="settings-actions">
-          <button class="btn btn-primary set-save-btn">Save settings</button>
           <button class="btn btn-ghost" id="set-reset-btn">Reset defaults</button>
         </div>
       </div>
@@ -2637,7 +2634,6 @@ function renderSettingsLayout() {
           </div>
           <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
         </div>
-        <button class="btn btn-primary set-save-btn">Save settings</button>
       </div>
       <div class="settings-pane" data-cat="updates">
         <div class="settings-card update-card">
@@ -2682,7 +2678,6 @@ function renderSettingsLayout() {
   $('update-check-btn')?.addEventListener('click', checkForLauncherUpdates);
   $('update-action-btn')?.addEventListener('click', runUpdateAction);
   renderUpdatePanel();
-  layout.querySelectorAll('.set-save-btn').forEach((button) => button.addEventListener('click', () => saveAllSettings(button)));
   const headerSave = $('settings-header-save');
   if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
   syncSettingsHeaderSave('general');
@@ -2715,7 +2710,7 @@ function renderSettingsLayout() {
 function syncSettingsHeaderSave(category) {
   const headerSave = $('settings-header-save');
   if (!headerSave) return;
-  headerSave.hidden = category === 'updates';
+  headerSave.hidden = false;
 }
 
 async function saveAllSettings(button = null, { silent = false } = {}) {
@@ -3340,7 +3335,7 @@ async function openPineImport() {
   const source = isModrinth ? { name: selected.manifest.name || 'Modrinth Pack', gameVersion: dependencies.minecraft || '', loader: detectedLoader } : (selected.manifest.instance || {});
   const root = document.createElement('div');
   root.className = 'modal-root visible';
-  root.innerHTML = `<div class="modal duplicate-instance-modal" role="dialog" aria-modal="true">
+  root.innerHTML = `<div class="modal duplicate-instance-modal import-hub-modal" role="dialog" aria-modal="true">
     <div class="modal-header"><div><h2 class="modal-title">Import ${isModrinth ? 'Modrinth pack' : isManifest ? 'Pine manifest' : 'Pine instance'}</h2><p class="modal-sub">The ${isManifest ? 'download recipe' : 'archive'} passed Pine’s format check.</p></div><button class="modal-close" data-close type="button"><svg width="20" height="20"><use href="#i-x"/></svg></button></div>
     <div class="modal-body modal-form">
       <div class="duplicate-source-card"><span class="instance-icon instance-icon-sm">${escHtml(String(source.name || 'P').slice(0, 1).toUpperCase())}</span><span><b>${escHtml(source.name || 'Pine instance')}</b><small>${escHtml(source.gameVersion || '')} · ${escHtml(source.loader || 'vanilla')}</small></span><span class="duplicate-complete-badge">${isModrinth ? '.mrpack' : isManifest ? 'Verified recipe' : selected.manifest.mode === 'shareable' ? 'Shareable pack' : 'Complete archive'}</span></div>
@@ -3394,10 +3389,10 @@ function openImportHub() {
   root.className = 'modal-root visible';
   root.innerHTML = `<div class="modal duplicate-instance-modal" role="dialog" aria-modal="true">
     <div class="modal-header"><div><h2 class="modal-title">Bring Minecraft data into Pine</h2><p class="modal-sub">Your source stays untouched and account sessions are never imported.</p></div><button class="modal-close" data-close type="button"><svg width="20" height="20"><use href="#i-x"/></svg></button></div>
-    <div class="modal-body export-choice-grid">
-      <button class="export-choice" data-import-kind="archive" type="button"><span class="export-choice-icon"><svg width="20" height="20"><use href="#i-download"/></svg></span><span><b>Import an archive</b><small>Pine instance ZIP or Modrinth .mrpack.</small></span><svg width="16" height="16"><use href="#i-chevron-right"/></svg></button>
-      <button class="export-choice" data-import-kind="folder" type="button"><span class="export-choice-icon"><svg width="20" height="20"><use href="#i-library"/></svg></span><span><b>Choose an existing instance folder</b><small>Works with standard Minecraft folders, popular launchers and clients, portable setups, and backups.</small></span><svg width="16" height="16"><use href="#i-chevron-right"/></svg></button>
-      <button class="export-choice" data-import-kind="scan" type="button"><span class="export-choice-icon"><svg width="20" height="20"><use href="#i-search"/></svg></span><span><b>Find installed launchers</b><small>Check only the standard launcher folders you approve.</small></span><svg width="16" height="16"><use href="#i-chevron-right"/></svg></button>
+    <div class="modal-body export-choice-grid import-hub-body">
+      <button class="export-choice" data-import-kind="archive" type="button"><span class="export-choice-icon"><svg width="20" height="20"><use href="#i-download"/></svg></span><span><b>Import an archive</b><small>Pine instance ZIP or Modrinth .mrpack.</small></span><svg class="export-choice-chevron" width="16" height="16"><use href="#i-chevron-right"/></svg></button>
+      <button class="export-choice" data-import-kind="folder" type="button"><span class="export-choice-icon"><svg width="20" height="20"><use href="#i-folder"/></svg></span><span><b>Choose an existing instance folder</b><small>Works with standard Minecraft folders, popular launchers and clients, portable setups, and backups.</small></span><svg class="export-choice-chevron" width="16" height="16"><use href="#i-chevron-right"/></svg></button>
+      <button class="export-choice" data-import-kind="scan" type="button"><span class="export-choice-icon"><svg width="20" height="20"><use href="#i-search"/></svg></span><span><b>Find installed launchers</b><small>Check only the standard launcher folders you approve.</small></span><svg class="export-choice-chevron" width="16" height="16"><use href="#i-chevron-right"/></svg></button>
       <p class="duplicate-note">Pine reads only the folder you choose. Nothing is uploaded, moved, or removed from the original launcher.</p>
     </div>
   </div>`;

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractZipOnWindows } = require('../lib/runtime-extraction');
+const { extractRuntimeArchive, extractTarGzOnLinux, extractZipOnWindows } = require('../lib/runtime-extraction');
 
 test('Java extraction falls back to PowerShell when native tar fails', async () => {
   const calls = [];
@@ -24,4 +24,14 @@ test('Java extraction reports both native extractor failures', async () => {
     }),
     /tar\.exe.*powershell\.exe/
   );
+});
+
+test('Linux Java extraction uses tar with argument-safe paths', async () => {
+  const calls = [];
+  const selected = await extractTarGzOnLinux('/tmp/Pine Java.tar.gz', '/tmp/Pine Runtime', async (command, args) => {
+    calls.push({ command, args });
+  });
+  assert.equal(selected, 'tar');
+  assert.deepEqual(calls, [{ command: 'tar', args: ['-xzf', '/tmp/Pine Java.tar.gz', '-C', '/tmp/Pine Runtime'] }]);
+  assert.equal(await extractRuntimeArchive('runtime.tar.gz', 'runtime', 'linux', async () => {}), 'tar');
 });
