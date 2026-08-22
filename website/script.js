@@ -1,11 +1,11 @@
 const RELEASES = {
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.1/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.1/PineLauncherSetup-arm64.exe',
-  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.1/PineLauncher-1.2.1-linux-amd64.deb',
-  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.1/PineLauncher-1.2.1-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.1/PineLauncher-1.2.1-archlinux-x64.pacman'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.2/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.2/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.2/PineLauncher-1.2.2-linux-amd64.deb',
+  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.2/PineLauncher-1.2.2-linux-arm64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.2/PineLauncher-1.2.2-archlinux-x64.pacman'
 };
-const FALLBACK_VERSION = '1.2.1';
+const FALLBACK_VERSION = '1.2.2';
 function compareVersions(left, right) {
   const parts = value => String(value).split('.').map(part => Number.parseInt(part, 10) || 0);
   const a = parts(left);

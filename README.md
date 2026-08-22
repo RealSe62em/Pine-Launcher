@@ -22,13 +22,13 @@ Windows 10/11, Debian-based Linux distributions, and Arch Linux are supported.
 3. On Debian, Ubuntu, Linux Mint, or another Debian-based distribution, install the x64 package:
 
 ```bash
-sudo apt install ./PineLauncher-1.2.1-linux-amd64.deb
+sudo apt install ./PineLauncher-1.2.2-linux-amd64.deb
 ```
 
 4. On Arch Linux, install the native x64 package:
 
 ```bash
-sudo pacman -U ./PineLauncher-1.2.1-archlinux-x64.pacman
+sudo pacman -U ./PineLauncher-1.2.2-archlinux-x64.pacman
 ```
 
 Then open Pine Launcher from the application menu or run `pine-launcher`.
