@@ -167,12 +167,15 @@ jobs:
       - name: Build Debian x64 package
         run: npm run build:deb:x64
 
+      - name: Build Debian ARM64 package
+        run: npm run build:deb:arm64
+
       - name: Build Arch Linux x64 package
         run: npm run build:pacman:x64
 
       - name: Create Linux checksums
         working-directory: dist-native
-        run: sha256sum PineLauncher-*-linux-*.deb PineLauncher-*-archlinux-*.pacman > SHA256SUMS-linux-x64.txt
+        run: sha256sum PineLauncher-*-linux-*.deb PineLauncher-*-archlinux-*.pacman > SHA256SUMS-linux.txt
 
       - name: Upload Linux workflow artifact
         uses: actions/upload-artifact@v4
@@ -181,7 +184,7 @@ jobs:
           path: |
             dist-native/PineLauncher-*-linux-*.deb
             dist-native/PineLauncher-*-archlinux-*.pacman
-            dist-native/SHA256SUMS-linux-x64.txt
+            dist-native/SHA256SUMS-linux.txt
 
       - name: Publish tagged Linux release assets
         if: startsWith(github.ref, 'refs/tags/')
@@ -190,7 +193,7 @@ jobs:
           files: |
             dist-native/PineLauncher-*-linux-*.deb
             dist-native/PineLauncher-*-archlinux-*.pacman
-            dist-native/SHA256SUMS-linux-x64.txt
+            dist-native/SHA256SUMS-linux.txt
 
       - name: Publish manually requested Linux release assets
         if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
@@ -200,4 +203,4 @@ jobs:
           files: |
             dist-native/PineLauncher-*-linux-*.deb
             dist-native/PineLauncher-*-archlinux-*.pacman
-            dist-native/SHA256SUMS-linux-x64.txt
+            dist-native/SHA256SUMS-linux.txt

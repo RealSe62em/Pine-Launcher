@@ -15,7 +15,7 @@ const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/
 const { installMclReliabilityPatches, rememberValidatedJava } = require('./lib/mcl-reliability');
 const { ValidationCache } = require('./lib/validation-cache');
 const { extractRuntimeArchive } = require('./lib/runtime-extraction');
-const { jarLoaderCompatibilityIssue, knownModrinthIncompatibility, quarantineDuplicateModIds, quarantineKnownBrokenMods, quarantineLoaderIncompatibleMods } = require('./lib/mod-compatibility');
+const { findDuplicateModIds, findKnownBrokenMods, findLoaderIncompatibleMods, jarLoaderCompatibilityIssue, knownModrinthIncompatibility } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const { createUpdateManager } = require('./lib/updater');
 const { DiscordPresence, isPrivateServerAddress, normalizeServerIcon, parseGamePresenceLine, readSavedServers, serverDisplayAddress } = require('./lib/discord-presence');
@@ -3624,23 +3624,22 @@ function setupIPC() {
       }
     }
     ensureDir(GLOBAL_DIR);
-    const quarantinedMods = quarantineKnownBrokenMods(path.join(instanceDir, 'mods'), instance.gameVersion);
-    for (const mod of quarantinedMods) {
-      const warning = `${mod.filename} was disabled automatically: ${mod.reason} Use ${mod.replacement} instead.`;
+    const modsDir = path.join(instanceDir, 'mods');
+    for (const mod of findKnownBrokenMods(modsDir, instance.gameVersion)) {
+      const warning = `${mod.filename} has a known compatibility issue: ${mod.reason} ${mod.replacement} is recommended. Pine left the file enabled for the mod loader to evaluate.`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
       mainWindow?.webContents.send('launch-warning', warning);
     }
-    const incompatibleLoaderMods = quarantineLoaderIncompatibleMods(path.join(instanceDir, 'mods'), instance.loader);
-    for (const mod of incompatibleLoaderMods) {
-      const warning = `${mod.filename} was disabled automatically: ${mod.reason}`;
+    for (const mod of findLoaderIncompatibleMods(modsDir, instance.loader)) {
+      const warning = `${mod.filename} may target another loader: ${mod.reason} Pine left the file enabled so ${instance.loader} can make the final decision.`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
       mainWindow?.webContents.send('launch-warning', warning);
     }
-    const duplicateIdMods = quarantineDuplicateModIds(path.join(instanceDir, 'mods'));
-    for (const mod of duplicateIdMods) {
-      const warning = `${mod.filename} was disabled automatically: ${mod.reason}`;
+    for (const duplicate of findDuplicateModIds(modsDir)) {
+      const filenames = duplicate.entries.map(entry => entry.filename).join(', ');
+      const warning = `Multiple files advertise mod ID "${duplicate.id}": ${filenames}. Pine left every file enabled so the mod loader can report the exact conflict.`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
       mainWindow?.webContents.send('launch-warning', warning);

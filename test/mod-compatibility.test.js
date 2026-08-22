@@ -8,11 +8,14 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const {
   knownModrinthIncompatibility,
+  findDuplicateModIds,
+  findLoaderIncompatibleMods,
   quarantineKnownBrokenMods,
   detectJarLoaders,
   jarLoaderCompatibilityIssue,
   quarantineLoaderIncompatibleMods,
   quarantineDuplicateModIds,
+  readModIds,
 } = require('../lib/mod-compatibility');
 
 function writeFabricJar(file, metadata) {
@@ -49,6 +52,24 @@ test('quarantines older jars that provide the same undeclared mod id', () => {
     assert.equal(result[0].filename, 'older.jar');
     assert.equal(fs.existsSync(older + '.disabled'), true);
     assert.equal(fs.existsSync(newer), true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('does not mistake Fabric dependency keys for mod IDs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-fabric-dependencies-'));
+  const infiniteTrading = path.join(dir, 'infinitetrading.jar');
+  const fullBrightness = path.join(dir, 'fullbrightnesstoggle.jar');
+  const collective = path.join(dir, 'collective.jar');
+  try {
+    writeFabricJar(infiniteTrading, { id: 'infinitetrading', version: '5.0', depends: { collective: '>=8.29', minecraft: '26.2' } });
+    writeFabricJar(fullBrightness, { id: 'fullbrightnesstoggle', version: '4.5', depends: { collective: '>=8.29', minecraft: '26.2' } });
+    writeFabricJar(collective, { id: 'collective', version: '8.39', depends: { minecraft: '26.2' } });
+
+    assert.deepEqual(readModIds(infiniteTrading), ['infinitetrading']);
+    assert.deepEqual(findDuplicateModIds(dir), []);
+    assert.equal(fs.existsSync(infiniteTrading), true);
+    assert.equal(fs.existsSync(fullBrightness), true);
+    assert.equal(fs.existsSync(collective), true);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -126,4 +147,18 @@ test('quarantines a wrong-loader jar before launch', () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('loader compatibility inspection does not mutate mod files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-loader-advisory-'));
+  const jar = path.join(dir, 'forge-only.jar');
+  try {
+    const archive = new AdmZip();
+    archive.addFile('META-INF/mods.toml', Buffer.from('modLoader="javafml"'));
+    archive.writeZip(jar);
+    const result = findLoaderIncompatibleMods(dir, 'fabric');
+    assert.equal(result.length, 1);
+    assert.equal(fs.existsSync(jar), true);
+    assert.equal(fs.existsSync(jar + '.disabled'), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

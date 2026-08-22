@@ -48,6 +48,29 @@ test('identifies a likely installed mod without claiming certainty', () => {
   assert.equal(result.findings[0].confidence, 'medium');
 });
 
+test('does not blame libraries mentioned in a missing-dependency resolution failure', () => {
+  const log = `Mod resolution failed
+Mod 'Infinite Trading' (infinitetrading) 5.0 requires version 8.29 or later of collective, which is missing!`;
+  const result = diagnoseCrash(log, {
+    mods: [
+      { filename: 'infinitetrading-26.2.0-5.0.jar', title: 'Infinite Trading', projectId: 'infinitetrading' },
+      { filename: 'collective-26.2.0-8.39.jar', title: 'Collective', projectId: 'collective' },
+    ],
+  });
+  assert.equal(result.suspectMod, null);
+  assert.equal(result.findings[0].id, 'dependency');
+  assert.match(result.findings[0].title, /Infinite Trading needs collective/i);
+  assert.match(result.findings[0].explanation, /not the crashing mod/i);
+});
+
+test('does not infer a culprit from nonfatal Sodium warnings in a successful launch', () => {
+  const result = diagnoseCrash('[main/WARN]: Sodium applied one or more workarounds\n[Render thread/INFO]: Successfully loaded world', {
+    mods: [{ filename: 'sodium-fabric-0.8.6.jar', title: 'Sodium', projectId: 'sodium' }],
+  });
+  assert.equal(result.suspectMod, null);
+  assert.equal(result.findings.length, 0);
+});
+
 test('anonymizes identity and connection details before sharing', () => {
   const cleaned = redactSensitiveLog('C:\\Users\\Alex\\Pine\nUsername: Alex\nfoo@example.com\nConnecting to play.example.com:25565\nAuthorization: Bearer secret');
   assert.doesNotMatch(cleaned, /Alex|foo@example|play\.example|secret/);
