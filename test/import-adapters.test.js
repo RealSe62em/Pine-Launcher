@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { inspectLauncherMetadata } = require('../lib/import-adapters');
+const { inspectLauncherMetadata, resolveGameRoot } = require('../lib/import-adapters');
 
 function root(t) {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-adapter-'));
@@ -33,4 +33,24 @@ test('uses launcher hints and JSON evidence without assuming arbitrary folders',
   assert.equal(result.name, 'GD Pack');
   assert.equal(result.loader, 'neoforge');
   assert.equal(result.confidence, 'high');
+});
+
+test('resolves nested launcher game roots so metadata-only wrappers do not create empty imports', t => {
+  const dir = root(t);
+  const game = path.join(dir, '.minecraft');
+  fs.mkdirSync(path.join(game, 'mods'), { recursive: true });
+  fs.mkdirSync(path.join(game, 'saves', 'World'), { recursive: true });
+  fs.writeFileSync(path.join(game, 'options.txt'), 'key_key.jump:key.keyboard.space');
+  assert.equal(resolveGameRoot(dir), game);
+});
+
+test('reads nested metadata used by additional launcher adapters', t => {
+  const dir = root(t);
+  fs.writeFileSync(path.join(dir, 'minecraftinstance.json'), JSON.stringify({ instance: { name: 'FTB Pack' }, minecraft: { version: '1.20.1', loader: 'forge-47.3.0' } }));
+  const result = inspectLauncherMetadata(dir, dir, 'FTB App');
+  assert.equal(result.source, 'FTB App');
+  assert.equal(result.name, 'FTB Pack');
+  assert.equal(result.gameVersion, '1.20.1');
+  assert.equal(result.loader, 'forge');
+  assert.equal(result.loaderVersion, '47.3.0');
 });

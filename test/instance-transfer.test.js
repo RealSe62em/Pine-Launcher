@@ -69,3 +69,19 @@ test('cancelled copies remove staging and never publish a destination', async t 
   assert.equal(fs.existsSync(destination), false);
   assert.equal(fs.readdirSync(root).some(name => name.includes('.pine-copy-')), false);
 });
+
+test('safe imports skip links and cryptographically verify copied gameplay data', async t => {
+  const root = temporaryRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, 'Prism', '.minecraft');
+  const destination = path.join(root, 'Pine', 'Imported');
+  fs.mkdirSync(path.join(source, 'mods'), { recursive: true });
+  fs.mkdirSync(path.join(source, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'mods', 'sodium.jar'), 'sodium');
+  fs.writeFileSync(path.join(source, 'config', 'sodium-options.json'), '{"clouds":false}');
+  try { fs.symlinkSync(path.join(root, 'private'), path.join(source, 'outside-link')); } catch {}
+  const result = await copyInstanceTransactional({ source, destination, skipSymlinks: true, verifyContents: true });
+  assert.equal(result.files, 2);
+  assert.equal(fs.readFileSync(path.join(destination, 'config', 'sodium-options.json'), 'utf8'), '{"clouds":false}');
+  assert.equal(fs.existsSync(path.join(destination, 'outside-link')), false);
+});

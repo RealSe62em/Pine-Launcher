@@ -22,13 +22,13 @@ Windows 10/11, Debian-based Linux distributions, and Arch Linux are supported.
 3. On Debian, Ubuntu, Linux Mint, or another Debian-based distribution, install the x64 package:
 
 ```bash
-sudo apt install ./PineLauncher-1.2.2-linux-amd64.deb
+sudo apt install ./PineLauncher-1.2.3-linux-amd64.deb
 ```
 
 4. On Arch Linux, install the native x64 package:
 
 ```bash
-sudo pacman -U ./PineLauncher-1.2.2-archlinux-x64.pacman
+sudo pacman -U ./PineLauncher-1.2.3-archlinux-x64.pacman
 ```
 
 Then open Pine Launcher from the application menu or run `pine-launcher`.
@@ -48,6 +48,8 @@ Pine downloads and verifies the Java runtime required by the selected Minecraft 
 - Automatic restore points, world management, managed-pack lifecycle controls, and privacy-safe crash diagnosis.
 
 CurseForge requires an approved third-party API key. Add it under **Settings → Integrations** or set `PINE_CURSEFORGE_API_KEY`; Pine does not ship a private developer key in source control.
+
+The **Settings → Storage** page shows how much space instances, shared game files, Java runtimes, backups, caches, and logs use. Its cache cleanup removes only replaceable downloads; it never removes instances, worlds, runtimes, or backups.
 
 ## Privacy and safety
 
@@ -129,3 +131,5 @@ The package is written to `dist-native/` and can be installed with `sudo pacman 
 5. Publish the installer/package files and their SHA-256 checksums in a GitHub Release.
 
 Built with Electron and `minecraft-launcher-core`. Licensed under MIT.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to work on Pine and [SECURITY.md](SECURITY.md) to report vulnerabilities privately.

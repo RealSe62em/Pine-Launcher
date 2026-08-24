@@ -83,9 +83,29 @@ test('interrupted restore recovery puts the rollback folder back', () => {
       rollback,
       phase: 'swapped-old',
     }));
-    const recovered = recoverInterruptedRestores(value.backupsDir);
+    const recovered = recoverInterruptedRestores(value.backupsDir, { allowedRoots: [value.instanceDir] });
     assert.deepEqual(recovered, [value.instanceDir]);
     assert.equal(fs.readFileSync(path.join(value.instanceDir, 'mods', 'example.jar'), 'utf8'), 'mod-v1');
     assert.equal(fs.existsSync(staging), false);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test('restore recovery refuses paths outside registered instance roots', () => {
+  const value = fixture();
+  try {
+    fs.mkdirSync(value.backupsDir, { recursive: true });
+    const unrelated = path.join(value.root, 'unrelated');
+    const staging = path.join(value.root, '.unrelated.pine-restore-test');
+    const rollback = path.join(value.root, '.unrelated.pine-rollback-test');
+    fs.mkdirSync(unrelated, { recursive: true });
+    fs.mkdirSync(staging, { recursive: true });
+    fs.mkdirSync(rollback, { recursive: true });
+    const marker = path.join(value.backupsDir, '.restore-b2.json');
+    fs.writeFileSync(marker, JSON.stringify({ target: unrelated, staging, rollback, phase: 'prepared' }));
+    assert.deepEqual(recoverInterruptedRestores(value.backupsDir, { allowedRoots: [value.instanceDir] }), []);
+    assert.equal(fs.existsSync(unrelated), true);
+    assert.equal(fs.existsSync(staging), true);
+    assert.equal(fs.existsSync(rollback), true);
+    assert.equal(fs.existsSync(marker), true);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });

@@ -53,6 +53,10 @@
   cursor: pointer;
   flex-shrink: 0;
   letter-spacing: var(--tracking-tight);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
 }
 .brand-mark {
   width: 0;
@@ -133,6 +137,7 @@
 }
 .update-pill svg { flex-shrink: 0; }
 
+.account-wrap { position: relative; flex-shrink: 0; }
 .account {
   display: flex;
   align-items: center;
@@ -144,6 +149,10 @@
   transition: background var(--dur-fast) var(--ease-ios);
   flex-shrink: 0;
   position: relative;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
 }
 .account:hover { background: var(--glass-surface-base); }
 

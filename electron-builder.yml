@@ -8,6 +8,12 @@ publish:
   repo: Pine-Launcher
   releaseType: release
 asar: true
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
 electronLanguages:
   - en-US
 directories:

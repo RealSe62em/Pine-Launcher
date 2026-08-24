@@ -48,10 +48,10 @@
 
     <!-- ── Top bar ─────────────────────────────────────────── -->
     <header class="topbar">
-      <div class="brand" id="brand-button" role="button" tabindex="0" aria-label="Pine Launcher home">
+      <button class="brand" id="brand-button" type="button" aria-label="Pine Launcher home">
         <div class="brand-mark" aria-hidden="true"></div>
         <div class="brand-name">Pine Launcher</div>
-      </div>
+      </button>
       <button class="cmd-k" id="cmdk-button" type="button" aria-label="Search">
         <svg class="cmd-k-icon" aria-hidden="true"><use href="#i-search"/></svg>
         <span class="cmd-k-text">Search instances, tags, servers…</span>
@@ -61,13 +61,15 @@
         <svg width="14" height="14" aria-hidden="true"><use href="#i-download"/></svg>
         <span id="update-pill-text">Update available</span>
       </button>
-      <div class="account" id="account-row" role="button" tabindex="0" aria-label="Account menu">
-        <div id="playing-pill" class="playing-pill" hidden><span id="playing-pill-name">Playing</span></div>
-        <div class="avatar avatar-logged-out" id="account-avatar">G</div>
-        <div class="account-info">
-          <div class="account-name" id="account-name">Sign in</div>
-          <div class="account-caret" aria-hidden="true">▾</div>
-        </div>
+      <div class="account-wrap">
+        <button class="account" id="account-row" type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
+          <div id="playing-pill" class="playing-pill" hidden><span id="playing-pill-name">Playing</span></div>
+          <div class="avatar avatar-logged-out" id="account-avatar">G</div>
+          <div class="account-info">
+            <div class="account-name" id="account-name">Sign in</div>
+            <div class="account-caret" aria-hidden="true">▾</div>
+          </div>
+        </button>
       </div>
     </header>
 
@@ -601,32 +603,6 @@
         </button>
         <div class="sheet-action-indicator" aria-hidden="true"></div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- JAVA REQUIRED OVERLAY ──────────────────────────────── -->
-  <div id="java-overlay" class="modal-root" hidden>
-    <div class="modal java-modal">
-      <div class="modal-header">
-        <div>
-          <h2 class="modal-title">Java not found</h2>
-          <p class="modal-sub">Minecraft requires Java to run. No Java installation was detected on your system.</p>
-        </div>
-      </div>
-      <div class="modal-body">
-        <div class="java-modal-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-            <line x1="12" y1="9" x2="12" y2="13"/>
-            <line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-        </div>
-        <p class="java-modal-desc">Click the button below to download and install Java 21 (recommended for modern Minecraft). After installing, restart the launcher.</p>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-primary btn-lg" type="button" id="java-install-btn">Download Java 21</button>
-        <button class="btn btn-secondary" type="button" id="java-retry-btn">I've installed it — check again</button>
       </div>
     </div>
   </div>

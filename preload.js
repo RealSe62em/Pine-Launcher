@@ -83,6 +83,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkModUpdates: (instanceName) => ipcRenderer.invoke('check-mod-updates', instanceName),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   getSettings: () => ipcRenderer.invoke('get-settings'),
+  getIntegrationStatus: () => ipcRenderer.invoke('get-integration-status'),
+  saveCurseForgeKey: (value) => ipcRenderer.invoke('save-curseforge-key', value),
+  testCurseForgeKey: (value) => ipcRenderer.invoke('test-curseforge-key', value),
+  getStorageUsage: () => ipcRenderer.invoke('get-storage-usage'),
+  clearDownloadCache: (confirmed) => ipcRenderer.invoke('clear-download-cache', confirmed),
   checkJavaInstalled: () => ipcRenderer.invoke('check-java'),
   openJavaDownload: () => ipcRenderer.invoke('open-java-download'),
   copyText: (value) => ipcRenderer.invoke('copy-text', value),
@@ -97,6 +102,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  openUpdateDownload: (url) => ipcRenderer.invoke('open-update-download', url),
 
   onUpdateState: (cb) => ipcRenderer.on('update-state', (_, value) => cb(value)),
   onLaunchProgress: (cb) => ipcRenderer.on('launch-progress', (_, v) => cb(v)),
@@ -110,4 +116,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onJavaInstallProgress: (cb) => ipcRenderer.on('java-install-progress', (_, value) => cb(value)),
   onInstallProgress: (cb) => ipcRenderer.on('install-progress', (_, v) => cb(v)),
   onDuplicateProgress: (cb) => ipcRenderer.on('duplicate-progress', (_, v) => cb(v)),
+  onImportProgress: (cb) => ipcRenderer.on('import-progress', (_, v) => cb(v)),
 });

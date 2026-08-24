@@ -11,7 +11,7 @@ const builder = fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8')
 const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
 
 test('release uses the planned updater-visible version', () => {
-  assert.equal(pkg.version, '1.2.2');
+  assert.equal(pkg.version, '1.2.3');
   assert.equal(pkg.dependencies['electron-updater'], '6.8.9');
 });
 

@@ -64,6 +64,7 @@ const state = {
   librarySelectionMode: false,
   selectedInstances: new Set(),
   pendingDatapackWorld: null,
+  javaAvailable: null,
 };
 const SEARCH_LIMIT = 20;
 const DISCOVER_DOM_LIMIT = 120;
@@ -91,18 +92,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindUpdateEvents();
   bindCommandK();
 
-  await loadVersions();
   await loadSettings();
-  await loadUpdateState();
-  await checkJava();
-
-  try {
-    const saved = await api.getAuth();
-    if (saved && saved.profile) { state.authData = saved; updateAuthUI(); updatePride(); }
-  } catch {}
-  await refreshAccounts();
-
-  await loadGroups();
+  await Promise.all([loadUpdateState(), checkJava(), refreshAccounts(), loadGroups()]);
   await loadInstances();
   await loadRecentDestinations();
   switchView('home');
@@ -111,6 +102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (instanceTab) instanceTab.setAttribute('hidden', '');
   bindTopbarScroll();
   setStatus('Ready');
+  void loadVersions();
 });
 
 // ── Tiny helpers ───────────────────────────────────────────
@@ -119,31 +111,8 @@ function setStatus(msg) { const el = $('status-text'); if (el) el.textContent = 
 
 // ── Java check on boot ────────────────────────────────────
 async function checkJava() {
-  const java = await api.checkJavaInstalled();
-  if (java !== false) return;
-  setStatus('Java will be installed automatically when an instance is launched');
-  return;
-  const overlay = $('java-overlay');
-  if (!overlay) return;
-  overlay.hidden = false;
-  overlay.classList.add('visible');
-  const installBtn = $('java-install-btn');
-  installBtn.onclick = async () => {
-    installBtn.disabled = true;
-    installBtn.textContent = 'Opening download page…';
-    await api.openJavaDownload();
-    setTimeout(() => {
-      installBtn.disabled = false;
-      installBtn.textContent = 'Download Java 21';
-    }, 3000);
-  };
-  $('java-retry-btn').onclick = async () => {
-    const retry = await api.checkJavaInstalled();
-    if (retry !== false) {
-      overlay.classList.remove('visible');
-      overlay.hidden = true;
-    }
-  };
+  state.javaAvailable = await api.checkJavaInstalled() !== false;
+  if (!state.javaAvailable) setStatus('Java will be installed automatically when an instance is launched');
 }
 function fmtNum(n) { return n ? Number(n).toLocaleString('en-US') : '0'; }
 function memoryToGigabytes(value, fallback) {
@@ -372,19 +341,18 @@ function bindCommandItems(results, items) {
 // ── Account menu ────────────────────────────────────────────
 function toggleAccountMenu() {
   const existing = $('account-menu');
-  if (existing) { existing.remove(); return; }
+  if (existing) { existing.remove(); $('account-row')?.setAttribute('aria-expanded', 'false'); return; }
   const menu = document.createElement('div');
   menu.id = 'account-menu';
-  menu.className = 'account-menu';
-  const visibleAccounts = state.accountsExpanded ? state.accounts : state.accounts.slice(0, 3);
-  const accountRows = visibleAccounts.map(account => {
+  menu.className = `account-menu${state.accountsExpanded ? ' accounts-expanded' : ''}`;
+  const accountRows = state.accounts.map((account, index) => {
     const selected = account.key === state.selectedAccountKey;
     const isOffline = account.meta?.type === 'offline';
     const initial = (account.profile?.name || 'G')[0].toUpperCase();
     const avatar = !isOffline && account.profile?.uuid
       ? `<img src="https://mc-heads.net/avatar/${encodeURIComponent(account.profile.uuid)}/36" alt="${escHtml(initial)}">`
       : escHtml(initial);
-    return `<div class="account-switch-row${selected ? ' selected' : ''}" data-account-key="${escHtml(account.key)}">
+    return `<div class="account-switch-row${selected ? ' selected' : ''}${index >= 3 ? ' account-extra' : ''}" data-account-key="${escHtml(account.key)}">
       <button class="account-switch-main" type="button" data-act="select-account" aria-label="Use ${escHtml(account.profile.name)}">
         <span class="avatar">${avatar}</span>
         <span class="account-menu-info"><span class="account-menu-name">${escHtml(account.profile.name)}</span><span class="account-menu-sub">${isOffline ? 'Offline' : 'Microsoft'}${selected ? ' · Active' : ''}</span></span>
@@ -394,8 +362,8 @@ function toggleAccountMenu() {
     </div>`;
   }).join('');
 
-  menu.innerHTML = `${accountRows || '<div class="account-menu-empty">No saved accounts</div>'}
-    ${state.accounts.length > 3 ? `<button class="account-menu-item" data-act="toggle-more">${state.accountsExpanded ? 'Show less' : `Show ${state.accounts.length - 3} more`}</button>` : ''}
+  menu.innerHTML = `<div class="account-switch-list">${accountRows || '<div class="account-menu-empty">No saved accounts</div>'}</div>
+    ${state.accounts.length > 3 ? `<button class="account-menu-item account-show-more" data-act="toggle-more" aria-expanded="${state.accountsExpanded}">${state.accountsExpanded ? 'Show fewer accounts' : `Show all ${state.accounts.length} accounts`}</button>` : ''}
     ${state.accounts.length ? '<div class="account-menu-divider"></div>' : ''}
     <button class="account-menu-item" data-act="signin">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>
@@ -408,7 +376,10 @@ function toggleAccountMenu() {
   `;
   const row = $('account-row');
   if (!row) return;
-  row.appendChild(menu);
+  row.parentElement.appendChild(menu);
+  row.setAttribute('aria-expanded', 'true');
+  menu.setAttribute('role', 'menu');
+  menu.querySelector('button')?.focus();
   menu.addEventListener('click', async (e) => {
     e.stopPropagation();
     const action = e.target.closest('[data-act]');
@@ -431,8 +402,10 @@ function toggleAccountMenu() {
     }
     if (act === 'toggle-more') {
       state.accountsExpanded = !state.accountsExpanded;
-      menu.remove();
-      toggleAccountMenu();
+      menu.classList.toggle('accounts-expanded', state.accountsExpanded);
+      action.setAttribute('aria-expanded', String(state.accountsExpanded));
+      action.textContent = state.accountsExpanded ? 'Show fewer accounts' : `Show all ${state.accounts.length} accounts`;
+      if (state.accountsExpanded) menu.querySelector('.account-extra .account-switch-main')?.focus();
       return;
     }
     menu.remove();
@@ -442,6 +415,7 @@ function toggleAccountMenu() {
 function closeAccountMenu() {
   const m = $('account-menu');
   if (m) m.remove();
+  $('account-row')?.setAttribute('aria-expanded', 'false');
 }
 
 function buildAvatarEl(name) {
@@ -733,8 +707,8 @@ function moveLibrarySortIndicator() {
 // ── Versions & Loaders ──────────────────────────────────────
 function populateVersionSelect(sel, versions) {
   if (!sel) return;
-  sel.innerHTML = '<option value="">Select version</option>' +
-    versions.map((v) => `<option value="${v.id}">${v.id}</option>`).join('');
+  sel.replaceChildren(new Option('Select version', ''));
+  for (const version of versions) sel.add(new Option(String(version.id || ''), String(version.id || '')));
 }
 
 function filterVersions() {
@@ -751,8 +725,10 @@ async function loadVersions() {
     const releases = state.allVersions.filter((v) => v.type === 'release');
     populateVersionSelect($('modal-version'), filtered);
     const filterVer = $('filter-version');
-    if (filterVer) filterVer.innerHTML = '<option value="">All versions</option>' +
-      releases.slice(0, 30).map((v) => `<option value="${v.id}">${v.id}</option>`).join('');
+    if (filterVer) {
+      filterVer.replaceChildren(new Option('All versions', ''));
+      for (const version of releases.slice(0, 30)) filterVer.add(new Option(String(version.id || ''), String(version.id || '')));
+    }
     const filterLoader = $('filter-loader');
     if (filterLoader) {
       filterLoader.innerHTML = '<option value="">All loaders</option>' +
@@ -786,9 +762,12 @@ async function loadLoaderVersions() {
     if (!Array.isArray(versions) || !versions.length) throw new Error('No compatible loader versions found');
     const stableIdx = versions.findIndex((v) => v.stable !== false);
     const selectedIdx = stableIdx >= 0 ? stableIdx : 0;
-    sel.innerHTML = versions.map((v, i) =>
-      `<option value="${v.version}"${i === selectedIdx ? ' selected' : ''}>${v.name}${i === selectedIdx ? ' (recommended)' : ''}</option>`
-    ).join('');
+    sel.replaceChildren();
+    versions.forEach((versionItem, index) => {
+      const option = new Option(`${String(versionItem.name || versionItem.version || '')}${index === selectedIdx ? ' (recommended)' : ''}`, String(versionItem.version || ''));
+      option.selected = index === selectedIdx;
+      sel.add(option);
+    });
     sel.dataset.loadState = 'ready';
   } catch (error) {
     if (requestId !== state.loaderRequestId) return;
@@ -1127,8 +1106,8 @@ function renderRecentCard(inst) {
   const blurClass = blurDir ? ` blur-${blurDir}` : '';
   return `<div class="recent-card${blurClass}" data-name="${escHtml(inst.name)}">
     ${inst.bannerData ? `<div class="recent-card-banner">
-      <div class="instance-banner-blur" style="background-image:url(${bannerUrl})"></div>
-      <div class="instance-banner-sharp" style="background-image:url(${bannerUrl})"></div>
+      <img class="instance-banner-blur" src="${bannerUrl}" alt="">
+      <img class="instance-banner-sharp" src="${bannerUrl}" alt="">
     </div>` : ''}
     <button class="recent-card-play" aria-label="Play ${escHtml(inst.name)}">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-play"/></svg>
@@ -1153,8 +1132,8 @@ function renderInstanceCard(inst) {
   return `<div class="instance-card${isLaunching ? ' launching' : ''}${inst.favorite ? ' favorite' : ''}${selected ? ' selected' : ''}${state.librarySelectionMode ? ' selection-mode' : ''}${blurClass}" data-name="${escHtml(inst.name)}">
     ${state.librarySelectionMode ? `<span class="instance-select-mark" aria-hidden="true"><svg><use href="#i-check"/></svg></span>` : ''}
     ${inst.bannerData ? `<div class="instance-banner">
-      <div class="instance-banner-blur" style="background-image:url(${bannerUrl})"></div>
-      <div class="instance-banner-sharp" style="background-image:url(${bannerUrl})"></div>
+      <img class="instance-banner-blur" src="${bannerUrl}" alt="">
+      <img class="instance-banner-sharp" src="${bannerUrl}" alt="">
     </div>` : ''}
     <div class="instance-card-top">
       <div class="instance-icon">${iconHtml}</div>
@@ -1399,7 +1378,7 @@ function openInstanceView() {
       const bannerUrl = escHtml(inst.bannerData);
       const banner = document.createElement('div');
       banner.className = `instance-banner${blurClass}`;
-      banner.innerHTML = `<div class="instance-banner-blur" style="background-image:url(${bannerUrl})"></div><div class="instance-banner-sharp" style="background-image:url(${bannerUrl})"></div>`;
+      banner.innerHTML = `<img class="instance-banner-blur" src="${bannerUrl}" alt=""><img class="instance-banner-sharp" src="${bannerUrl}" alt="">`;
       banner.style.borderRadius = '0';
       pageHeader.insertBefore(banner, pageHeader.firstChild);
       pageHeader.classList.add('has-banner');
@@ -1452,20 +1431,33 @@ function formatBackupDate(value) {
 
 function backupConfirmation({ title, message, action = 'Continue', danger = false }) {
   return new Promise(resolve => {
+    const previousFocus = document.activeElement;
     const overlay = document.createElement('div');
     overlay.className = 'modal-root visible backup-confirm-root';
     overlay.innerHTML = `
-      <div class="modal confirm-modal" role="alertdialog" aria-modal="true">
-        <div class="modal-header"><div><h2 class="modal-title">${escHtml(title)}</h2></div></div>
+      <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="backup-confirm-title">
+        <div class="modal-header"><div><h2 class="modal-title" id="backup-confirm-title">${escHtml(title)}</h2></div></div>
         <div class="modal-body"><div class="confirm-warn"><svg width="22" height="22" aria-hidden="true"><use href="#i-alert-triangle"/></svg><span>${escHtml(message)}</span></div></div>
         <div class="modal-footer"><button class="btn btn-secondary" data-cancel type="button">Cancel</button><button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-confirm type="button">${escHtml(action)}</button></div>
       </div>`;
     document.body.appendChild(overlay);
-    const finish = value => { overlay.remove(); resolve(value); };
+    const finish = value => { overlay.remove(); previousFocus?.focus?.(); resolve(value); };
     overlay.addEventListener('click', event => {
       if (event.target === overlay || event.target.closest('[data-cancel]')) finish(false);
       if (event.target.closest('[data-confirm]')) finish(true);
     });
+    overlay.addEventListener('keydown', event => {
+      if (event.key === 'Escape') finish(false);
+      if (event.key === 'Tab') {
+        const buttons = [...overlay.querySelectorAll('button:not([disabled])')];
+        if (!buttons.length) return;
+        const next = event.shiftKey ? buttons.at(-1) : buttons[0];
+        if ((event.shiftKey && document.activeElement === buttons[0]) || (!event.shiftKey && document.activeElement === buttons.at(-1))) {
+          event.preventDefault(); next.focus();
+        }
+      }
+    });
+    overlay.querySelector('[data-cancel]')?.focus();
   });
 }
 
@@ -2540,6 +2532,8 @@ function renderSettingsLayout() {
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
       <button data-cat="discord">Discord</button>
+      <button data-cat="integrations">Integrations</button>
+      <button data-cat="storage">Storage</button>
       <button data-cat="updates">Updates</button>
     </nav>
     <div class="settings-form">
@@ -2560,6 +2554,10 @@ function renderSettingsLayout() {
       <div class="settings-pane" data-cat="java">
         <div class="settings-card">
           <div class="settings-card-title">Java &amp; memory</div>
+          <div class="settings-health" id="java-status" data-ok="${state.javaAvailable !== false}">
+            <strong>${state.javaAvailable === false ? 'Managed Java ready on demand' : 'Java detected'}</strong>
+            <span>${state.javaAvailable === false ? 'Pine will download the correct isolated Java runtime when you first launch an instance.' : 'Pine can use the detected runtime and will still select a compatible version per instance.'}</span>
+          </div>
           <div class="settings-row"><label>Default Java path</label>
             <input id="set-java-path" class="input" value="${escHtml(s.javaPath || '')}" placeholder="(use system default)">
           </div>
@@ -2635,6 +2633,32 @@ function renderSettingsLayout() {
           <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
         </div>
       </div>
+      <div class="settings-pane" data-cat="integrations">
+        <div class="settings-card">
+          <div class="settings-card-title">CurseForge</div>
+          <p class="text-muted settings-note">Enable the optional CurseForge catalog with your own API key. Pine encrypts the key using your operating system credential store and never displays it again.</p>
+          <div class="settings-row"><label>API key</label>
+            <input id="curseforge-api-key" data-independent class="input" type="password" maxlength="512" autocomplete="off" placeholder="Paste a new API key">
+          </div>
+          <div class="integration-status" id="curseforge-status">Checking secure storage…</div>
+          <div class="settings-actions">
+            <button class="btn btn-primary" id="curseforge-save" type="button">Save key</button>
+            <button class="btn btn-secondary" id="curseforge-test" type="button">Test connection</button>
+            <button class="btn btn-ghost" id="curseforge-remove" type="button">Remove key</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-pane" data-cat="storage">
+        <div class="settings-card">
+          <div class="settings-card-title">Storage usage</div>
+          <p class="text-muted settings-note">Pine counts files in the background. Instance and backup data are never removed by cache cleanup.</p>
+          <div class="storage-grid" id="storage-usage"><div class="storage-loading">Calculating…</div></div>
+          <div class="settings-actions">
+            <button class="btn btn-secondary" id="storage-refresh" type="button">Refresh</button>
+            <button class="btn btn-ghost" id="storage-clear-cache" type="button">Clear download cache</button>
+          </div>
+        </div>
+      </div>
       <div class="settings-pane" data-cat="updates">
         <div class="settings-card update-card">
           <div class="settings-card-title">Launcher updates</div>
@@ -2649,10 +2673,10 @@ function renderSettingsLayout() {
           </div>
           <div class="update-release-notes" id="update-release-notes" hidden></div>
           <div class="update-actions">
-            <button class="btn btn-secondary" id="update-check-btn" type="button">Check for updates</button>
+            <button class="btn btn-primary" id="update-check-btn" type="button">Check for updates</button>
             <button class="btn btn-primary" id="update-action-btn" type="button" hidden></button>
           </div>
-          <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Pine verifies the release package before installation.</p>
+          <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Windows packages are verified before automatic installation; Linux opens the official release packages.</p>
         </div>
       </div>
     </div>
@@ -2664,6 +2688,8 @@ function renderSettingsLayout() {
       btn.classList.add('active');
       layout.querySelector(`.settings-pane[data-cat="${btn.dataset.cat}"]`)?.classList.add('active');
       syncSettingsHeaderSave(btn.dataset.cat);
+      if (btn.dataset.cat === 'storage') void loadStorageUsage();
+      if (btn.dataset.cat === 'integrations') void loadIntegrationStatus();
     });
   });
   layout.querySelectorAll('.color-swatch').forEach((s) => {
@@ -2677,6 +2703,12 @@ function renderSettingsLayout() {
   });
   $('update-check-btn')?.addEventListener('click', checkForLauncherUpdates);
   $('update-action-btn')?.addEventListener('click', runUpdateAction);
+  $('curseforge-save')?.addEventListener('click', () => saveCurseForgeKey(false));
+  $('curseforge-remove')?.addEventListener('click', () => saveCurseForgeKey(true));
+  $('curseforge-test')?.addEventListener('click', testCurseForgeKey);
+  $('storage-refresh')?.addEventListener('click', loadStorageUsage);
+  $('storage-clear-cache')?.addEventListener('click', clearDownloadCache);
+  void loadIntegrationStatus();
   renderUpdatePanel();
   const headerSave = $('settings-header-save');
   if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
@@ -2694,7 +2726,7 @@ function renderSettingsLayout() {
     });
   }
   state.settingsDirty = false;
-  layout.querySelectorAll('input, select').forEach(control => {
+  layout.querySelectorAll('input:not([data-independent]), select:not([data-independent])').forEach(control => {
     control.addEventListener('input', () => {
       state.settingsDirty = true;
       clearTimeout(state.settingsSaveTimer);
@@ -2705,6 +2737,70 @@ function renderSettingsLayout() {
       saveAllSettings(null, { silent: true });
     });
   });
+}
+
+async function loadIntegrationStatus() {
+  const status = $('curseforge-status');
+  if (!status) return;
+  try {
+    const value = (await api.getIntegrationStatus()).curseForge;
+    status.dataset.ok = String(value.configured);
+    status.textContent = value.configured
+      ? `Configured${value.source === 'environment' ? ' by environment variable' : ' in secure storage'}`
+      : value.secureStorage ? 'Not configured' : 'Secure credential storage is unavailable';
+    const locked = value.source === 'environment' && value.configured;
+    for (const id of ['curseforge-api-key', 'curseforge-save', 'curseforge-remove']) if ($(id)) $(id).disabled = locked || (!value.secureStorage && !value.configured);
+  } catch (error) {
+    status.textContent = error.message || 'Could not read integration status';
+  }
+}
+
+async function saveCurseForgeKey(remove) {
+  const input = $('curseforge-api-key');
+  const value = remove ? '' : input?.value || '';
+  if (remove) {
+    const confirmed = await backupConfirmation({ title: 'Remove CurseForge API key?', message: 'The optional CurseForge catalog will stop working until another key is saved.', action: 'Remove key', danger: true });
+    if (!confirmed) return;
+  }
+  try {
+    await api.saveCurseForgeKey(value);
+    if (input) input.value = '';
+    await loadIntegrationStatus();
+    toast(remove ? 'CurseForge key removed' : 'CurseForge key saved securely', 'success');
+  } catch (error) { toast(error.message || 'Could not save CurseForge key', 'error', 4500); }
+}
+
+async function testCurseForgeKey() {
+  const button = $('curseforge-test');
+  if (button) button.disabled = true;
+  try {
+    await api.testCurseForgeKey($('curseforge-api-key')?.value || '');
+    toast('CurseForge connection succeeded', 'success');
+  } catch (error) { toast(error.message || 'CurseForge connection failed', 'error', 4500); }
+  finally { if (button) button.disabled = false; }
+}
+
+async function loadStorageUsage() {
+  const host = $('storage-usage');
+  if (!host) return;
+  host.innerHTML = '<div class="storage-loading">Calculating…</div>';
+  try {
+    const usage = await api.getStorageUsage();
+    const labels = { instances: 'Instances', shared: 'Shared game files', runtimes: 'Java runtimes', backups: 'Backups', cache: 'Download cache', logs: 'Logs' };
+    const displayBytes = value => Number(value) > 0 ? formatBytes(Number(value)) : '0 B';
+    host.innerHTML = Object.entries(labels).map(([key, label]) => `<div class="storage-item"><span>${label}</span><strong>${displayBytes(usage[key])}</strong></div>`).join('')
+      + `<div class="storage-item storage-total"><span>Total managed by Pine</span><strong>${displayBytes(usage.total)}</strong></div>`;
+  } catch (error) { host.innerHTML = `<div class="storage-loading">${escHtml(error.message || 'Could not calculate storage usage')}</div>`; }
+}
+
+async function clearDownloadCache() {
+  const confirmed = await backupConfirmation({ title: 'Clear download cache?', message: 'Downloaded mod and modpack archives will be removed. Instances, worlds, shared game files, Java runtimes, and backups stay untouched.', action: 'Clear cache', danger: true });
+  if (!confirmed) return;
+  try {
+    await api.clearDownloadCache(true);
+    toast('Download cache cleared', 'success');
+    await loadStorageUsage();
+  } catch (error) { toast(error.message || 'Could not clear cache', 'error', 4500); }
 }
 
 function syncSettingsHeaderSave(category) {
@@ -2846,11 +2942,13 @@ function renderUpdatePanel() {
   check.textContent = update.status === 'checking' ? 'Checking...' : 'Check for updates';
 
   const action = $('update-action-btn');
-  const canDownload = update.status === 'available' || (update.status === 'error' && update.availableVersion);
+  const manualDownload = update.status === 'available' && update.manualDownloadUrl;
+  const canDownload = !manualDownload && (update.status === 'available' || (update.status === 'error' && update.availableVersion));
   const canInstall = update.status === 'downloaded';
-  action.hidden = !canDownload && !canInstall && update.status !== 'downloading' && update.status !== 'installing';
+  action.hidden = !manualDownload && !canDownload && !canInstall && update.status !== 'downloading' && update.status !== 'installing';
   action.disabled = update.status === 'downloading' || update.status === 'installing';
-  if (canDownload) action.textContent = update.status === 'error' ? 'Retry download' : 'Download update';
+  if (manualDownload) action.textContent = 'Open GitHub release';
+  else if (canDownload) action.textContent = update.status === 'error' ? 'Retry download' : 'Download update';
   else if (canInstall) action.textContent = 'Restart and install';
   else if (update.status === 'downloading') action.textContent = `Downloading ${Math.round(update.percent || 0)}%`;
   else if (update.status === 'installing') action.textContent = 'Restarting...';
@@ -2872,6 +2970,10 @@ async function checkForLauncherUpdates() {
 async function runUpdateAction() {
   const update = state.updateState;
   try {
+    if (update.manualDownloadUrl) {
+      await api.openUpdateDownload(update.manualDownloadUrl);
+      return;
+    }
     const next = update.status === 'downloaded'
       ? await api.installUpdate()
       : await api.downloadUpdate();
@@ -2880,6 +2982,29 @@ async function runUpdateAction() {
   } catch (error) {
     toast('Update failed: ' + (error.message || error), 'error', 7000);
   }
+}
+
+function showAnimatedImagePreview(preview, dataUrl) {
+  if (!preview) return;
+  preview.style.backgroundImage = '';
+  preview.replaceChildren();
+  const image = document.createElement('img');
+  image.src = dataUrl;
+  image.alt = '';
+  preview.appendChild(image);
+  preview.hidden = false;
+}
+
+function validInstanceImage(file) {
+  if (!file || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)) {
+    toast('Choose a PNG, JPEG, WebP, or animated GIF image', 'error');
+    return false;
+  }
+  if (file.size > 6 * 1024 * 1024) {
+    toast('Instance images must be 6 MB or smaller', 'error');
+    return false;
+  }
+  return true;
 }
 
 // ── Modal: create instance ──────────────────────────────────
@@ -3066,7 +3191,7 @@ function openCreateModal() {
     const preview = $(`${t}-preview`);
     const placeholder = preview?.previousElementSibling;
     if (input) input.value = '';
-    if (preview) { preview.style.backgroundImage = ''; preview.hidden = true; }
+    if (preview) { preview.style.backgroundImage = ''; preview.replaceChildren(); preview.hidden = true; }
     if (placeholder) placeholder.hidden = false;
   });
 }
@@ -3107,6 +3232,7 @@ function bindEditSheet() {
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) return;
+      if (!validInstanceImage(file)) { input.value = ''; return; }
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target.result;
@@ -3114,7 +3240,7 @@ function bindEditSheet() {
         state[key] = dataUrl;
         const preview = $(`edit-${t}-preview`);
         const placeholder = preview?.previousElementSibling;
-        if (preview) { preview.style.backgroundImage = `url(${dataUrl})`; preview.hidden = false; }
+        showAnimatedImagePreview(preview, dataUrl);
         if (placeholder) placeholder.hidden = true;
         if (t === 'banner') {
           const wrap = $('edit-blur-dir-wrap');
@@ -3141,6 +3267,16 @@ function bindDuplicateEvents() {
     if (label) label.textContent = progress.current
       ? `Copying ${shortFile(progress.current)} · ${progress.percent}%`
       : `Copying instance · ${progress.percent}%`;
+  });
+  api.onImportProgress?.((progress) => {
+    const root = document.querySelector(`.folder-import-root[data-operation-id="${CSS.escape(String(progress.operationId || ''))}"]`);
+    if (!root) return;
+    const fill = root.querySelector('[data-import-progress-fill]');
+    const label = root.querySelector('[data-import-progress-label]');
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%`;
+    if (label) label.textContent = progress.current
+      ? `Copying and verifying ${shortFile(progress.current)} · ${progress.percent}%`
+      : `Copying complete instance · ${progress.percent}%`;
   });
 }
 
@@ -3413,7 +3549,9 @@ async function openFolderImport(preselected = null) {
   const transfer = source.transfer || {};
   const transferCategories = Object.entries(transfer.categories || {}).filter(([, category]) => category.files > 0);
   const root = document.createElement('div');
-  root.className = 'modal-root visible';
+  root.className = 'modal-root visible folder-import-root';
+  const operationId = crypto.randomUUID();
+  root.dataset.operationId = operationId;
   root.innerHTML = `<div class="modal duplicate-instance-modal" role="dialog" aria-modal="true">
     <div class="modal-header"><div><h2 class="modal-title">Found Minecraft data</h2><p class="modal-sub">${escHtml(source.source)} · local read-only inspection</p></div><button class="modal-close" data-close type="button"><svg width="20" height="20"><use href="#i-x"/></svg></button></div>
     <div class="modal-body modal-form">
@@ -3425,9 +3563,10 @@ async function openFolderImport(preselected = null) {
       <div class="form-grid-2"><div class="form-row"><label for="folder-import-version">Minecraft version</label><select id="folder-import-version" class="input"></select></div><div class="form-row"><label for="folder-import-loader">Loader</label><select id="folder-import-loader" class="input"><option value="vanilla">Vanilla</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select></div></div>
       <div class="form-row" data-loader-version-row><label for="folder-import-loader-version">Loader version</label><select id="folder-import-loader-version" class="input"></select></div>
       <label class="import-world-warning" data-world-warning hidden><input type="checkbox" data-confirm-worlds><span><b>Newer world version detected</b><small>Opening a world in an older Minecraft version can permanently damage it. I understand and want to import it.</small></span></label>
-      <p class="duplicate-note">Microsoft tokens, launcher accounts, cookies, passwords, and login sessions are excluded. Pine copies files and leaves this folder usable.</p>
+      <p class="duplicate-note"><b>Complete safe copy is selected by default.</b> Worlds, keybinds, video settings, servers, mods, each mod's configuration, resource packs, shaders, screenshots, and custom files are preserved. Microsoft tokens, launcher accounts, cookies, passwords, and login sessions are always excluded.</p>
     </div>
-    <div class="modal-footer"><button class="btn btn-secondary" data-close type="button">Cancel</button><button class="btn btn-primary" data-import type="button">Import folder</button></div>
+    <div class="modal-progress" data-import-progress hidden><div class="progress-bar"><div class="progress-fill" data-import-progress-fill></div></div><span data-import-progress-label>Preparing complete copy…</span></div>
+    <div class="modal-footer"><button class="btn btn-secondary" data-close data-cancel-import type="button">Cancel</button><button class="btn btn-primary" data-import type="button">Import complete instance</button></div>
   </div>`;
   document.body.appendChild(root);
   const nameInput = root.querySelector('#folder-import-name');
@@ -3468,18 +3607,28 @@ async function openFolderImport(preselected = null) {
   await loadDetectedLoaderVersions();
   const close = () => root.remove();
   root.addEventListener('click', event => { if ((event.target === root || event.target.closest('[data-close]')) && !root.dataset.busy) close(); });
+  root.querySelector('[data-cancel-import]').addEventListener('click', async event => {
+    if (!root.dataset.busy) return;
+    event.currentTarget.disabled = true;
+    event.currentTarget.textContent = 'Cancelling…';
+    await api.cancelTransfer(operationId).catch(() => false);
+  });
   root.querySelector('[data-import]').addEventListener('click', async event => {
     root.dataset.busy = 'true';
     root.querySelectorAll('button,input,select').forEach(element => { element.disabled = true; });
+    root.querySelector('[data-cancel-import]').disabled = false;
+    root.querySelector('[data-cancel-import]').textContent = 'Cancel import';
+    root.querySelector('[data-import-progress]').hidden = false;
     event.currentTarget.innerHTML = '<span class="spinner"></span>Copying and validating…';
     try {
       const selection = Object.fromEntries([...root.querySelectorAll('[data-import-category]')].map(input => [input.dataset.importCategory, input.checked]));
-      const imported = await api.importExistingInstanceFolder({ folder: source.folder, name: nameInput.value, gameVersion: versionSelect.value, loader: loaderSelect.value, loaderVersion: loaderVersionSelect.value, confirmNewerWorlds: root.querySelector('[data-confirm-worlds]').checked, selection });
+      const imported = await api.importExistingInstanceFolder({ folder: source.folder, name: nameInput.value, gameVersion: versionSelect.value, loader: loaderSelect.value, loaderVersion: loaderVersionSelect.value, confirmNewerWorlds: root.querySelector('[data-confirm-worlds]').checked, selection, sourceFingerprint: transfer.fingerprint, operationId });
       await loadInstances(); close(); toast(`${imported.name} imported`, 'success'); selectInstance(imported.name);
     } catch (error) {
       delete root.dataset.busy;
       root.querySelectorAll('button,input,select').forEach(element => { element.disabled = false; });
-      event.currentTarget.textContent = 'Import folder';
+      root.querySelector('[data-import-progress]').hidden = true;
+      event.currentTarget.textContent = 'Import complete instance';
       toast('Import failed: ' + (error.message || error), 'error', 7000);
     }
   });
@@ -3584,7 +3733,7 @@ async function openEditSheet() {
   ['icon', 'banner'].forEach((t) => {
     const preview = $(`edit-${t}-preview`);
     const placeholder = preview?.previousElementSibling;
-    if (preview) { preview.hidden = true; preview.style.backgroundImage = ''; }
+    if (preview) { preview.hidden = true; preview.style.backgroundImage = ''; preview.replaceChildren(); }
     if (placeholder) placeholder.hidden = false;
     const input = $(`edit-${t}`);
     if (input) input.value = '';
@@ -3816,6 +3965,7 @@ function bindModal() {
     input.addEventListener('change', () => {
       const file = input.files?.[0];
       if (!file) return;
+      if (!validInstanceImage(file)) { input.value = ''; return; }
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target.result;
@@ -3823,7 +3973,7 @@ function bindModal() {
         state[key] = dataUrl;
         const preview = $(`${t}-preview`);
         const placeholder = preview?.previousElementSibling;
-        if (preview) { preview.style.backgroundImage = `url(${dataUrl})`; preview.hidden = false; }
+        showAnimatedImagePreview(preview, dataUrl);
         if (placeholder) placeholder.hidden = true;
         // Show blur direction picker when banner is selected
         if (t === 'banner') {

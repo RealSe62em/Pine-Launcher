@@ -1636,6 +1636,29 @@ label, .label {
 .settings-row > input,
 .settings-row > select { flex: 1; }
 .settings-actions { display: flex; align-items: center; gap: var(--s-2); }
+.settings-note { margin: -4px 0 var(--s-4); line-height: 1.55; }
+.settings-health,
+.integration-status {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: var(--s-4);
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--glass-surface-base);
+  color: var(--text-md);
+  font-size: var(--text-caption);
+  line-height: 1.45;
+}
+.settings-health strong { color: var(--success); }
+.settings-health[data-ok="false"] strong { color: var(--accent); }
+.integration-status[data-ok="true"] { color: var(--success); }
+.storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); margin-bottom: var(--s-4); }
+.storage-item { display: flex; flex-direction: column; gap: 5px; padding: 12px; border-radius: var(--r-sm); background: var(--glass-surface-base); color: var(--text-md); font-size: var(--text-caption); }
+.storage-item strong { color: var(--text-hi); font-size: var(--text-body); }
+.storage-item.storage-total { grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: space-between; border: 1px solid var(--border-subtle); }
+.storage-loading { grid-column: 1 / -1; padding: var(--s-4); color: var(--text-md); text-align: center; }
 .neoforge-loader-card { position: relative; overflow: hidden; border-color: color-mix(in srgb, #f1a44c 20%, var(--border-subtle)); background: linear-gradient(145deg, color-mix(in srgb, #f1a44c 6%, var(--glass-surface-base)), var(--glass-surface-base)); }
 .neoforge-loader-card::after { content: ''; position: absolute; top: -70px; right: -55px; width: 180px; height: 180px; border-radius: 50%; background: color-mix(in srgb, #f1a44c 9%, transparent); filter: blur(38px); pointer-events: none; }
 .neoforge-loader-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
@@ -1869,12 +1892,14 @@ label, .label {
 .recent-card-banner .instance-banner-sharp {
   position: absolute;
   inset: 0;
-  background-size: cover;
-  background-position: center;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .recent-card-banner .instance-banner-blur {
   filter: blur(10px);
   opacity: 0.7;
+  transform: scale(1.08);
 }
 .recent-card:hover .recent-card-icon { transform: rotate(-4deg) scale(1.04); }
 .recent-card-name { font-size: var(--text-body); font-weight: 600; color: var(--text-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2136,6 +2161,7 @@ label, .label {
   background-size: cover; background-position: center;
   border-radius: var(--r-sm);
 }
+.upload-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
 #icon-upload .upload-preview { height: 80px; }
 #banner-upload .upload-preview { height: 56px; }
 
@@ -2165,12 +2191,15 @@ label, .label {
 .instance-banner-sharp {
   position: absolute;
   inset: 0;
-  background-size: cover;
-  background-position: center;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .instance-banner-blur {
   filter: blur(10px);
   opacity: 0.7;
+  transform: scale(1.08);
 }
 .instance-banner-sharp {
   -webkit-mask-image: linear-gradient(to left, black 45%, transparent 75%);
@@ -2317,7 +2346,9 @@ html.reduced-motion *::after {
   gap: 2px;
   animation: appear var(--dur-slow) var(--ease-spring-snappy);
   transform-origin: top right;
+  max-height: min(70vh, 560px);
 }
+.account-switch-list { display: flex; min-height: 0; flex-direction: column; gap: 2px; overflow-y: auto; overscroll-behavior: contain; }
 .account-menu-item {
   display: flex;
   align-items: center;
@@ -2351,7 +2382,10 @@ html.reduced-motion *::after {
 .account-menu-empty { padding: var(--s-3); color: var(--text-lo); font-size: var(--text-caption); text-align: center; }
 .account-required-saved { display: grid; gap: var(--s-2); margin-bottom: var(--s-4); }
 .account-required-saved .btn { justify-content: flex-start; width: 100%; }
-.account-switch-row { display: flex; align-items: center; gap: 4px; border-radius: var(--r-sm); }
+.account-switch-row { display: flex; align-items: center; gap: 4px; border-radius: var(--r-sm); max-height: 52px; opacity: 1; transform: translateY(0); transition: max-height var(--dur-slow) var(--ease-ios), opacity var(--dur-base) var(--ease-ios), transform var(--dur-slow) var(--ease-spring); }
+.account-switch-row.account-extra { max-height: 0; opacity: 0; transform: translateY(-8px); overflow: hidden; pointer-events: none; }
+.account-menu.accounts-expanded .account-switch-row.account-extra { max-height: 52px; opacity: 1; transform: translateY(0); pointer-events: auto; }
+.account-show-more { justify-content: center; color: var(--accent); }
 .account-switch-row:hover, .account-switch-row.selected { background: var(--glass-surface-base); }
 .account-switch-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: var(--s-2); padding: 8px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .account-switch-main .avatar { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 9px; display: grid; place-items: center; overflow: hidden; background: var(--glass-surface-raised); }
@@ -2798,6 +2832,11 @@ html.reduced-motion *::after {
 
 .import-hub-body .export-choice-icon {
   flex: 0 0 38px;
+  display: grid !important;
+  place-items: center;
+  align-self: center;
+  padding: 0;
+  line-height: 1;
 }
 
 .import-hub-body .export-choice-icon svg {

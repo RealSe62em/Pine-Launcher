@@ -69,6 +69,30 @@ test('the import hub uses aligned action icons and a folder glyph', () => {
   assert.match(renderer, /data-import-kind="folder"[^\n]*href="#i-folder"/);
   assert.equal((renderer.match(/class="export-choice-chevron"/g) || []).length, 3);
   assert.match(components, /\.import-hub-body \.export-choice-chevron\s*\{[^}]*margin-left:\s*auto/s);
+  assert.match(components, /\.import-hub-body \.export-choice-icon\s*\{[^}]*display:\s*grid !important[^}]*place-items:\s*center/s);
+});
+
+test('launcher folder imports preserve complete gameplay state with progress and cancellation', () => {
+  assert.match(renderer, /Complete safe copy is selected by default/);
+  assert.match(renderer, /sourceFingerprint:\s*transfer\.fingerprint/);
+  assert.match(renderer, /operationId/);
+  assert.match(preload, /onImportProgress/);
+  assert.match(main, /skipSymlinks:\s*true/);
+  assert.match(main, /verifyContents:\s*true/);
+  assert.match(main, /inspectTransferPlanInWorker/);
+  assert.doesNotMatch(main, /createTransferInclude\(options\.selection, \{ mods: false, configuration: false \}\)/);
+});
+
+test('managed Java provisioning does not produce a frightening install warning', () => {
+  assert.match(main, /managedJavaRequired/);
+  assert.doesNotMatch(main, /detected Java versions/);
+  assert.doesNotMatch(main, /Install a compatible Java version or select it in Settings/);
+});
+
+test('account menu expands every saved account without rebuilding the menu', () => {
+  assert.match(renderer, /Show all \$\{state\.accounts\.length\} accounts/);
+  assert.match(renderer, /menu\.classList\.toggle\('accounts-expanded'/);
+  assert.match(components, /account-menu\.accounts-expanded \.account-switch-row\.account-extra/);
 });
 
 test('async mod update checks immediately re-render the visible list', () => {
@@ -105,7 +129,8 @@ test('destination cards support deleted instances, copy, rename, and smooth deta
   assert.match(preload, /renameRecentDestination/);
   assert.match(main, /ipcMain\.handle\('rename-recent-destination'/);
   assert.match(main, /archiveDeletedInstance\(instance\)/);
-  assert.match(main, /fs\.promises\.rm\(deletionTarget/);
+  assert.match(main, /finishPendingDeletion\(pending\)/);
+  assert.match(main, /PENDING_DELETIONS_FILE/);
   assert.match(components, /destination-card\.has-detail \.destination-address/);
   assert.match(components, /@keyframes destination-name-set/);
   assert.match(components, /\.destination-card\s*\{[\s\S]*?backdrop-filter:\s*none/);
@@ -147,9 +172,13 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
-test('CurseForge and private integration settings are not exposed in the launcher UI', () => {
-  assert.doesNotMatch(html, /catalog-source|CurseForge/i);
-  assert.doesNotMatch(renderer, /data-cat="integrations"|set-curseforge-key|searchCurseForge\(/i);
+test('CurseForge credentials use an explicit encrypted integration surface', () => {
+  assert.match(renderer, /data-cat="integrations"/);
+  assert.match(renderer, /api\.saveCurseForgeKey/);
+  assert.match(preload, /saveCurseForgeKey/);
+  assert.match(main, /INTEGRATION_SECRETS_FILE/);
+  assert.match(main, /secureSecretsAvailable\(safeStorage\)/);
+  assert.doesNotMatch(renderer, /curseForgeApiKey\s*:/);
   assert.doesNotMatch(website, /CurseForge/i);
   assert.match(renderer, /api\.searchMods\(query, facets, state\.searchOffset, SEARCH_LIMIT, sort\)/);
 });
@@ -198,7 +227,7 @@ test('instance backups stay inside the instance header experience with safe upda
   assert.match(renderer, /setInstanceBackupRetention/);
   assert.match(preload, /createInstanceBackup/);
   assert.match(main, /beginProtectedInstanceUpdate\(instance, `Before updating/);
-  assert.match(main, /recoverInterruptedRestores\(BACKUPS_DIR\)/);
+  assert.match(main, /recoverInterruptedRestores\(BACKUPS_DIR, \{ allowedRoots: recoveryRoots \}\)/);
   assert.match(main, /recoverInterruptedInstanceUpdates\(\)/);
   assert.match(components, /\.backup-item-actions/);
 });
@@ -228,6 +257,25 @@ test('world management and crash explanations use Pine-native surfaces', () => {
   assert.match(renderer, /Nothing is uploaded unless/);
   assert.match(components, /\.crash-assistant-modal/);
   assert.match(components, /\.world-card/);
+});
+
+test('animated instance art stays animated and banner blur uses live image layers', () => {
+  assert.match(html, /id="modal-icon"[^>]*image\/gif/);
+  assert.match(html, /id="modal-banner"[^>]*image\/gif/);
+  assert.match(renderer, /showAnimatedImagePreview/);
+  assert.match(renderer, /<img class="instance-banner-blur"/);
+  assert.match(renderer, /<img class="instance-banner-sharp"/);
+  assert.doesNotMatch(renderer, /instance-banner-blur" style="background-image/);
+  assert.match(components, /\.instance-banner-blur[\s\S]*?filter:\s*blur\(10px\)/);
+});
+
+test('Linux update checks stay enabled and open the verified GitHub release', () => {
+  assert.match(preload, /openUpdateDownload/);
+  assert.match(main, /ipcMain\.handle\('open-update-download'/);
+  assert.match(renderer, /update\.manualDownloadUrl/);
+  assert.match(renderer, /Open GitHub release/);
+  assert.match(renderer, /btn btn-primary" id="update-check-btn"/);
+  assert.match(read('lib/updater.js'), /platform === 'linux' \|\| \(isPackaged && platform === 'win32'\)/);
 });
 
 test('crash assistant offers guarded recovery, private sharing, and frozen-game control', () => {

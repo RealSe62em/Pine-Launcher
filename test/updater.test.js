@@ -97,11 +97,36 @@ test('downloaded updates restart through the NSIS updater', () => {
   assert.equal(updater.installs, 1);
 });
 
-test('Linux packages explain the Debian and Arch manual GitHub update path', () => {
-  const { value } = manager({ isPackaged: true, platform: 'linux' });
-  const state = value.start();
-  assert.equal(state.status, 'unsupported');
-  assert.match(state.message, /\.deb or \.pacman releases from GitHub/i);
+test('Linux packages can check GitHub without using the Windows installer', async () => {
+  const { updater, value } = manager({
+    isPackaged: true,
+    platform: 'linux',
+    fetchLatestRelease: async () => ({
+      version: '1.2.2',
+      releaseDate: '2026-08-22T00:00:00Z',
+      releaseNotes: 'Linux update',
+      url: 'https://github.com/RealSe62em/Pine-Launcher/releases/tag/v1.2.2',
+    }),
+  });
+  value.start();
+  const state = await value.checkForUpdates();
+  assert.equal(state.status, 'available');
+  assert.equal(state.availableVersion, '1.2.2');
+  assert.match(state.message, /\.deb or Arch package/i);
+  assert.match(state.manualDownloadUrl, /releases\/tag\/v1\.2\.2/);
+  assert.equal(updater.checks, 0);
+  await value.downloadUpdate();
+  assert.equal(updater.downloads, 0);
+});
+
+test('Linux development and unpacked builds keep manual update checks accessible', async () => {
+  const { value } = manager({
+    isPackaged: false,
+    platform: 'linux',
+    fetchLatestRelease: async () => ({ version: '1.2.3', url: 'https://github.com/RealSe62em/Pine-Launcher/releases/tag/v1.2.3' }),
+  });
+  assert.notEqual(value.start().status, 'unsupported');
+  assert.equal((await value.checkForUpdates()).status, 'available');
 });
 
 test('Windows ARM64 installations use their architecture-specific update feed', () => {
