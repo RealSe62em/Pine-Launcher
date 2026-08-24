@@ -172,13 +172,11 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
-test('CurseForge credentials use an explicit encrypted integration surface', () => {
-  assert.match(renderer, /data-cat="integrations"/);
-  assert.match(renderer, /api\.saveCurseForgeKey/);
-  assert.match(preload, /saveCurseForgeKey/);
-  assert.match(main, /INTEGRATION_SECRETS_FILE/);
-  assert.match(main, /secureSecretsAvailable\(safeStorage\)/);
-  assert.doesNotMatch(renderer, /curseForgeApiKey\s*:/);
+test('ordinary users are not asked to configure third-party credentials', () => {
+  assert.doesNotMatch(renderer, /data-cat="integrations"|curseforge-api-key|saveCurseForgeKey|testCurseForgeKey/);
+  assert.doesNotMatch(preload, /getIntegrationStatus|saveCurseForgeKey|testCurseForgeKey/);
+  assert.doesNotMatch(main, /INTEGRATION_SECRETS_FILE|save-curseforge-key|test-curseforge-key/);
+  assert.doesNotMatch(read('README.md'), /Settings → Integrations|approved third-party API key/);
   assert.doesNotMatch(website, /CurseForge/i);
   assert.match(renderer, /api\.searchMods\(query, facets, state\.searchOffset, SEARCH_LIMIT, sort\)/);
 });

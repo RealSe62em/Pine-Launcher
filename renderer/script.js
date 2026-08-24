@@ -2532,7 +2532,6 @@ function renderSettingsLayout() {
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
       <button data-cat="discord">Discord</button>
-      <button data-cat="integrations">Integrations</button>
       <button data-cat="storage">Storage</button>
       <button data-cat="updates">Updates</button>
     </nav>
@@ -2633,21 +2632,6 @@ function renderSettingsLayout() {
           <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
         </div>
       </div>
-      <div class="settings-pane" data-cat="integrations">
-        <div class="settings-card">
-          <div class="settings-card-title">CurseForge</div>
-          <p class="text-muted settings-note">Enable the optional CurseForge catalog with your own API key. Pine encrypts the key using your operating system credential store and never displays it again.</p>
-          <div class="settings-row"><label>API key</label>
-            <input id="curseforge-api-key" data-independent class="input" type="password" maxlength="512" autocomplete="off" placeholder="Paste a new API key">
-          </div>
-          <div class="integration-status" id="curseforge-status">Checking secure storage…</div>
-          <div class="settings-actions">
-            <button class="btn btn-primary" id="curseforge-save" type="button">Save key</button>
-            <button class="btn btn-secondary" id="curseforge-test" type="button">Test connection</button>
-            <button class="btn btn-ghost" id="curseforge-remove" type="button">Remove key</button>
-          </div>
-        </div>
-      </div>
       <div class="settings-pane" data-cat="storage">
         <div class="settings-card">
           <div class="settings-card-title">Storage usage</div>
@@ -2689,7 +2673,6 @@ function renderSettingsLayout() {
       layout.querySelector(`.settings-pane[data-cat="${btn.dataset.cat}"]`)?.classList.add('active');
       syncSettingsHeaderSave(btn.dataset.cat);
       if (btn.dataset.cat === 'storage') void loadStorageUsage();
-      if (btn.dataset.cat === 'integrations') void loadIntegrationStatus();
     });
   });
   layout.querySelectorAll('.color-swatch').forEach((s) => {
@@ -2703,12 +2686,8 @@ function renderSettingsLayout() {
   });
   $('update-check-btn')?.addEventListener('click', checkForLauncherUpdates);
   $('update-action-btn')?.addEventListener('click', runUpdateAction);
-  $('curseforge-save')?.addEventListener('click', () => saveCurseForgeKey(false));
-  $('curseforge-remove')?.addEventListener('click', () => saveCurseForgeKey(true));
-  $('curseforge-test')?.addEventListener('click', testCurseForgeKey);
   $('storage-refresh')?.addEventListener('click', loadStorageUsage);
   $('storage-clear-cache')?.addEventListener('click', clearDownloadCache);
-  void loadIntegrationStatus();
   renderUpdatePanel();
   const headerSave = $('settings-header-save');
   if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
@@ -2737,47 +2716,6 @@ function renderSettingsLayout() {
       saveAllSettings(null, { silent: true });
     });
   });
-}
-
-async function loadIntegrationStatus() {
-  const status = $('curseforge-status');
-  if (!status) return;
-  try {
-    const value = (await api.getIntegrationStatus()).curseForge;
-    status.dataset.ok = String(value.configured);
-    status.textContent = value.configured
-      ? `Configured${value.source === 'environment' ? ' by environment variable' : ' in secure storage'}`
-      : value.secureStorage ? 'Not configured' : 'Secure credential storage is unavailable';
-    const locked = value.source === 'environment' && value.configured;
-    for (const id of ['curseforge-api-key', 'curseforge-save', 'curseforge-remove']) if ($(id)) $(id).disabled = locked || (!value.secureStorage && !value.configured);
-  } catch (error) {
-    status.textContent = error.message || 'Could not read integration status';
-  }
-}
-
-async function saveCurseForgeKey(remove) {
-  const input = $('curseforge-api-key');
-  const value = remove ? '' : input?.value || '';
-  if (remove) {
-    const confirmed = await backupConfirmation({ title: 'Remove CurseForge API key?', message: 'The optional CurseForge catalog will stop working until another key is saved.', action: 'Remove key', danger: true });
-    if (!confirmed) return;
-  }
-  try {
-    await api.saveCurseForgeKey(value);
-    if (input) input.value = '';
-    await loadIntegrationStatus();
-    toast(remove ? 'CurseForge key removed' : 'CurseForge key saved securely', 'success');
-  } catch (error) { toast(error.message || 'Could not save CurseForge key', 'error', 4500); }
-}
-
-async function testCurseForgeKey() {
-  const button = $('curseforge-test');
-  if (button) button.disabled = true;
-  try {
-    await api.testCurseForgeKey($('curseforge-api-key')?.value || '');
-    toast('CurseForge connection succeeded', 'success');
-  } catch (error) { toast(error.message || 'CurseForge connection failed', 'error', 4500); }
-  finally { if (button) button.disabled = false; }
 }
 
 async function loadStorageUsage() {

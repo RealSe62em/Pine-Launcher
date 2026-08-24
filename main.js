@@ -35,7 +35,6 @@ const { createLoaderProviderRegistry } = require('./lib/loader-provider');
 const { createNeoForgeProvider } = require('./lib/neoforge-provider');
 const { configureLinuxSecureStorage } = require('./lib/linux-secure-storage');
 const { readJsonRecovering, writeJsonAtomic: writeStoreJsonAtomic } = require('./lib/json-store');
-const { available: secureSecretsAvailable, getSecret, setSecret } = require('./lib/secure-secrets');
 const { directorySize, storageUsage } = require('./lib/storage-usage');
 
 // This must run before Electron becomes ready. Custom Linux desktops are not
@@ -88,7 +87,6 @@ const LOG_FILE = path.join(LOG_DIR, 'latest.log');
 const LAUNCH_VALIDATION_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'launch-validation.json');
 const VERSION_MANIFEST_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'minecraft-versions.json');
 const PENDING_DELETIONS_FILE = path.join(app.getPath('userData'), 'pending-deletions.json');
-const INTEGRATION_SECRETS_FILE = path.join(app.getPath('userData'), 'integration-secrets.json');
 const launchValidationCache = new ValidationCache(LAUNCH_VALIDATION_CACHE_FILE);
 const managedPackValidationCache = new ValidationCache(path.join(app.getPath('userData'), 'cache', 'managed-pack-validation.json'));
 const activeNeoForgeOperations = new Set();
@@ -1697,9 +1695,7 @@ const curseForgeResponseCache = new Map();
 const serverMetadataCache = new Map();
 
 function curseForgeApiKey() {
-  const fromEnvironment = String(process.env.PINE_CURSEFORGE_API_KEY || '').trim();
-  if (fromEnvironment) return fromEnvironment;
-  return getSecret(INTEGRATION_SECRETS_FILE, safeStorage, 'curseForgeApiKey').trim();
+  return String(process.env.PINE_CURSEFORGE_API_KEY || '').trim();
 }
 
 function verifyCurseForgeFile(file, destination) {
@@ -1716,7 +1712,7 @@ function verifyCurseForgeFile(file, destination) {
 
 async function curseForgeFetch(apiPath) {
   const apiKey = curseForgeApiKey();
-  if (!apiKey) throw new Error('Add a CurseForge API key in Settings → Integrations to enable this catalog');
+  if (!apiKey) throw new Error('CurseForge online services are not available in this build');
   const now = Date.now();
   const cached = curseForgeResponseCache.get(apiPath);
   if (cached && cached.expires > now) return cached.promise;
@@ -5412,41 +5408,6 @@ function setupIPC() {
     return settings;
   });
 
-  ipcMain.handle('get-integration-status', async () => {
-    const environment = Boolean(String(process.env.PINE_CURSEFORGE_API_KEY || '').trim());
-    return {
-      curseForge: {
-        configured: environment || Boolean(curseForgeApiKey()),
-        source: environment ? 'environment' : 'secure-storage',
-        secureStorage: secureSecretsAvailable(safeStorage),
-      },
-    };
-  });
-
-  ipcMain.handle('save-curseforge-key', async (_, value) => {
-    if (String(process.env.PINE_CURSEFORGE_API_KEY || '').trim()) {
-      throw new Error('CurseForge is configured by the PINE_CURSEFORGE_API_KEY environment variable');
-    }
-    const key = String(value || '').trim();
-    if (key && (key.length < 16 || key.length > 512 || /[\r\n\0]/.test(key))) throw new Error('Enter a valid CurseForge API key');
-    setSecret(INTEGRATION_SECRETS_FILE, safeStorage, 'curseForgeApiKey', key);
-    curseForgeResponseCache.clear();
-    return { configured: Boolean(key) };
-  });
-
-  ipcMain.handle('test-curseforge-key', async (_, value) => {
-    const supplied = String(value || '').trim();
-    const key = supplied || curseForgeApiKey();
-    if (!key) throw new Error('Add a CurseForge API key first');
-    const response = await portableFetch(`${CURSEFORGE_API}/games`, {
-      headers: { Accept: 'application/json', 'x-api-key': key },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (response.status === 401 || response.status === 403) throw new Error('CurseForge rejected this API key');
-    if (!response.ok) throw new Error(`CurseForge connection failed (${response.status})`);
-    return { ok: true };
-  });
-
   ipcMain.handle('get-storage-usage', async () => {
     const base = app.getPath('userData');
     const usage = await storageUsage({
@@ -5485,14 +5446,7 @@ function migrateSettings() {
     if (settings) writeJSON(SETTINGS_FILE, settings);
   }
   const settings = readJSON(SETTINGS_FILE) || {};
-  const legacyCurseForgeKey = String(settings.curseForgeApiKey || '').trim();
-  if (legacyCurseForgeKey) {
-    if (secureSecretsAvailable(safeStorage)) {
-      setSecret(INTEGRATION_SECRETS_FILE, safeStorage, 'curseForgeApiKey', legacyCurseForgeKey);
-      diagnosticLog('INFO', 'Migrated the CurseForge API key into encrypted credential storage');
-    } else {
-      diagnosticLog('WARN', 'Removed a legacy plaintext CurseForge API key because secure credential storage is unavailable');
-    }
+  if (Object.hasOwn(settings, 'curseForgeApiKey')) {
     delete settings.curseForgeApiKey;
     writeJSON(SETTINGS_FILE, settings);
   }

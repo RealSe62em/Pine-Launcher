@@ -39,15 +39,13 @@ Pine downloads and verifies the Java runtime required by the selected Minecraft 
 
 - Separate Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
 - Multiple Microsoft and offline accounts with individual switching and deletion.
-- Modrinth discovery plus optional CurseForge mods, packs, and data packs using an approved API key.
+- Modrinth discovery for mods, packs, resource packs, shaders, and data packs.
 - A polished frequently visited grid with real server/world details and one-click Play.
 - Shared verified caches for game assets, libraries, versions, and mods—so matching files are reused instead of downloaded again for every new instance.
 - Clear launch stages and selectable, copyable logs for troubleshooting.
 - Transactional instance copies and imports with cancellation, category selection, private-data exclusion, and rollback of partial work.
 - Pine archives, lightweight Pine manifests, and standards-compatible Modrinth `.mrpack` import/export.
 - Automatic restore points, world management, managed-pack lifecycle controls, and privacy-safe crash diagnosis.
-
-CurseForge requires an approved third-party API key. Add it under **Settings → Integrations** or set `PINE_CURSEFORGE_API_KEY`; Pine does not ship a private developer key in source control.
 
 The **Settings → Storage** page shows how much space instances, shared game files, Java runtimes, backups, caches, and logs use. Its cache cleanup removes only replaceable downloads; it never removes instances, worlds, runtimes, or backups.
 

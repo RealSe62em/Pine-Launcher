@@ -1637,8 +1637,7 @@ label, .label {
 .settings-row > select { flex: 1; }
 .settings-actions { display: flex; align-items: center; gap: var(--s-2); }
 .settings-note { margin: -4px 0 var(--s-4); line-height: 1.55; }
-.settings-health,
-.integration-status {
+.settings-health {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1653,7 +1652,6 @@ label, .label {
 }
 .settings-health strong { color: var(--success); }
 .settings-health[data-ok="false"] strong { color: var(--accent); }
-.integration-status[data-ok="true"] { color: var(--success); }
 .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); margin-bottom: var(--s-4); }
 .storage-item { display: flex; flex-direction: column; gap: 5px; padding: 12px; border-radius: var(--r-sm); background: var(--glass-surface-base); color: var(--text-md); font-size: var(--text-caption); }
 .storage-item strong { color: var(--text-hi); font-size: var(--text-body); }

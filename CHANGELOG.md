@@ -41,10 +41,8 @@
 - Added Debian packages for x64 and ARM64 and an Arch Linux x64 package to the release pipeline.
 - Added Linux secure-storage integration and clearer update installation guidance.
 
-### Security and integrations
+### Security
 
-- Added encrypted storage for integration secrets and CurseForge credentials.
-- Added CurseForge connection testing and credential removal controls.
 - Tightened IPC sender validation, OAuth redirect checks, external URL handling, permission defaults, and file-system containment.
 - Enabled Electron security fuses and added security, contribution, and licensing documentation.
 
