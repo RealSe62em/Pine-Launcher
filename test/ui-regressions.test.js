@@ -164,11 +164,11 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /Creative\s*<i>Forge<\/i>/);
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
-  assert.match(website, /releases\/download\/v1\.2\.2\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.2\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.2\/PineLauncher-1\.2\.2-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.2\/PineLauncher-1\.2\.2-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.2\/PineLauncher-1\.2\.2-archlinux-x64\.pacman/);
+  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-archlinux-x64\.pacman/);
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
