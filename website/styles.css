@@ -14,3 +14,41 @@
 .download-buttons{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px}.download-buttons .button{min-width:245px}.download-buttons .button span{font:inherit}@media(max-width:650px){.download-buttons{flex-direction:column}.download-buttons .button{width:100%;min-width:0}}
 .verify-actions{display:flex!important;align-items:flex-end!important;flex-direction:column;gap:8px}.verify-actions>a{display:inline-flex;align-items:center;gap:5px;color:var(--cyan);font-size:11px;font-weight:700;text-decoration:none}.verify-actions>a svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2}
 @media(max-width:650px){.verify-actions{width:100%;align-items:stretch!important}.verify-actions>a{justify-content:center}}
+
+/* Website identity, navigation, and community links */
+.nav{width:min(calc(100% - 32px),1280px)}
+.nav nav{gap:2px}
+.nav nav a{padding:9px 10px;font-size:12px}
+#features,#safety,#download,#github-section,#discord-section,#developer{scroll-margin-top:96px}
+.icon svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.stack{bottom:25px}
+.stack b:nth-child(1){transform:translateX(0)}
+.stack b:nth-child(2){transform:translateX(-18px)}
+.stack b:nth-child(3){transform:translateX(-7px)}
+.cache-flow svg{width:15px;height:15px;flex:none;fill:none;stroke:var(--cyan);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.community{padding:30px 0 80px}
+.community .heading{margin-bottom:32px}
+.community-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.community-card{min-height:245px;padding:30px;display:flex;align-items:flex-start;gap:22px;border-radius:24px;color:var(--hi);text-decoration:none;background:radial-gradient(circle at 0 0,rgba(255,255,255,.07),transparent 48%),var(--surface);transition:transform .3s var(--ease),border-color .3s,background .3s}
+.community-card:hover{transform:translateY(-4px);border-color:rgba(100,210,255,.34);background:radial-gradient(circle at 0 0,rgba(100,210,255,.1),transparent 48%),var(--surface)}
+.community-card.discord-card:hover{border-color:rgba(88,101,242,.48);background:radial-gradient(circle at 0 0,rgba(88,101,242,.14),transparent 48%),var(--surface)}
+.community-icon{width:52px;height:52px;flex:none;display:grid;place-items:center;border-radius:16px;background:rgba(100,210,255,.12);color:var(--cyan)}
+.discord-card .community-icon{background:rgba(88,101,242,.18);color:#8b94ff}
+.community-icon svg{width:27px;height:27px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.community-card small{color:var(--cyan);font-size:10px;font-weight:750;letter-spacing:.1em}
+.discord-card small{color:#9fa6ff}
+.community-card h3{margin:7px 0 5px;font-size:28px;letter-spacing:-.035em}
+.community-card p{margin:0;color:var(--md);font-size:14px}
+.community-card strong{margin-top:20px;display:inline-flex;align-items:center;gap:7px;color:var(--cyan);font-size:13px}
+.discord-card strong{color:#aeb4ff}
+.community-card strong svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2}
+.creator{padding:20px 0 80px}
+.creator-links{display:flex;flex-wrap:wrap;gap:9px;margin-top:16px}
+.creator-links a{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border:1px solid var(--stroke);border-radius:10px;background:var(--surface);color:var(--cyan);font-size:12px;font-weight:700;text-decoration:none}
+.creator-links svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.footer-links{display:flex;align-items:center;gap:14px}
+.footer-links a{color:var(--md);font-weight:650;text-decoration:none}
+.footer-links a:hover{color:var(--cyan)}
+@media(max-width:1000px){.nav nav a{padding:8px 7px;font-size:11px}.nav .brand b{font-size:13px}}
+@media(max-width:900px){.nav nav{display:none}.community-grid{grid-template-columns:1fr}}
+@media(max-width:650px){.stack b:nth-child(1),.stack b:nth-child(2),.stack b:nth-child(3){transform:none}.cache-flow{gap:6px}.cache-flow span{font-size:8px}.cache-flow b{padding:7px 8px}.community{padding:10px 0 65px}.community-card{min-height:0;padding:24px;flex-direction:column}.creator-links{flex-direction:column}.creator-links a{justify-content:center}.footer-links{flex-wrap:wrap}}

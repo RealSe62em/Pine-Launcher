@@ -78,7 +78,7 @@ if (preview) {
   });
   preview.addEventListener('mouseleave', () => { preview.style.transform = restingTransform; });
 }
-const downloadSection = document.querySelector('#download');
+const downloadSection = document.querySelector('section#download');
 document.querySelectorAll('a[href="#download"]').forEach((link) => {
   link.addEventListener('click', (event) => {
     event.preventDefault();
