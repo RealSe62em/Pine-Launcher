@@ -26,7 +26,7 @@ const { createBackup, deleteBackup, listBackups, pruneAutomaticBackups, recoverI
 const { copyInstanceTransactional, createDuplicationFilter, inspectTree } = require('./lib/instance-transfer');
 const { replaceLevelName, validateDatapackArchive } = require('./lib/world-management');
 const { createTransferInclude } = require('./lib/transfer-plan');
-const { inspectLauncherMetadata, resolveGameRoot } = require('./lib/import-adapters');
+const { inspectLauncherMetadata, resolveGameRoot, resolveMetadataRoot } = require('./lib/import-adapters');
 const { buildLightweightManifest, buildModrinthIndex, hashDescriptor } = require('./lib/pack-export');
 const { inspectManagedState, managedFileRecord, normalizePackPath, normalizedManagedFiles, removeManagedFiles, snapshotPackMetadata } = require('./lib/managed-pack');
 const { collectInstanceDiagnostics, diagnoseCrash, redactSensitiveLog } = require('./lib/crash-assistant');
@@ -2867,9 +2867,10 @@ function setupIPC() {
   });
 
   async function inspectExistingInstanceFolder(folder, launcherHint = '') {
-    const metadataRoot = path.resolve(folder);
+    const selectedRoot = path.resolve(folder);
+    const root = resolveGameRoot(selectedRoot);
+    const metadataRoot = resolveMetadataRoot(selectedRoot, root);
     const prismMetadata = readJSON(path.join(metadataRoot, 'mmc-pack.json'));
-    const root = resolveGameRoot(metadataRoot);
     const markers = ['options.txt', 'servers.dat', 'saves', 'mods', 'resourcepacks', 'shaderpacks', 'screenshots', 'config'];
     const present = markers.filter(name => fs.existsSync(path.join(root, name)));
     const prismPack = prismMetadata || readJSON(path.join(root, 'mmc-pack.json'));
@@ -2891,6 +2892,7 @@ function setupIPC() {
     return {
       folder: root, source, adapter: detected.adapter, confidence: detected.confidence, evidence: detected.evidence,
       name: name.slice(0, 120), gameVersion, loader, loaderVersion,
+      versionDetected: detected.versionDetected !== false && Boolean(gameVersion), loaderDetected: detected.loaderDetected !== false,
       counts: {
         worlds: countDirectories('saves'), mods: countFiles('mods', /\.jar(?:\.disabled)?$/i),
         resourcepacks: countFiles('resourcepacks', /\.(?:zip|jar)$/i), shaderpacks: countFiles('shaderpacks', /\.(?:zip|jar)$/i),
@@ -3047,12 +3049,15 @@ function setupIPC() {
   });
 
   ipcMain.handle('import-existing-instance-folder', async (_, options = {}) => {
-    const sourceInfo = await inspectExistingInstanceFolder(String(options.folder || ''));
+    const sourceInfo = await inspectExistingInstanceFolder(String(options.folder || ''), String(options.launcherHint || ''));
     const safeName = sanitizeName(options.name);
     const gameVersion = String(options.gameVersion || sourceInfo.gameVersion || '').slice(0, 40);
-    const loader = ['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'].includes(options.loader) ? options.loader : sourceInfo.loader;
+    const requestedLoader = String(options.loader || '');
+    const loaderWasSelected = ['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'].includes(requestedLoader);
+    const loader = loaderWasSelected ? requestedLoader : sourceInfo.loader;
     const loaderVersion = loader === 'vanilla' ? null : String(options.loaderVersion || sourceInfo.loaderVersion || '').slice(0, 80);
     if (!gameVersion) throw new Error('Choose the Minecraft version used by this instance');
+    if (sourceInfo.counts.mods > 0 && !sourceInfo.loaderDetected && !loaderWasSelected) throw new Error('Choose the mod loader used by this instance so imported mods can run');
     if (loader !== 'vanilla' && !loaderVersion) throw new Error(`Choose the ${loader} version used by this instance`);
     const newerWorlds = sourceInfo.worlds.filter(world => world.version && compareSemver(world.version, gameVersion) > 0);
     if (newerWorlds.length && options.confirmNewerWorlds !== true) {

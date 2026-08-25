@@ -3513,9 +3513,11 @@ async function openFolderImport(preselected = null) {
   const versionSelect = root.querySelector('#folder-import-version');
   versionSelect.innerHTML = state.allVersions.map(version => `<option value="${escHtml(version.id)}">${escHtml(version.id)}</option>`).join('');
   if (source.gameVersion && !state.allVersions.some(version => version.id === source.gameVersion)) versionSelect.insertAdjacentHTML('afterbegin', `<option value="${escHtml(source.gameVersion)}">${escHtml(source.gameVersion)}</option>`);
-  versionSelect.value = source.gameVersion || state.allVersions[0]?.id || '';
+  if (!source.gameVersion) versionSelect.insertAdjacentHTML('afterbegin', '<option value="" selected>Select Minecraft version</option>');
+  versionSelect.value = source.gameVersion || '';
   const loaderSelect = root.querySelector('#folder-import-loader');
-  loaderSelect.value = source.loader || 'vanilla';
+  if ((counts.mods || 0) > 0 && source.loaderDetected === false) loaderSelect.insertAdjacentHTML('afterbegin', '<option value="" selected>Select mod loader</option>');
+  loaderSelect.value = (counts.mods || 0) > 0 && source.loaderDetected === false ? '' : (source.loader || 'vanilla');
   const loaderVersionSelect = root.querySelector('#folder-import-loader-version');
   const updateWorldWarning = () => {
     const parts = value => String(value || '').split(/[^0-9]+/).filter(Boolean).map(Number);
@@ -3528,7 +3530,9 @@ async function openFolderImport(preselected = null) {
   const loadDetectedLoaderVersions = async () => {
     const loader = loaderSelect.value;
     root.querySelector('[data-loader-version-row]').hidden = loader === 'vanilla';
+    if (!loader) { loaderVersionSelect.innerHTML = '<option value="">Select a loader first</option>'; root.querySelector('[data-loader-version-row]').hidden = false; return; }
     if (loader === 'vanilla') { loaderVersionSelect.innerHTML = '<option value="">Not required</option>'; return; }
+    if (!versionSelect.value) { loaderVersionSelect.innerHTML = '<option value="">Select a Minecraft version first</option>'; return; }
     loaderVersionSelect.disabled = true;
     loaderVersionSelect.innerHTML = '<option>Checking compatible versions…</option>';
     try {
@@ -3560,7 +3564,7 @@ async function openFolderImport(preselected = null) {
     event.currentTarget.innerHTML = '<span class="spinner"></span>Copying and validating…';
     try {
       const selection = Object.fromEntries([...root.querySelectorAll('[data-import-category]')].map(input => [input.dataset.importCategory, input.checked]));
-      const imported = await api.importExistingInstanceFolder({ folder: source.folder, name: nameInput.value, gameVersion: versionSelect.value, loader: loaderSelect.value, loaderVersion: loaderVersionSelect.value, confirmNewerWorlds: root.querySelector('[data-confirm-worlds]').checked, selection, sourceFingerprint: transfer.fingerprint, operationId });
+      const imported = await api.importExistingInstanceFolder({ folder: source.folder, launcherHint: source.source, name: nameInput.value, gameVersion: versionSelect.value, loader: loaderSelect.value, loaderVersion: loaderVersionSelect.value, confirmNewerWorlds: root.querySelector('[data-confirm-worlds]').checked, selection, sourceFingerprint: transfer.fingerprint, operationId });
       await loadInstances(); close(); toast(`${imported.name} imported`, 'success'); selectInstance(imported.name);
     } catch (error) {
       delete root.dataset.busy;
