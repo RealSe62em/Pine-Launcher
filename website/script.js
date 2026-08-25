@@ -6,6 +6,56 @@ const RELEASES = {
   arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.3/PineLauncher-1.2.3-archlinux-x64.pacman'
 };
 const FALLBACK_VERSION = '1.2.3';
+const ANALYTICS_ID = 'G-FR14WGWZY2';
+const CONSENT_KEY = 'pine_analytics_consent';
+
+function readAnalyticsConsent() {
+  try { return localStorage.getItem(CONSENT_KEY); } catch { return null; }
+}
+
+function writeAnalyticsConsent(value) {
+  try { localStorage.setItem(CONSENT_KEY, value); } catch { /* Continue without persistence. */ }
+}
+
+function loadAnalytics() {
+  if (window.gtag) return;
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function gtag() { window.dataLayer.push(arguments); };
+  window.gtag('js', new Date());
+  window.gtag('config', ANALYTICS_ID, { anonymize_ip: true });
+  const tag = document.createElement('script');
+  tag.async = true;
+  tag.src = `https://www.googletagmanager.com/gtag/js?id=${ANALYTICS_ID}`;
+  document.head.appendChild(tag);
+}
+
+function sendAnalyticsEvent(name, parameters = {}) {
+  if (readAnalyticsConsent() !== 'accepted' || typeof window.gtag !== 'function') return;
+  window.gtag('event', name, parameters);
+}
+
+const consentDialog = document.querySelector('.analytics-consent');
+function showConsentDialog() { if (consentDialog) consentDialog.hidden = false; }
+function hideConsentDialog() { if (consentDialog) consentDialog.hidden = true; }
+
+const existingConsent = readAnalyticsConsent();
+if (existingConsent === 'accepted') loadAnalytics();
+else if (existingConsent !== 'declined') showConsentDialog();
+
+document.querySelectorAll('[data-consent]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const choice = button.dataset.consent;
+    writeAnalyticsConsent(choice);
+    if (choice === 'declined' && typeof window.gtag === 'function') {
+      window.location.reload();
+      return;
+    }
+    hideConsentDialog();
+    if (choice === 'accepted') loadAnalytics();
+  });
+});
+document.querySelector('.privacy-settings')?.addEventListener('click', showConsentDialog);
+
 function compareVersions(left, right) {
   const parts = value => String(value).split('.').map(part => Number.parseInt(part, 10) || 0);
   const a = parts(left);
@@ -16,6 +66,24 @@ function compareVersions(left, right) {
   return 0;
 }
 document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.x64; });
+
+document.addEventListener('click', (event) => {
+  const link = event.target.closest('a[href]');
+  if (!link) return;
+  const href = link.href;
+  if (link.classList.contains('download-link')) {
+    const fileName = new URL(href).pathname.split('/').pop();
+    sendAnalyticsEvent('file_download', {
+      build: link.dataset.build || 'unknown',
+      file_name: fileName,
+      link_url: href,
+      version: document.querySelector('[data-release-version]')?.textContent || FALLBACK_VERSION
+    });
+    return;
+  }
+  if (href.includes('github.com/')) sendAnalyticsEvent('github_click', { link_url: href, link_text: link.textContent.trim() });
+  if (href.includes('discord.gg/')) sendAnalyticsEvent('discord_click', { link_url: href, link_text: link.textContent.trim() });
+});
 
 async function syncLatestRelease() {
   const response = await fetch('https://api.github.com/repos/RealSe62em/Pine-Launcher/releases/latest', {
