@@ -2262,6 +2262,7 @@ html.reduced-motion *::after {
 }
 .perf-mods-label { font-size: var(--text-caption); color: var(--text-md); margin-bottom: var(--s-2); font-weight: 500; }
 .perf-mods-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; contain: layout paint style; overscroll-behavior: contain; }
+.perf-mod-checking { display: flex; align-items: center; gap: 8px; padding: 10px 8px; color: var(--text-md); font-size: var(--text-caption); }
 
 /* The creation sheet is an active scrolling surface. Baked near-opaque glass
    avoids recompositing the entire launcher and modal backdrop for every wheel
@@ -2697,6 +2698,10 @@ html.reduced-motion *::after {
   contain: layout paint style;
 }
 .perf-mod-row:hover { background: var(--glass-surface-raised); }
+.perf-mod-row.unavailable { align-items: flex-start; color: var(--text-lo); }
+.perf-mod-status { margin-left: auto; max-width: 58%; text-align: right; font-size: 10px; line-height: 1.35; }
+.perf-mod-status.compatible { color: var(--success); }
+.perf-mod-status.skipped { color: var(--warning); }
 
 .mod-name {
   position: relative;

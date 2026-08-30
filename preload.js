@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   importCurseForgeModpack: (options) => ipcRenderer.invoke('import-curseforge-modpack', options),
   getProject: (projectId) => ipcRenderer.invoke('get-project', projectId),
   getProjectVersions: (projectId, loaders, gameVersions) => ipcRenderer.invoke('get-project-versions', projectId, loaders, gameVersions),
+  checkPerformancePreset: (gameVersion) => ipcRenderer.invoke('check-performance-preset', gameVersion),
   installMod: (instanceName, options) => ipcRenderer.invoke('install-mod', instanceName, options),
   checkInstallFeasibility: (instanceName, projectId, versionId, loaders, gameVersion) => ipcRenderer.invoke('check-install-feasibility', instanceName, projectId, versionId, loaders, gameVersion),
   getOptionalDeps: (projectIds) => ipcRenderer.invoke('get-optional-deps', projectIds),

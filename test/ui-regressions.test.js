@@ -27,10 +27,41 @@ test('loader selection retries failures and requests versions when a profile cha
   assert.match(main, /const loaderVersionCache = new Map\(\)/);
 });
 
-test('performance preset excludes SmoothBoot and Indium', () => {
-  const preset = renderer.match(/const PERFORMANCE_MODS = \[([\s\S]*?)\];/)?.[1] || '';
-  assert.doesNotMatch(preset, /smoothboot/i);
-  assert.doesNotMatch(preset, /indium/i);
+test('performance preset is preflighted for the selected version and displays skipped mods', () => {
+  assert.match(preload, /checkPerformancePreset/);
+  assert.match(main, /ipcMain\.handle\('check-performance-preset'/);
+  assert.match(renderer, /refreshPerformanceCompatibility\(\)/);
+  assert.match(renderer, /will be installed · \$\{preview\.excluded\.length\} will be skipped/);
+  assert.match(renderer, /Skipped · \$\{escHtml\(item\.reason\)\}/);
+  assert.match(renderer, /state\.performanceCompatibility\.included\.find/);
+  assert.doesNotMatch(renderer, /const PERFORMANCE_MODS/);
+});
+
+test('startup restores the selected account rather than only listing account names', () => {
+  assert.match(renderer, /Promise\.all\(\[api\.listAccounts\(\), api\.getAuth\(\)\]\)/);
+  assert.match(renderer, /state\.authData = selected \|\| null/);
+  assert.match(renderer, /refreshAccounts\(\)[\s\S]*?updateAuthUI\(\)/);
+});
+
+test('nonfatal mod compatibility findings stay in diagnostics and launch logs', () => {
+  assert.match(main, /findDuplicateModIds\(modsDir\)[\s\S]*?diagnosticLog\('WARN', warning\)[\s\S]*?send\('launch-log'/);
+  assert.doesNotMatch(main, /send\('launch-warning'/);
+  const warningHandler = renderer.match(/api\.onLaunchWarning\([\s\S]*?\n\s*\}\);/)?.[0] || '';
+  assert.match(warningHandler, /appendLog/);
+  assert.doesNotMatch(warningHandler, /toast|setStatus/);
+});
+
+test('launch validation survives ordinary cache clearing and application updates', () => {
+  assert.match(main, /LAUNCH_VALIDATION_CACHE_FILE = path\.join\(GLOBAL_DIR, '\.pine', 'launch-validation\.json'\)/);
+  assert.match(main, /LEGACY_LAUNCH_VALIDATION_CACHE_FILE/);
+  assert.match(main, /clear-download-cache[\s\S]*?path\.join\(app\.getPath\('userData'\), 'cache'\)/);
+});
+
+test('installing a mod during play reports restart behavior and repairs interrupted files', () => {
+  assert.match(main, /restartRequired = activeInstanceName === safeName/);
+  assert.match(main, /fileMatchesExpectedHash\(filePath, file\.hashes\)/);
+  assert.match(main, /Replacing incomplete or unverified existing content file/);
+  assert.match(renderer, /available after Minecraft restarts/);
 });
 
 test('missing account errors reopen the account chooser with a detailed fallback', () => {
@@ -164,11 +195,11 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /Creative\s*<i>Forge<\/i>/);
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-archlinux-x64\.pacman/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-archlinux-x64\.pacman/);
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 

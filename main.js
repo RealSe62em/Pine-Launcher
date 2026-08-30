@@ -36,6 +36,9 @@ const { createNeoForgeProvider } = require('./lib/neoforge-provider');
 const { configureLinuxSecureStorage } = require('./lib/linux-secure-storage');
 const { readJsonRecovering, writeJsonAtomic: writeStoreJsonAtomic } = require('./lib/json-store');
 const { directorySize, storageUsage } = require('./lib/storage-usage');
+const { performanceModsForVersion } = require('./lib/performance-preset');
+const { fileMatchesExpectedHash } = require('./lib/file-integrity');
+const { planDefaultMemoryMigration } = require('./lib/memory-defaults');
 
 // This must run before Electron becomes ready. Custom Linux desktops are not
 // always recognized by Chromium and otherwise receive its insecure basic_text
@@ -84,9 +87,16 @@ const MANAGED_PACK_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'mana
 const LOG_DIR = path.join(app.getPath('userData'), 'logs');
 const BACKUPS_DIR = path.join(app.getPath('userData'), 'backups');
 const LOG_FILE = path.join(LOG_DIR, 'latest.log');
-const LAUNCH_VALIDATION_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'launch-validation.json');
+const LEGACY_LAUNCH_VALIDATION_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'launch-validation.json');
+const LAUNCH_VALIDATION_CACHE_FILE = path.join(GLOBAL_DIR, '.pine', 'launch-validation.json');
 const VERSION_MANIFEST_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'minecraft-versions.json');
 const PENDING_DELETIONS_FILE = path.join(app.getPath('userData'), 'pending-deletions.json');
+try {
+  if (!fs.existsSync(LAUNCH_VALIDATION_CACHE_FILE) && fs.existsSync(LEGACY_LAUNCH_VALIDATION_CACHE_FILE)) {
+    fs.mkdirSync(path.dirname(LAUNCH_VALIDATION_CACHE_FILE), { recursive: true });
+    fs.copyFileSync(LEGACY_LAUNCH_VALIDATION_CACHE_FILE, LAUNCH_VALIDATION_CACHE_FILE);
+  }
+} catch {}
 const launchValidationCache = new ValidationCache(LAUNCH_VALIDATION_CACHE_FILE);
 const managedPackValidationCache = new ValidationCache(path.join(app.getPath('userData'), 'cache', 'managed-pack-validation.json'));
 const activeNeoForgeOperations = new Set();
@@ -2461,7 +2471,7 @@ function setupIPC() {
       if (!available.some(v => v.version === loaderVersion)) throw new Error(`The selected ${loader} version is not compatible with Minecraft ${data.gameVersion}`);
     }
     const defaults = readJSON(SETTINGS_FILE) || {};
-    const minMemory = sanitizeMemory(data.minMemory, sanitizeMemory(defaults.minMemory, '2G'));
+    const minMemory = sanitizeMemory(data.minMemory, sanitizeMemory(defaults.minMemory, '4G'));
     const maxMemory = sanitizeMemory(data.maxMemory, sanitizeMemory(defaults.maxMemory, '4G'));
     if (memoryMegabytes(minMemory) > memoryMegabytes(maxMemory)) throw new Error('Minimum memory cannot exceed maximum memory');
     ensureDir(INSTANCES_DIR);
@@ -2850,7 +2860,7 @@ function setupIPC() {
         id: crypto.randomUUID(), name: safeName, path: destination, customRoot,
         gameVersion: String(source.gameVersion || '').slice(0, 40), profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader,
         loaderVersion: loader === 'vanilla' ? null : String(source.loaderVersion || '').slice(0, 80), created: new Date().toISOString(), lastPlayed: null,
-        minMemory: sanitizeMemory(source.minMemory, sanitizeMemory(defaults.minMemory, '2G')), maxMemory: sanitizeMemory(source.maxMemory, sanitizeMemory(defaults.maxMemory, '4G')),
+        minMemory: sanitizeMemory(source.minMemory, sanitizeMemory(defaults.minMemory, '4G')), maxMemory: sanitizeMemory(source.maxMemory, sanitizeMemory(defaults.maxMemory, '4G')),
         memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
         importedFrom: { type: 'pine-manifest', importedAt: new Date().toISOString(), omittedOverrides: Array.isArray(manifest.overrides) ? manifest.overrides.length : 0 },
       };
@@ -3095,7 +3105,7 @@ function setupIPC() {
     const entry = {
       id: crypto.randomUUID(), name: safeName, path: destination, customRoot, gameVersion,
       profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
-      created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
+      created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '4G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
       memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
       importedFrom: { type: 'existing-folder', source: sourceInfo.source, importedAt: new Date().toISOString(), files: result.files, bytes: result.bytes },
     };
@@ -3247,7 +3257,7 @@ function setupIPC() {
       const entry = {
         id: crypto.randomUUID(), name: safeName, path: destination, customRoot, gameVersion,
         profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
-        created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
+        created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '4G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
         memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
         modpack: {
           source: 'modrinth', projectId: options.projectId ? String(options.projectId).slice(0, 120) : null,
@@ -3801,20 +3811,17 @@ function setupIPC() {
       const warning = `${mod.filename} has a known compatibility issue: ${mod.reason} ${mod.replacement} is recommended. Pine left the file enabled for the mod loader to evaluate.`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
-      mainWindow?.webContents.send('launch-warning', warning);
     }
     for (const mod of findLoaderIncompatibleMods(modsDir, instance.loader)) {
       const warning = `${mod.filename} may target another loader: ${mod.reason} Pine left the file enabled so ${instance.loader} can make the final decision.`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
-      mainWindow?.webContents.send('launch-warning', warning);
     }
     for (const duplicate of findDuplicateModIds(modsDir)) {
       const filenames = duplicate.entries.map(entry => entry.filename).join(', ');
       const warning = `Multiple files advertise mod ID "${duplicate.id}": ${filenames}. Pine left every file enabled so the mod loader can report the exact conflict.`;
       diagnosticLog('WARN', warning);
       mainWindow?.webContents.send('launch-log', '[Pine compatibility] ' + warning);
-      mainWindow?.webContents.send('launch-warning', warning);
     }
     if (!checkDiskSpace(instanceDir, 512 * 1024 * 1024)) {
       activeInstanceName = null;
@@ -4309,6 +4316,7 @@ function setupIPC() {
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(item => item.name === sanitizeName(instanceName));
     if (!instance) throw new Error('Instance not found');
+    const restartRequired = type === 'mod' && activeInstanceName === instance.name;
     const project = (await curseForgeFetch(`/mods/${id}`)).data;
     const file = (await curseForgeFetch(`/mods/${id}/files/${fileId}`)).data;
     if (!file || !Array.isArray(file.gameVersions) || !file.gameVersions.includes(instance.gameVersion)) {
@@ -4358,7 +4366,7 @@ function setupIPC() {
       else metadata[`${type}:${filename}`] = { ...info, projectType: type };
       writeJSON(metaFile, metadata);
       if (updateBackup) finishProtectedInstanceUpdate(instance);
-      return { filename, projectId: `curseforge:${id}` };
+      return { filename, projectId: `curseforge:${id}`, restartRequired };
     } catch (error) {
       if (updateBackup) {
         try {
@@ -4627,7 +4635,7 @@ function setupIPC() {
       const defaults = readJSON(SETTINGS_FILE) || {};
       const entry = {
         id: crypto.randomUUID(), name, path: instanceDir, customRoot: '', gameVersion, profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion,
-        created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '2G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
+        created: new Date().toISOString(), lastPlayed: null, minMemory: sanitizeMemory(defaults.minMemory, '4G'), maxMemory: sanitizeMemory(defaults.maxMemory, '4G'),
         memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
         modpack: {
           source: 'curseforge', projectId, fileId, installedVersion: String(fileId), lockState: 'locked',
@@ -4686,6 +4694,75 @@ function setupIPC() {
     }
     return results;
   }
+
+  ipcMain.handle('check-performance-preset', async (_, requestedGameVersion) => {
+    const gameVersion = String(requestedGameVersion || '').trim();
+    const manifest = await fetchMinecraftVersions();
+    if (!manifest.versions?.some(version => version.id === gameVersion)) {
+      throw new Error('Select a valid Minecraft version before checking performance mods');
+    }
+    const loaders = ['fabric'];
+    const candidates = performanceModsForVersion(gameVersion);
+    const inspectProject = async projectId => {
+      try {
+        const params = new URLSearchParams({
+          loaders: JSON.stringify(loaders),
+          game_versions: JSON.stringify([gameVersion]),
+        });
+        const [project, versions] = await Promise.all([
+          modrinthFetch(`/project/${encodeURIComponent(projectId)}`),
+          modrinthFetch(`/project/${encodeURIComponent(projectId)}/version?${params}`),
+        ]);
+        const version = (versions || []).find(item => versionSupports(item, gameVersion, loaders));
+        if (!version) {
+          return { projectId, title: project?.title || projectId, compatible: false, reason: `No Fabric release supports Minecraft ${gameVersion}` };
+        }
+        const knownIncompatibility = knownModrinthIncompatibility(project.id || projectId, version.id, gameVersion);
+        if (knownIncompatibility) {
+          return { projectId, title: project?.title || projectId, compatible: false, reason: knownIncompatibility.message };
+        }
+        const file = (version.files || []).find(item => item.primary && item.url)
+          || (version.files || []).find(item => item.url);
+        if (!file) {
+          return { projectId, title: project?.title || projectId, compatible: false, reason: 'No automatic download is available' };
+        }
+        const requiredDeps = (version.dependencies || []).filter(dep => dep.dependency_type === 'required' && dep.project_id);
+        const unresolved = [];
+        const resolved = await resolveDepsRecursive(requiredDeps, loaders, gameVersion, new Set([projectId]), [], unresolved);
+        if (unresolved.length) {
+          return { projectId, title: project?.title || projectId, compatible: false, reason: `${unresolved.length} required ${unresolved.length === 1 ? 'dependency is' : 'dependencies are'} unavailable for Minecraft ${gameVersion}` };
+        }
+        const requiredDepSizes = {};
+        for (const dependency of resolved) {
+          if (dependency.id) requiredDepSizes[dependency.id] = dependency.files?.find(item => item.primary)?.size || dependency.files?.[0]?.size || 0;
+        }
+        return {
+          projectId,
+          title: project?.title || projectId,
+          compatible: true,
+          versionId: version.id,
+          versionName: version.name || version.version_number || version.id,
+          fileSize: file.size || 0,
+          requiredDepVersionIds: Object.keys(requiredDepSizes),
+          requiredDepSizes,
+        };
+      } catch (error) {
+        return { projectId, title: projectId, compatible: false, reason: `Compatibility check failed: ${String(error?.message || error).slice(0, 180)}` };
+      }
+    };
+    // Keep Modrinth requests bounded so opening the preset does not trigger
+    // rate limits on larger candidate lists.
+    const inspected = [];
+    for (let offset = 0; offset < candidates.length; offset += 4) {
+      inspected.push(...await Promise.all(candidates.slice(offset, offset + 4).map(inspectProject)));
+    }
+    return {
+      gameVersion,
+      loader: 'fabric',
+      included: inspected.filter(item => item.compatible),
+      excluded: inspected.filter(item => !item.compatible),
+    };
+  });
 
   // ── Helper: validate loader version per loader type ────────────────
   async function checkLoaderVersion(loader, loaderVersion, gameVersion) {
@@ -4950,9 +5027,15 @@ function setupIPC() {
     const safeFilename = safeRemoteFilename(file.filename);
     const filePath = resolveSafePath(targetDir, safeFilename);
 
-    // Never overwrite an existing user file. Updates explicitly disable the
-    // previous file before this point; dependencies already present are kept.
-    if (fs.existsSync(filePath)) return null;
+    // Keep verified files and repair their metadata. Replace only incomplete
+    // or hash-mismatched files left behind by an interrupted installation.
+    if (fs.existsSync(filePath)) {
+      if (fileMatchesExpectedHash(filePath, file.hashes) && isValidJar(filePath)) {
+        return { version, file, filePath, projectType, project, alreadyPresent: true };
+      }
+      diagnosticLog('WARN', `Replacing incomplete or unverified existing content file: ${safeFilename}`);
+      fs.rmSync(filePath, { force: true });
+    }
 
     // Phase: try cache
     sendInstallProgress(instanceName, 'caching', `Checking cache for ${file.filename}…`, 0);
@@ -5004,6 +5087,7 @@ function setupIPC() {
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(item => item.name === safeName);
     if (!instance) throw new Error('Instance not found');
+    const restartRequired = activeInstanceName === safeName;
 
     const modsDir = getInstanceDirByName(safeName, 'mods');
     ensureDir(modsDir);
@@ -5063,8 +5147,6 @@ function setupIPC() {
           `Installing ${i + 1} of ${versionIds.length}…`, Math.round((i / versionIds.length) * 80));
 
         const result = await processSingleVersion(instance, vid, writtenFiles);
-        if (result === null) continue; // already existed
-
         // Save metadata (mods only — resource packs etc. live in their own folders)
         const contentMetaFile = getInstanceDirByName(instanceName, 'content_meta.json');
         let contentMeta = {};
@@ -5098,12 +5180,12 @@ function setupIPC() {
           fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
         }
 
-        installed.push({ filename: result.file.filename, projectId: result.version.project_id });
+        installed.push({ filename: result.file.filename, projectId: result.version.project_id, repaired: result.alreadyPresent !== true });
       }
 
       if (updateBackup) finishProtectedInstanceUpdate(instance);
       sendInstallProgress(instanceName, 'done', `Installed ${installed.length} file${installed.length > 1 ? 's' : ''}`, 100);
-      return { installed, primary: installed[0] || null };
+      return { installed, primary: installed[0] || null, restartRequired };
     } catch (e) {
       // ── Batch rollback on failure ──
       for (const fp of writtenFiles) {
@@ -5383,7 +5465,7 @@ function setupIPC() {
   // ── Settings ──────────────────────────────────────────────────────
   ipcMain.handle('save-settings', async (_, settings) => {
     const allowedBehaviors = new Set(['Keep open', 'Close on launch']);
-    const minMemory = sanitizeMemory(settings?.minMemory, '2G');
+    const minMemory = sanitizeMemory(settings?.minMemory, '4G');
     const maxMemory = sanitizeMemory(settings?.maxMemory, '4G');
     if (memoryMegabytes(minMemory) > memoryMegabytes(maxMemory)) throw new Error('Minimum memory cannot exceed maximum memory');
     const clean = {
@@ -5391,6 +5473,7 @@ function setupIPC() {
       javaPath: typeof settings?.javaPath === 'string' ? settings.javaPath.slice(0, 1024) : '',
       minMemory,
       maxMemory,
+      defaultMemoryVersion: 2,
       launchBehavior: allowedBehaviors.has(settings?.launchBehavior) ? settings.launchBehavior : 'Keep open',
       dlLimit: Math.min(16, Math.max(2, Number.parseInt(settings?.dlLimit, 10) || 4)),
       accentColor: /^#[0-9a-f]{6}$/i.test(settings?.accentColor || '') ? settings.accentColor : '#ff5cb9',
@@ -5455,6 +5538,15 @@ function migrateSettings() {
     delete settings.curseForgeApiKey;
     writeJSON(SETTINGS_FILE, settings);
   }
+}
+
+function migrateDefaultMemorySettings() {
+  const settings = readJSON(SETTINGS_FILE) || {};
+  const registry = readJSON(INSTANCES_FILE) || [];
+  const migration = planDefaultMemoryMigration(settings, registry);
+  if (!migration.changed) return;
+  writeJSON(INSTANCES_FILE, migration.instances);
+  writeJSON(SETTINGS_FILE, migration.settings);
 }
 
 // ── App Lifecycle ───────────────────────────────────────────────────
@@ -5607,6 +5699,7 @@ app.whenReady().then(() => {
   migrateSettings();
   migrateUserDataDir();
   migrateInstances();
+  migrateDefaultMemorySettings();
   const recoveryRegistry = readJSON(INSTANCES_FILE) || [];
   const recoveryRoots = recoveryRegistry.map(instance => {
     try { return getInstanceDir(instance); } catch { return null; }

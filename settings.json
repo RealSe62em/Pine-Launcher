@@ -1,8 +1,9 @@
 {
   "gayMode": false,
   "javaPath": "",
-  "minMemory": "2G",
+  "minMemory": "4G",
   "maxMemory": "4G",
+  "defaultMemoryVersion": 2,
   "launchBehavior": "Keep open",
   "dlLimit": 4,
   "accentColor": "#ff5cb9"

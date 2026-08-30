@@ -13,7 +13,7 @@ const website = fs.readFileSync(path.join(root, 'website', 'index.html'), 'utf8'
 const websiteScript = fs.readFileSync(path.join(root, 'website', 'script.js'), 'utf8');
 
 test('release uses the planned updater-visible version', () => {
-  assert.equal(pkg.version, '1.2.3');
+  assert.equal(pkg.version, '1.2.4');
   assert.equal(pkg.dependencies['electron-updater'], '6.8.9');
 });
 
@@ -32,14 +32,18 @@ test('Windows builds publish GitHub updater metadata and differential packages',
   assert.match(workflow, /latest-arm64\.yml' -Pattern '\^path: PineLauncherSetup-arm64\\\.exe\$'/);
 });
 
-test('website fallbacks point at every 1.2.3 native installer', () => {
-  assert.match(website, /data-release-version>1\.2\.3</);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.3\/PineLauncher-1\.2\.3-archlinux-x64\.pacman/);
-  assert.match(website, /E8360FF72D8CD3E66743454B437A5E44C9812F15C83A3929C4A4B6068198CE4B/);
-  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.3'/);
-  assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.2/);
+test('Linux release builders install every native compression prerequisite', () => {
+  assert.match(workflow, /apt-get install --yes libarchive-tools zstd/);
+});
+
+test('website fallbacks point at every 1.2.4 native installer', () => {
+  assert.match(website, /data-release-version>1\.2\.4</);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-archlinux-x64\.pacman/);
+  assert.match(website, /EB33972B70BC13E58F9D272C927082394941F16B138A35E797A453098A41848D/);
+  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.4'/);
+  assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.3/);
 });

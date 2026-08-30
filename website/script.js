@@ -1,11 +1,11 @@
 const RELEASES = {
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.3/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.3/PineLauncherSetup-arm64.exe',
-  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.3/PineLauncher-1.2.3-linux-amd64.deb',
-  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.3/PineLauncher-1.2.3-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.3/PineLauncher-1.2.3-archlinux-x64.pacman'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.4/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.4/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.4/PineLauncher-1.2.4-linux-amd64.deb',
+  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.4/PineLauncher-1.2.4-linux-arm64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.4/PineLauncher-1.2.4-archlinux-x64.pacman'
 };
-const FALLBACK_VERSION = '1.2.3';
+const FALLBACK_VERSION = '1.2.4';
 const ANALYTICS_ID = 'G-FR14WGWZY2';
 const CONSENT_KEY = 'pine_analytics_consent';
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.4
+
+### Instance creation and content
+
+- Preflight the Performance preset as soon as a Minecraft version is selected, including required dependencies.
+- Show which optimization mods are compatible and which will be skipped, with a reason for every skipped mod.
+- Repair interrupted or incomplete mod installations instead of treating an existing filename as successfully installed.
+- Clearly report that mods added while Minecraft is running become available after the game fully restarts.
+
+### Accounts and launching
+
+- Restore and select the last-used account automatically when Pine starts.
+- Preserve the launch-validation cache across launcher updates and ordinary download-cache cleanup, avoiding unnecessary revalidation after upgrades.
+- Keep nonfatal mod compatibility and duplicate-ID findings in diagnostics and launch logs without showing alarming user-facing warnings when the game can continue.
+
+### Memory defaults
+
+- Set new instances to an equal 4 GB minimum and 4 GB maximum by default across all creation routes.
+- Preserve the effective memory allocation of every existing instance during migration, including custom global and per-instance values.
+
 ## 1.2.3
 
 ### Instance importing

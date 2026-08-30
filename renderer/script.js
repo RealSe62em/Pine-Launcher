@@ -17,6 +17,9 @@ const state = {
   selectedLoader: 'vanilla',
   chosenProfile: null,
   performanceMods: [],
+  performanceCompatibility: null,
+  performanceChecking: false,
+  performanceCheckRequestId: 0,
   authData: null,
   accounts: [],
   accountsExpanded: false,
@@ -2217,13 +2220,17 @@ async function saveInstanceSettings(button = null, { silent = false } = {}) {
 // ── Auth ────────────────────────────────────────────────────
 async function refreshAccounts() {
   try {
-    const result = await api.listAccounts();
+    const [result, selected] = await Promise.all([api.listAccounts(), api.getAuth()]);
     state.accounts = result?.accounts || [];
     state.selectedAccountKey = result?.selectedKey || null;
+    state.authData = selected || null;
   } catch {
     state.accounts = [];
     state.selectedAccountKey = null;
+    state.authData = null;
   }
+  updateAuthUI();
+  updatePride();
 }
 
 async function chooseAccount(key) {
@@ -2561,7 +2568,7 @@ function renderSettingsLayout() {
             <input id="set-java-path" class="input" value="${escHtml(s.javaPath || '')}" placeholder="(use system default)">
           </div>
           <div class="settings-row"><label>Default min memory (GB)</label>
-            <input id="set-min-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.minMemory, 2)}">
+            <input id="set-min-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.minMemory, 4)}">
           </div>
           <div class="settings-row"><label>Default max memory (GB)</label>
             <input id="set-max-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.maxMemory, 4)}">
@@ -2752,7 +2759,7 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
   state.settings = {
     ...state.settings,
     javaPath: $('set-java-path')?.value || '',
-    minMemory: `${parseInt($('set-min-mem')?.value, 10) || 2}G`,
+    minMemory: `${parseInt($('set-min-mem')?.value, 10) || 4}G`,
     maxMemory: `${parseInt($('set-max-mem')?.value, 10) || 4}G`,
     launchBehavior: $('set-launch-behavior')?.value || 'Keep open',
     dlLimit: parseInt($('set-dl-limit')?.value) || 4,
@@ -2781,7 +2788,7 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
 
 async function resetSettings() {
   state.settings = {
-    launchBehavior: 'Keep open', dlLimit: 4, javaPath: '', minMemory: '2G', maxMemory: '4G',
+    launchBehavior: 'Keep open', dlLimit: 4, javaPath: '', minMemory: '4G', maxMemory: '4G',
     jvmArgs: '', windowWidth: 1280, windowHeight: 720, accentColor: '#ff5cb9',
     reducedMotion: false, gayMode: true, discordPresence: true,
     discordShowInstance: true, discordShowServer: true,
@@ -2946,14 +2953,6 @@ function validInstanceImage(file) {
 }
 
 // ── Modal: create instance ──────────────────────────────────
-const PERFORMANCE_MODS = [
-  'sodium', 'entityculling', 'ferrite-core', 'krypton', 'modernfix',
-  'no-chat-reports', 'memoryleakfix', 'lazydfu', 'ebe', 'immediatelyfast',
-  'alternate-current', 'dynamic-fps', 'fastload', 'moreculling', 'fastanim',
-  'vmp-fabric', 'reeses-sodium-options', 'skip-transitions',
-  'fabric-api', 'cloth-config', 'modmenu',
-];
-
 function openDeleteGroupModal(requestedName) {
   if ($('delete-group-overlay')) return;
   const group = state.groups.find(item => item.name.toLowerCase() === String(requestedName || '').toLowerCase());
@@ -3103,6 +3102,9 @@ function openCreateModal() {
   $('modal-progress-text').textContent = 'Creating instance…';
   state.chosenProfile = 'vanilla';
   state.performanceMods = [];
+  state.performanceCompatibility = null;
+  state.performanceChecking = false;
+  state.performanceCheckRequestId += 1;
   state.removedPerfMods = new Set();
   state.selectedLoader = 'vanilla';
   state.pendingIcon = null;
@@ -3873,7 +3875,7 @@ function bindModal() {
   });
   $('modal-version')?.addEventListener('change', () => {
     loadLoaderVersions();
-    updatePerfModsList();
+    refreshPerformanceCompatibility();
   });
   $('modal-loader-version')?.addEventListener('pointerdown', () => {
     if ($('modal-loader-version')?.dataset.loadState === 'failed') {
@@ -3933,7 +3935,7 @@ function bindModal() {
     const filtered = filterVersions();
     populateVersionSelect($('modal-version'), filtered);
     loadLoaderVersions();
-    updatePerfModsList();
+    refreshPerformanceCompatibility();
   });
 }
 
@@ -3964,7 +3966,7 @@ function selectProfile(profile) {
     state.selectedLoader = 'fabric';
     buildLoaderSegmented();
     setSegmentedLocked(true);
-    updatePerfModsList();
+    refreshPerformanceCompatibility();
     setCollapsible(wrap, true);
   } else {
     setSegmentedLocked(false);
@@ -3982,25 +3984,27 @@ function setSegmentedLocked(locked) {
   });
 }
 
-function updatePerfModsList() {
-  const version = $('modal-version').value;
-  let modIds = [...PERFORMANCE_MODS];
-  if (version) {
-    const parts = version.split('.');
-    const major = parseInt(parts[0]), minor = parseInt(parts[1]);
-    if (major === 1 && minor < 20) modIds.push('phosphor', 'starlight');
-    if (major === 1 && minor >= 21) {
-      modIds = modIds.filter(id => !['lazydfu', 'fastload', 'modernfix', 'memoryleakfix', 'ebe', 'skip-transitions', 'fastanim'].includes(id));
-      modIds.push('sodium-extra');
-    }
-  }
-  state.performanceMods = modIds;
+function renderPerformanceCompatibility() {
   const container = $('perf-mods-list');
-  if (container) {
-    container.innerHTML = modIds.map((id) => {
-      const removed = state.removedPerfMods?.has(id) ?? false;
-      return `<div class="perf-mod-row${removed ? ' removed' : ''}" data-mod="${escHtml(id)}">
-        <span class="mod-name">${escHtml(id)}</span>
+  const label = $('perf-mods-label');
+  if (!container || !label) return;
+  if (state.performanceChecking) {
+    label.textContent = 'Checking every mod and required dependency…';
+    container.innerHTML = '<div class="perf-mod-checking"><span class="spinner"></span> Compatibility check in progress</div>';
+    return;
+  }
+  const preview = state.performanceCompatibility;
+  if (!preview) {
+    label.textContent = 'Choose a Minecraft version to check optimization mods';
+    container.innerHTML = '';
+    return;
+  }
+  label.textContent = `${preview.included.length} will be installed · ${preview.excluded.length} will be skipped`;
+  const included = preview.included.map(item => {
+    const removed = state.removedPerfMods?.has(item.projectId) ?? false;
+    return `<div class="perf-mod-row${removed ? ' removed' : ''}" data-mod="${escHtml(item.projectId)}">
+        <span class="mod-name">${escHtml(item.title || item.projectId)}</span>
+        <span class="perf-mod-status compatible">Compatible</span>
         <span class="mod-action">
           <svg class="trash-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path class="trash-body" d="M19 7v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7"/>
@@ -4015,7 +4019,40 @@ function updatePerfModsList() {
           </svg>
         </span>
       </div>`;
-    }).join('');
+  }).join('');
+  const excluded = preview.excluded.map(item => `<div class="perf-mod-row unavailable" data-mod="${escHtml(item.projectId)}">
+    <span class="mod-name">${escHtml(item.title || item.projectId)}</span>
+    <span class="perf-mod-status skipped" title="${escHtml(item.reason)}">Skipped · ${escHtml(item.reason)}</span>
+  </div>`).join('');
+  container.innerHTML = included + excluded;
+}
+
+async function refreshPerformanceCompatibility() {
+  const requestId = ++state.performanceCheckRequestId;
+  const version = $('modal-version')?.value || '';
+  state.performanceCompatibility = null;
+  state.performanceMods = [];
+  if (state.chosenProfile !== 'performance' || !version) {
+    state.performanceChecking = false;
+    renderPerformanceCompatibility();
+    return;
+  }
+  state.performanceChecking = true;
+  renderPerformanceCompatibility();
+  try {
+    const preview = await api.checkPerformancePreset(version);
+    if (requestId !== state.performanceCheckRequestId || state.chosenProfile !== 'performance' || $('modal-version')?.value !== version) return;
+    state.performanceCompatibility = preview;
+    state.performanceMods = preview.included.map(item => item.projectId);
+    state.removedPerfMods = new Set([...state.removedPerfMods].filter(id => state.performanceMods.includes(id)));
+  } catch (error) {
+    if (requestId !== state.performanceCheckRequestId) return;
+    state.performanceCompatibility = { included: [], excluded: [{ projectId: 'preset', title: 'Performance preset', reason: error.message || String(error) }] };
+  } finally {
+    if (requestId === state.performanceCheckRequestId) {
+      state.performanceChecking = false;
+      renderPerformanceCompatibility();
+    }
   }
 }
 
@@ -4032,6 +4069,8 @@ async function createInstance() {
   if (!name) return showModalError('Please enter an instance name');
   if (!version) return showModalError('Please select a game version');
   if (state.selectedLoader !== 'vanilla' && !loaderVer) return showModalError('Please select a loader version');
+  if (state.chosenProfile === 'performance' && state.performanceChecking) return showModalError('Wait for the performance mod compatibility check to finish');
+  if (state.chosenProfile === 'performance' && !state.performanceCompatibility) return showModalError('Performance mod compatibility has not been checked yet');
 
   const btn = $('modal-create-btn');
   btn.disabled = true;
@@ -4046,28 +4085,21 @@ async function createInstance() {
     setProgress($('modal-progress-fill'), $('modal-progress-text'), 40, 'Instance created');
 
     if (state.chosenProfile === 'performance' && state.performanceMods.length) {
-      const perfLoaders = state.selectedLoader === 'vanilla' ? ['fabric'] : [state.selectedLoader];
       const selectedMods = state.performanceMods.filter((id) => !state.removedPerfMods.has(id));
       if (!selectedMods.length) { setProgress($('modal-progress-fill'), $('modal-progress-text'), 95, 'Skipping — no mods selected'); }
       const versionIds = [];
       const versionSizes = {};
-      const disableFiles = new Set();
       for (let i = 0; i < selectedMods.length; i++) {
         const modId = selectedMods[i];
-        const pVersions = await findCompatibleVersion(modId, perfLoaders, version);
-        if (!pVersions?.length) throw new Error(`${modId} has no compatible ${version} ${perfLoaders.join('/')} release`);
-        const v = pVersions.find((pv) => pv.loaders?.some(l => perfLoaders.includes(l)));
-        if (!v) throw new Error(`${modId} has no compatible loader release`);
-        const check = await api.checkInstallFeasibility(name, modId, v.id, perfLoaders, version);
-        if (!check?.feasible) throw new Error(check?.errors?.[0]?.message || `${modId} cannot be installed`);
-        versionIds.push(v.id, ...(check.requiredDepVersionIds || []));
-        versionSizes[v.id] = check.file?.size || 0;
-        Object.assign(versionSizes, check.requiredDepSizes || {});
-        for (const warning of check.warnings || []) if (warning.existingFile) disableFiles.add(warning.existingFile);
+        const checked = state.performanceCompatibility.included.find(item => item.projectId === modId);
+        if (!checked) continue;
+        versionIds.push(checked.versionId, ...(checked.requiredDepVersionIds || []));
+        versionSizes[checked.versionId] = checked.fileSize || 0;
+        Object.assign(versionSizes, checked.requiredDepSizes || {});
         const pct = 40 + ((i + 1) / selectedMods.length) * 55;
-        setProgress($('modal-progress-fill'), $('modal-progress-text'), pct, `Checking ${modId} (${i + 1}/${selectedMods.length})`);
+        setProgress($('modal-progress-fill'), $('modal-progress-text'), pct, `Preparing ${checked.title || modId} (${i + 1}/${selectedMods.length})`);
       }
-      if (versionIds.length) await api.installMod(name, { versionIds: [...new Set(versionIds)], versionSizes, disableFiles: [...disableFiles] });
+      if (versionIds.length) await api.installMod(name, { versionIds: [...new Set(versionIds)], versionSizes, disableFiles: [] });
       burstConfetti();
     }
 
@@ -4204,10 +4236,8 @@ function bindLaunchEvents() {
   api.onLaunchMetrics((m) => updateDockedMetrics(m));
   api.onLaunchWarning((message) => {
     appendLog('[WARNING] ' + message);
-    setStatus(message);
-    toast(message, 'error', 10000);
-    loadInstances().catch(() => undefined);
-  });  api.onLaunchFixed((count) => {
+  });
+  api.onLaunchFixed((count) => {
     const banner = $('dp-fix');
     if (!banner) return;
     banner.textContent = `Found and fixed ${count} corrupted file${count > 1 ? 's' : ''}`;
@@ -4729,8 +4759,9 @@ async function doInstallMod(inst, projectId, backupOptions = {}) {
   try {
     const result = await api.installMod(inst.name, { versionIds: allVersionIds, versionSizes, disableFiles, ...backupOptions });
     const primary = result.primary || result.installed?.[0];
-    toast(`Installed ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}`, 'success');
-    setStatus(primary ? `Installed ${primary.filename}` : 'Installed');
+    const restartNote = result.restartRequired ? ' · available after Minecraft restarts' : '';
+    toast(`Installed ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}${restartNote}`, 'success', result.restartRequired ? 6500 : 3000);
+    setStatus(primary ? `Installed ${primary.filename}${restartNote}` : `Installed${restartNote}`);
     if (state.currentInstance?.name === inst.name) loadContentList();
   } catch (e) {
     toast('Install failed: ' + (e.message || e), 'error', 5000);
@@ -5017,9 +5048,9 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
           await loadInstances();
           toast('CurseForge modpack imported', 'success');
         } else {
-          await api.installCurseForgeContent(instanceSelect.value, { projectId, fileId: Number(fileSelect.value), type, world: worldSelect?.value || null });
+          const result = await api.installCurseForgeContent(instanceSelect.value, { projectId, fileId: Number(fileSelect.value), type, world: worldSelect?.value || null });
           if (state.currentInstance?.name === instanceSelect.value) await loadContentList();
-          toast(`${project.name} installed`, 'success');
+          toast(`${project.name} installed${result?.restartRequired ? ' · available after Minecraft restarts' : ''}`, 'success', result?.restartRequired ? 6500 : 3000);
         }
         close();
       } catch (installError) {
