@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -20,8 +24,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Renderer and IPC smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:smoke -- --no-sandbox
+      - name: Renderer and IPC smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:smoke
       - run: npm audit --omit=dev --audit-level=high
       - name: Validate Electron Builder configuration
+        if: runner.os == 'Linux'
         run: npx electron-builder --config electron-builder.yml --dir --linux
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"

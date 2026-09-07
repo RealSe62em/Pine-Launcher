@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="styles/shell.css">
   <link rel="stylesheet" href="styles/components.css">
   <link rel="stylesheet" href="styles/animations.css">
+  <link rel="stylesheet" href="styles/features.css">
 </head>
 <body>
   <!-- ── Inline SVG sprite (referenced via <use href="#i-...">) ── -->
@@ -40,6 +41,7 @@
       <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v6M12 7h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2.8 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3-4.6-4.4 6.3-.9z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+      <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></symbol>
     </defs>
   </svg>
@@ -267,6 +269,7 @@
           </button>
           <div id="instance-header-info" class="instance-header-info"></div>
           <div class="instance-header-actions">
+            <button id="recipe-button" class="btn btn-ghost" type="button">Share recipe</button>
             <button id="instance-backups-btn" class="btn btn-ghost btn-icon" type="button" aria-label="Backups and restore points" title="Backups and restore points">
               <svg width="18" height="18" aria-hidden="true"><use href="#i-backup"/></svg>
             </button>
@@ -299,6 +302,7 @@
               <button class="btn btn-secondary" type="button" id="instance-add-content">Add content</button>
               <input id="content-search" class="input" placeholder="Filter installed mods..." autocomplete="off">
             </div>
+            <div id="pending-content" class="pending-content" aria-live="polite" hidden></div>
             <div id="content-list" class="content-list" aria-live="polite"></div>
           </div>
           <div class="tab-pane" data-tab="worlds">
@@ -312,6 +316,8 @@
           </div>
           <div class="tab-pane" data-tab="logs">
             <div class="log-toolbar">
+              <button class="btn btn-secondary" type="button" id="health-button"><svg width="15" height="15" aria-hidden="true"><use href="#i-heart"/></svg>Instance health</button>
+              <button class="btn btn-secondary" type="button" id="support-report-button">Support report</button>
               <button class="btn btn-secondary" type="button" id="copy-log-btn">Copy log</button>
               <button class="btn btn-secondary" type="button" id="analyze-log-btn">Explain crash</button>
               <button class="btn btn-secondary" type="button" id="clear-log-btn">Clear</button>

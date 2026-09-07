@@ -18,6 +18,9 @@ jobs:
   build:
     if: github.event_name != 'workflow_dispatch' || inputs.release_tag == ''
     runs-on: windows-latest
+    env:
+      CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
@@ -37,6 +40,14 @@ jobs:
             throw "Tag ${{ github.ref_name }} does not match package version v$packageVersion"
           }
 
+      - name: Require signing credentials for published Windows releases
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
+            throw 'Configure WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD before publishing a Windows release. Unsigned verification builds remain available through workflow_dispatch.'
+          }
+
       - name: Install locked dependencies
         run: npm ci
 
@@ -47,20 +58,40 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Build x64 installer
-        run: npm run build:installer:x64
+        run: npm run build:installer:x64 -- --config.forceCodeSigning=${{ startsWith(github.ref, 'refs/tags/') }}
 
       - name: Preserve x64 updater metadata
         shell: pwsh
         run: Move-Item -LiteralPath dist-native/latest.yml -Destination dist-native/latest-x64.yml -Force
 
       - name: Build ARM64 installer
-        run: npm run build:installer:arm64
+        run: npm run build:installer:arm64 -- --config.forceCodeSigning=${{ startsWith(github.ref, 'refs/tags/') }}
 
       - name: Preserve architecture-specific updater metadata
         shell: pwsh
         run: |
           Move-Item -LiteralPath dist-native/latest.yml -Destination dist-native/latest-arm64.yml -Force
           Copy-Item -LiteralPath dist-native/latest-x64.yml -Destination dist-native/latest.yml -Force
+
+      - name: Verify Windows release signatures
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $files = @(
+            'dist-native/PineLauncherSetup-x64.exe',
+            'dist-native/PineLauncherSetup-arm64.exe',
+            'dist-native/win-unpacked/Pine Launcher.exe',
+            'dist-native/win-arm64-unpacked/Pine Launcher.exe'
+          )
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file
+            if ($signature.Status -ne 'Valid') {
+              throw "Release signature is invalid or missing: $file ($($signature.Status))"
+            }
+            if (-not $signature.TimeStamperCertificate) {
+              throw "Release signature has no trusted timestamp: $file"
+            }
+          }
 
       - name: Verify packaged source and create checksums
         shell: pwsh

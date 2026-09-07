@@ -33,6 +33,10 @@ files:
   - "!build/**"
   - "!settings.json"
 win:
+  signtoolOptions:
+    signingHashAlgorithms:
+      - sha256
+    rfc3161TimeStampServer: http://timestamp.digicert.com
   target: nsis
   icon: build/icon.ico
   artifactName: PineLauncherSetup-${arch}.exe

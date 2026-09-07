@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, safeStorage, session, clipboard, net, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, safeStorage, session, clipboard, net, dialog, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { Client } = require('minecraft-launcher-core');
 const path = require('path');
@@ -27,7 +27,7 @@ const { copyInstanceTransactional, createDuplicationFilter, inspectTree } = requ
 const { replaceLevelName, validateDatapackArchive } = require('./lib/world-management');
 const { createTransferInclude } = require('./lib/transfer-plan');
 const { inspectLauncherMetadata, resolveGameRoot, resolveMetadataRoot } = require('./lib/import-adapters');
-const { buildLightweightManifest, buildModrinthIndex, hashDescriptor } = require('./lib/pack-export');
+const { verifiedRecipeFile, buildLightweightManifest, buildModrinthIndex, hashDescriptor } = require('./lib/pack-export');
 const { inspectManagedState, managedFileRecord, normalizePackPath, normalizedManagedFiles, removeManagedFiles, snapshotPackMetadata } = require('./lib/managed-pack');
 const { collectInstanceDiagnostics, diagnoseCrash, redactSensitiveLog } = require('./lib/crash-assistant');
 const { compareNeoForgeVersions, isNeoForgeVersionForMinecraft, isStableNeoForgeVersion, validateNeoForgeProfile } = require('./lib/neoforge');
@@ -39,6 +39,16 @@ const { directorySize, storageUsage } = require('./lib/storage-usage');
 const { performanceModsForVersion } = require('./lib/performance-preset');
 const { fileMatchesExpectedHash } = require('./lib/file-integrity');
 const { planDefaultMemoryMigration } = require('./lib/memory-defaults');
+const { beginContentInstall, queueContentInstall, applyContentInstalls, pendingContentInstalls, discardContentInstall } = require('./lib/content-install');
+const { shortcutArgument, createDesktopShortcut, readDesktopShortcut } = require('./lib/desktop-shortcuts');
+const { DownloadManager } = require('./lib/download-manager');
+const { claimOnboarding, finishOnboarding, recommendedMemory } = require('./lib/onboarding');
+const { inspectInstanceHealth } = require('./lib/instance-health');
+const { buildSupportReport } = require('./lib/support-report');
+const { previewPackChanges } = require('./lib/pack-preview');
+const { parseAddress, pingServer } = require('./lib/server-dashboard');
+const downloadManager = new DownloadManager(jobs => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('download-jobs', jobs); });
+let pendingDesktopShortcut = shortcutArgument(process.argv);
 
 // This must run before Electron becomes ready. Custom Linux desktops are not
 // always recognized by Chromium and otherwise receive its insecure basic_text
@@ -46,7 +56,7 @@ const { planDefaultMemoryMigration } = require('./lib/memory-defaults');
 configureLinuxSecureStorage(app);
 
 const portableFetch = (...args) => net.fetch(...args);
-installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3 });
+installMclReliabilityPatches({ fetchImpl: portableFetch, maxConcurrentDownloads: 3, downloadManager });
 
 let mainWindow;
 let updateManager;
@@ -63,7 +73,12 @@ let presenceContext = { type: 'launcher' };
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
-app.on('second-instance', () => {
+app.on('second-instance', (_, argv) => {
+  const shortcut = shortcutArgument(argv);
+  if (shortcut) {
+    pendingDesktopShortcut = shortcut;
+    mainWindow?.webContents.send('desktop-shortcut-ready');
+  }
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
@@ -106,6 +121,9 @@ let pendingDeletionMutationTail = Promise.resolve();
 const nativeIpcHandle = ipcMain.handle.bind(ipcMain);
 
 const REGISTRY_MUTATION_CHANNELS = new Set([
+  'install-mod', 'install-curseforge-content', 'launch-instance', 'discard-content-install',
+  'preview-managed-pack-version', 'save-server', 'delete-server',
+  'disable-mod', 'remove-mod', 'toggle-instance-content', 'remove-instance-content',
   'change-neoforge-version', 'repair-neoforge', 'rollback-neoforge',
   'create-instance', 'duplicate-instance', 'bulk-update-instances', 'bulk-delete-instances',
   'import-pine-manifest', 'import-existing-instance-folder', 'import-pine-archive',
@@ -611,7 +629,7 @@ async function downloadManagedPackVersion(instance, requestedVersionId, onProgre
   throw new Error('This pack source does not support automatic version changes');
 }
 
-async function applyManagedPackVersion(instanceName, requestedVersionId, onProgress) {
+async function applyManagedPackVersion(instanceName, requestedVersionId, onProgress, previewFingerprint) {
   const { instance, registry } = getRegisteredInstance(instanceName);
   if (activeInstanceName === instance.name) throw new Error('Close Minecraft before changing this modpack');
   if (!instance.modpack || instance.modpack.lockState === 'unpaired') throw new Error('This instance is not paired with a managed pack');
@@ -627,6 +645,8 @@ async function applyManagedPackVersion(instanceName, requestedVersionId, onProgr
     const descriptor = instance.modpack.source === 'modrinth'
       ? await prepareModrinthPackLayer(download.archivePath, layer, onProgress)
       : await prepareCurseForgePackLayer(download.archivePath, layer, onProgress);
+    const changes = previewPackChanges(root, layer, managedFilesForInstance(instance), descriptor.managedFiles);
+    if (!previewFingerprint || changes.fingerprint !== previewFingerprint) throw new Error('The pack or local files changed. Review the update preview again before applying it.');
     if (!descriptor.gameVersion) throw new Error('The target pack version does not declare a Minecraft version');
     const manifest = await fetchMinecraftVersions();
     if (!manifest.versions?.some(item => item.id === descriptor.gameVersion)) throw new Error(`The target pack requests unknown Minecraft version ${descriptor.gameVersion}`);
@@ -1076,6 +1096,7 @@ async function provisionManagedJava(javaMajor, onProgress) {
       onProgress?.({ percent: 100, label: `Java ${javaMajor} ready`, complete: true });
       return { path: installed, major: javaMajor, managed: true };
     } catch (error) {
+      if (error.code === 'DOWNLOAD_CANCELLED') throw error;
       lastError = error;
       diagnosticLog('ERROR', `Managed Java ${javaMajor} attempt ${installAttempt}/3 failed: ${error.stack || error.message || error}`);
       if (installAttempt < 3) await new Promise(resolve => setTimeout(resolve, installAttempt * 1500));
@@ -1203,12 +1224,17 @@ function getModJavaRequirement(instanceDir) {
 
 // ── Fetch with retry + resume ──────────────────────────────
 async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
+  return downloadManager.run(destPath, control => fetchFileWithRetry(fileUrl, destPath, onProgress, retries, control));
+}
+
+async function fetchFileWithRetry(fileUrl, destPath, onProgress, retries, control) {
   const parsedUrl = new URL(fileUrl);
   if (parsedUrl.protocol !== 'https:') throw new Error('Refusing an insecure download URL');
   const tmpPath = destPath + '.part';
   let downloaded = 0;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    await control.checkpoint();
     if (attempt > 0) await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, attempt), 10000)));
 
     const headers = {};
@@ -1218,7 +1244,7 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
     }
 
     try {
-      const res = await portableFetch(fileUrl, { headers, signal: AbortSignal.timeout(5 * 60 * 1000) });
+      const res = await portableFetch(fileUrl, { headers, signal: AbortSignal.any([control.signal, AbortSignal.timeout(5 * 60 * 1000)]) });
       const total = parseInt(res.headers.get('content-length') || '0') + (res.status === 206 ? downloaded : 0);
 
       if (res.status === 416) {
@@ -1246,11 +1272,12 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
       const progress = new Transform({
         transform(chunk, _encoding, callback) {
           downloaded += chunk.length;
+          control.progress(downloaded, total);
           if (onProgress && total) {
             const pct = Math.min(100, Math.round((downloaded / total) * 100));
             onProgress({ percent: pct, bytes: downloaded, total });
           }
-          callback(null, chunk);
+          control.checkpoint().then(() => callback(null, chunk), callback);
         },
       });
       await pipeline(Readable.fromWeb(res.body), progress, fs.createWriteStream(tmpPath, { flags: isPartial ? 'a' : 'w' }));
@@ -1261,6 +1288,7 @@ async function fetchWithRetry(fileUrl, destPath, onProgress, retries = 3) {
       fs.renameSync(tmpPath, destPath);
       return;
     } catch (e) {
+      if (control.signal.aborted) throw e;
       diagnosticLog(attempt === retries ? 'ERROR' : 'WARN', `Download attempt ${attempt + 1}/${retries + 1} failed for ${parsedUrl.hostname}: ${e.message}`);
       if (attempt === retries) throw e;
     }
@@ -2023,7 +2051,25 @@ async function buildLoaderUrl(instance, instanceDir) {
   }
 }
 
-async function prepareForge(instance, instanceDir, onProgress) {
+function forgeInstallerProfile(installerPath) {
+  try { return JSON.parse(new AdmZip(installerPath).readAsText('version.json')); }
+  catch { return null; }
+}
+
+function forgeGeneratedClient(profile) {
+  return (profile?.libraries || []).find(library => /:forge:[^:]+:client$/.test(String(library?.name || '')))?.downloads?.artifact || null;
+}
+
+function linkForgeLibraries(installRoot) {
+  const link = path.join(installRoot, 'libraries');
+  try {
+    if (fs.realpathSync(link) === fs.realpathSync(GLOBAL_LIBRARIES_DIR)) return;
+  } catch {}
+  fs.rmSync(link, { recursive: true, force: true });
+  fs.symlinkSync(GLOBAL_LIBRARIES_DIR, link, process.platform === 'win32' ? 'junction' : 'dir');
+}
+
+async function prepareForge(instance, instanceDir, javaPath, onProgress) {
   if (instance.loader !== 'forge') return null;
   const artifact = `${instance.gameVersion}-${instance.loaderVersion}`;
   const forgeDir = resolveSafePath(instanceDir, 'installers');
@@ -2034,10 +2080,31 @@ async function prepareForge(instance, instanceDir, onProgress) {
     await fetchWithRetry(url, installerPath, (p) => onProgress?.(p));
     if (!isValidJar(installerPath)) throw new Error('The Forge installer download is invalid');
   }
+  const profile = forgeInstallerProfile(installerPath);
+  const generated = forgeGeneratedClient(profile);
+  if (/^net\.minecraftforge\.bootstrap\./.test(String(profile?.mainClass || '')) && generated?.path) {
+    const target = resolveSafePath(GLOBAL_LIBRARIES_DIR, ...generated.path.split('/'));
+    const valid = fs.existsSync(target) && (!generated.sha1 || crypto.createHash('sha1').update(fs.readFileSync(target)).digest('hex') === generated.sha1);
+    if (!valid) {
+      const installRoot = resolveSafePath(forgeDir, 'client-install');
+      ensureDir(installRoot);
+      linkForgeLibraries(installRoot);
+      const vanillaDir = resolveSafePath(installRoot, 'versions', instance.gameVersion);
+      ensureDir(vanillaDir);
+      fs.copyFileSync(resolveSafePath(GLOBAL_VERSIONS_DIR, `${instance.gameVersion}.jar`), resolveSafePath(vanillaDir, `${instance.gameVersion}.jar`));
+      fs.copyFileSync(resolveSafePath(GLOBAL_VERSIONS_DIR, `${instance.gameVersion}.json`), resolveSafePath(vanillaDir, `${instance.gameVersion}.json`));
+      await writeJsonAtomic(resolveSafePath(installRoot, 'launcher_profiles.json'), { profiles: {}, settings: {} });
+      onProgress?.({ percent: 100, label: 'Installing Forge' });
+      await runJavaInstaller(javaPath, ['-jar', installerPath, '--installClient', installRoot], installRoot, 'Forge');
+      if (!fs.existsSync(target) || (generated.sha1 && crypto.createHash('sha1').update(fs.readFileSync(target)).digest('hex') !== generated.sha1)) {
+        throw new Error('Forge installer did not create a valid client library');
+      }
+    }
+  }
   return installerPath;
 }
 
-function runJavaInstaller(javaPath, args, cwd) {
+function runJavaInstaller(javaPath, args, cwd, installerName = 'NeoForge') {
   return new Promise((resolve, reject) => {
     execFile(javaPath, args, {
       cwd,
@@ -2048,7 +2115,7 @@ function runJavaInstaller(javaPath, args, cwd) {
     }, (error, stdout, stderr) => {
       if (!error) return resolve({ stdout, stderr });
       const detail = String(stderr || stdout || error.message || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 2000);
-      reject(new Error(`NeoForge installer failed${detail ? `: ${detail}` : ''}`));
+      reject(new Error(`${installerName} installer failed${detail ? `: ${detail}` : ''}`));
     });
   });
 }
@@ -2170,6 +2237,152 @@ function getLoaderProviders() {
 
 // ── IPC Handlers ────────────────────────────────────────────────────
 function setupIPC() {
+  const onboardingFile = path.join(app.getPath('userData'), 'onboarding.json');
+  ipcMain.handle('claim-onboarding', async () => {
+    const hasHistory = (readJSON(INSTANCES_FILE) || []).length > 0 || Boolean(readAuth()?.profile);
+    const show = claimOnboarding(onboardingFile, hasHistory);
+    if (show) {
+      const settings = readJSON(SETTINGS_FILE) || {};
+      settings.minMemory = '1G'; settings.maxMemory = recommendedMemory(os.totalmem());
+      writeJSON(SETTINGS_FILE, settings);
+    }
+    return { show, recommendedMemory: recommendedMemory(os.totalmem()) };
+  });
+  ipcMain.handle('finish-onboarding', async (_, status) => { finishOnboarding(onboardingFile, status); return true; });
+
+  async function instanceHealth(name) {
+    const { instance } = getRegisteredInstance(name);
+    const settings = readJSON(SETTINGS_FILE) || {};
+    const preferredJava = instance.javaPath || settings.javaPath;
+    const metadata = readJSON(path.join(GLOBAL_VERSIONS_DIR, `${instance.gameVersion}.json`));
+    const requiredJava = metadata?.javaVersion?.majorVersion || MC_JAVA_MAP_FALLBACK.find(entry => compareSemver(instance.gameVersion, entry.min) >= 0)?.java || 8;
+    const javaMajor = preferredJava ? await getJavaVersionAsync(preferredJava) : null;
+    const result = inspectInstanceHealth(getInstanceDir(instance), instance, settings, { javaMajor, requiredJava, totalMemory: os.totalmem() });
+    if (preferredJava && !javaMajor) result.issues.push({ code: 'java', title: 'Custom Java could not be started', detail: 'Clear the custom Java path in Settings to let Pine choose a runtime.', action: 'settings', severity: 'warning' });
+    result.pendingFiles = pendingContentInstalls(getInstanceDir(instance)).reduce((count, item) => count + item.files.length, 0);
+    result.healthy = !result.issues.length;
+    return result;
+  }
+  ipcMain.handle('get-instance-health', async (_, name) => instanceHealth(name));
+  ipcMain.handle('get-support-report', async (_, name, log = '') => {
+    const { instance } = getRegisteredInstance(name);
+    const health = await instanceHealth(name);
+    return buildSupportReport({ launcherVersion: app.getVersion(), platform: `${process.platform} ${process.arch}`, instance,
+      java: { major: health.javaMajor }, memory: health.memory, mods: await getInstanceModsList(name),
+      diagnostics: collectInstanceDiagnostics(getInstanceDir(instance), String(log).slice(-2 * 1024 * 1024)), health });
+  });
+  ipcMain.handle('save-support-report', async (_, report) => {
+    if (typeof report !== 'string' || report.length > 4 * 1024 * 1024) throw new Error('Invalid support report');
+    const result = await dialog.showSaveDialog(mainWindow, { title: 'Save reviewed support report', defaultPath: 'Pine-support-report.txt', filters: [{ name: 'Text report', extensions: ['txt'] }] });
+    if (result.canceled || !result.filePath) return null;
+    fs.writeFileSync(result.filePath, redactSensitiveLog(report), 'utf8');
+    return { filePath: result.filePath };
+  });
+  ipcMain.handle('get-recipe-preview', async (_, name) => {
+    const { instance } = getRegisteredInstance(name);
+    const content = await resolveExportableContent(instance, getInstanceDir(instance));
+    return { name: instance.name, gameVersion: instance.gameVersion, loader: instance.loader, loaderVersion: instance.loaderVersion,
+      memory: resolveLaunchMemory(instance, readJSON(SETTINGS_FILE) || {}), files: content.files.map(item => item.path), omitted: content.omitted };
+  });
+
+  const serverFile = path.join(app.getPath('userData'), 'saved-servers.json');
+  const savedServerList = () => readJSON(serverFile) || [];
+  const instanceIdentity = instance => String(instance.id || instance.created || instance.name);
+  const serverList = () => {
+    const instances = readJSON(INSTANCES_FILE) || [];
+    const saved = savedServerList().map(item => ({ ...item, instanceName: instances.find(instance => instanceIdentity(instance) === item.instanceId)?.name || null }));
+    for (const instance of instances) {
+      for (const server of readSavedServers(getInstanceDir(instance))) {
+        const address = serverDisplayAddress(server.ip);
+        if (!address || saved.some(item => item.instanceId === instanceIdentity(instance) && item.address.toLowerCase() === address.toLowerCase())) continue;
+        saved.push({ id: crypto.createHash('sha256').update(instanceIdentity(instance) + address).digest('hex'), instanceId: instanceIdentity(instance), instanceName: instance.name, address, name: server.name || address, imported: true, iconData: normalizeServerIcon(server.icon) });
+      }
+    }
+    return saved.slice(0, 200);
+  };
+  ipcMain.handle('list-servers', async () => serverList());
+  ipcMain.handle('save-server', async (_, input) => {
+    const { instance } = getRegisteredInstance(input?.instanceName);
+    const address = parseAddress(input.address).address;
+    const name = String(input.name || address).replace(/[\r\n\0]/g, ' ').trim().slice(0, 100);
+    const servers = savedServerList();
+    const instanceId = instanceIdentity(instance);
+    const previous = servers.find(item => item.instanceId === instanceId && item.address.toLowerCase() === address.toLowerCase());
+    const entry = { id: previous?.id || crypto.randomUUID(), instanceId, address, name };
+    if (previous) Object.assign(previous, entry); else { if (servers.length >= 200) throw new Error('Server limit reached'); servers.push(entry); }
+    writeJSON(serverFile, servers); return entry;
+  });
+  ipcMain.handle('delete-server', async (_, id) => { writeJSON(serverFile, savedServerList().filter(item => item.id !== id)); return true; });
+  const serverStatusCache = new Map();
+  ipcMain.handle('get-server-status', async (_, id) => {
+    const server = serverList().find(item => item.id === id);
+    if (!server) throw new Error('Saved server not found');
+    const cached = serverStatusCache.get(server.address);
+    if (cached && Date.now() - cached.time < 15000) return cached.promise;
+    const promise = pingServer(server.address);
+    serverStatusCache.set(server.address, { time: Date.now(), promise });
+    while (serverStatusCache.size > 200) serverStatusCache.delete(serverStatusCache.keys().next().value);
+    return promise;
+  });
+
+  ipcMain.handle('preview-managed-pack-version', async (_, name, versionId) => {
+    const { instance } = getRegisteredInstance(name);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before previewing a pack update');
+    if (!instance.modpack || instance.modpack.lockState === 'unpaired') throw new Error('This instance is not paired with a managed pack');
+    const download = await downloadManagedPackVersion(instance, String(versionId));
+    const layer = path.join(MANAGED_PACK_CACHE_DIR, `preview-${crypto.randomUUID()}`);
+    try {
+      const descriptor = instance.modpack.source === 'modrinth' ? await prepareModrinthPackLayer(download.archivePath, layer) : await prepareCurseForgePackLayer(download.archivePath, layer);
+      const changes = previewPackChanges(getInstanceDir(instance), layer, managedFilesForInstance(instance), descriptor.managedFiles);
+      return { ...changes, versionName: download.versionName, gameVersion: descriptor.gameVersion, loader: descriptor.loader, previousGameVersion: instance.gameVersion };
+    } finally { fs.rmSync(layer, { recursive: true, force: true }); }
+  });
+
+  ipcMain.handle('list-downloads', async () => downloadManager.list());
+  ipcMain.handle('control-download', async (_, id, action) => { downloadManager.control(id, action); return true; });
+  ipcMain.handle('get-pending-content', async (_, name) => pendingContentInstalls(getInstanceDir(getRegisteredInstance(name).instance)));
+  ipcMain.handle('discard-content-install', async (_, name, id) => {
+    discardContentInstall(getInstanceDir(getRegisteredInstance(name).instance), id);
+    return true;
+  });
+  ipcMain.handle('consume-desktop-shortcut', async () => {
+    if (!pendingDesktopShortcut) return null;
+    const id = pendingDesktopShortcut;
+    pendingDesktopShortcut = null;
+    return readDesktopShortcut(path.join(app.getPath('userData'), 'desktop-shortcuts'), id, readJSON(INSTANCES_FILE) || []);
+  });
+  ipcMain.handle('create-desktop-shortcut', async (_, instanceName, destination) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    const clean = sanitizeDestination(destination);
+    if (!clean) throw new Error('Invalid shortcut destination');
+    let iconData;
+    if (clean.type === 'singleplayer') {
+      if (compareSemver(instance.gameVersion, '1.20') < 0) throw new Error('World shortcuts require Minecraft 1.20 or newer');
+      const world = listWorlds(getInstanceDir(instance, 'saves')).find(world => world.identifier === clean.identifier);
+      if (!world) throw new Error('This world is no longer available');
+      iconData = world.iconData;
+    } else {
+      const server = readSavedServers(getInstanceDir(instance)).find(server => serverDisplayAddress(server.ip).toLowerCase() === clean.identifier.toLowerCase());
+      iconData = normalizeServerIcon(server?.icon);
+      if (!iconData) {
+        const cached = serverStatusCache.get(clean.identifier);
+        iconData = normalizeServerIcon((cached ? await cached.promise : await pingServer(clean.identifier)).iconData);
+      }
+      if (!iconData) iconData = (await fetchServerMetadata(clean.identifier))?.iconData;
+    }
+    let icon = iconData ? nativeImage.createFromDataURL(iconData) : nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+    if (icon.isEmpty()) icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+    if (icon.isEmpty()) throw new Error('Could not prepare the shortcut icon');
+    const result = createDesktopShortcut({
+      desktop: app.getPath('desktop'), storage: path.join(app.getPath('userData'), 'desktop-shortcuts'),
+      executable: process.execPath, appPath: app.isPackaged ? null : app.getAppPath(),
+      platform: process.platform, instance, destination: clean,
+      png: icon.resize({ width: 64, height: 64 }).toPNG(),
+      writeShortcutLink: (...args) => shell.writeShortcutLink(...args),
+    });
+    return { ...result, platform: process.platform };
+  });
+
   ipcMain.handle('get-update-state', async () => updateManager?.getState());
   ipcMain.handle('check-for-updates', async () => updateManager?.checkForUpdates({ manual: true }));
   ipcMain.handle('download-update', async () => updateManager?.downloadUpdate());
@@ -2686,9 +2899,7 @@ function setupIPC() {
         }
         const url = secureDownloadUrl(remoteFile?.url || remoteFile?.downloadUrl);
         if (!url) throw new Error('provider does not offer a redistributable download URL');
-        const localData = fs.readFileSync(actualLocal);
-        const hashes = { ...(remoteFile.hashes || {}), sha1: crypto.createHash('sha1').update(localData).digest('hex') };
-        resolved.push({ path: relative, hashes, downloads: [url], fileSize: localData.length, env: { client: 'required', server: 'unsupported' } });
+        resolved.push(verifiedRecipeFile(actualLocal, relative, remoteFile, url));
         represented.add(relative.toLowerCase());
       } catch (error) {
         omitted.push({ path: relative, reason: `Not referenced automatically: ${error.message || error}` });
@@ -2735,7 +2946,8 @@ function setupIPC() {
       const overrides = shareableOverrideFiles(source);
       if (mode === 'manifest') {
         const descriptors = overrides.map(file => ({ path: file.relative.split(path.sep).join('/'), ...hashDescriptor(path.join(source, file.relative)) }));
-        const manifest = buildLightweightManifest(instance, content.files, descriptors, content.omitted);
+        const memory = resolveLaunchMemory(instance, readJSON(SETTINGS_FILE) || {});
+        const manifest = buildLightweightManifest({ ...instance, minMemory: memory.min, maxMemory: memory.max }, content.files, descriptors, content.omitted);
         await writeJsonAtomic(result.filePath, manifest);
         return { filePath: result.filePath, mode, omitted: content.omitted };
       }
@@ -2861,9 +3073,10 @@ function setupIPC() {
         gameVersion: String(source.gameVersion || '').slice(0, 40), profile: loader === 'vanilla' ? 'vanilla' : 'custom', loader,
         loaderVersion: loader === 'vanilla' ? null : String(source.loaderVersion || '').slice(0, 80), created: new Date().toISOString(), lastPlayed: null,
         minMemory: sanitizeMemory(source.minMemory, sanitizeMemory(defaults.minMemory, '4G')), maxMemory: sanitizeMemory(source.maxMemory, sanitizeMemory(defaults.maxMemory, '4G')),
-        memoryOverride: false, iconData: null, bannerData: null, bannerBlurDir: 'left',
+        memoryOverride: Boolean(source.minMemory || source.maxMemory), iconData: null, bannerData: null, bannerBlurDir: 'left',
         importedFrom: { type: 'pine-manifest', importedAt: new Date().toISOString(), omittedOverrides: Array.isArray(manifest.overrides) ? manifest.overrides.length : 0 },
       };
+      if (memoryMegabytes(entry.minMemory) > memoryMegabytes(entry.maxMemory)) entry.maxMemory = entry.minMemory;
       const latest = readJSON(INSTANCES_FILE) || [];
       if (latest.some(item => item.name.toLowerCase() === safeName.toLowerCase())) throw new Error(`Instance "${safeName}" was created while importing`);
       latest.push(entry);
@@ -3488,10 +3701,10 @@ function setupIPC() {
     return { pack: instance.modpack, files: { ...files, missing: files.missing.length, modified: files.modified.length, userAdded: files.userAdded.length }, versions, latest, versionError, history };
   });
 
-  ipcMain.handle('change-managed-pack-version', async (_, instanceName, versionId) => {
+  ipcMain.handle('change-managed-pack-version', async (_, instanceName, versionId, previewFingerprint) => {
     const safeVersion = String(versionId || '').trim().slice(0, 160);
     if (!safeVersion) throw new Error('Choose a pack version');
-    return applyManagedPackVersion(instanceName, safeVersion, progress => sendInstallProgress(sanitizeName(instanceName), 'downloading', progress.message, progress.percent));
+    return applyManagedPackVersion(instanceName, safeVersion, progress => sendInstallProgress(sanitizeName(instanceName), 'downloading', progress.message, progress.percent), previewFingerprint);
   });
 
   ipcMain.handle('rollback-managed-pack', async (_, instanceName) => {
@@ -3640,11 +3853,17 @@ function setupIPC() {
     if (!saved && !recorded && !catalogItem) {
       throw new Error('Server is not in recent activity');
     }
-    const remote = await fetchServerMetadata(clean.address);
+    const [remoteResult, statusResult] = await Promise.allSettled([
+      isPrivateServerAddress(clean.address) ? Promise.resolve(null) : fetchServerMetadata(clean.address),
+      pingServer(clean.address),
+    ]);
+    const remote = remoteResult.status === 'fulfilled' ? remoteResult.value : null;
+    const status = statusResult.status === 'fulfilled' ? statusResult.value : { online: false, error: 'Server unavailable' };
     return {
-      iconData: normalizeServerIcon(saved?.icon) || remote?.iconData || null,
+      iconData: normalizeServerIcon(saved?.icon) || normalizeServerIcon(status?.iconData) || remote?.iconData || null,
       name: remote?.name || null,
       resolvedAddress: remote?.resolvedAddress || null,
+      status,
     };
   });
 
@@ -3755,13 +3974,15 @@ function setupIPC() {
   });
 
   ipcMain.handle('launch-instance', async (_, name, requestedDestination = null) => {
-    if (mcClient) throw new Error('Minecraft is already launching or running');
+    if (mcClient || activeInstanceName) throw new Error('Minecraft is already launching or running');
     const safeName = sanitizeName(name);
     if (activeNeoForgeOperations.has(safeName.toLowerCase())) throw new Error('Wait for the NeoForge operation to finish before launching');
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error(`Instance "${safeName}" not found`);
 
+    applyContentInstalls(getInstanceDir(instance), instance);
+    downloadManager.markUnder(path.join(getInstanceDir(instance), '.pine-content-installs'), 'installed');
     const confirmedNewerWorld = requestedDestination?.confirmNewerWorld === true;
     let quickDestination = null;
     if (requestedDestination != null) {
@@ -3866,7 +4087,7 @@ function setupIPC() {
           mainWindow?.webContents.send('launch-metrics', { stage: 'building', progress: Math.min(88, 20 + Math.round((p.percent || 0) * 0.68)), currentFile: p.label || 'NeoForge installer' });
         });
       }
-      forgeInstaller = await prepareForge(instance, instanceDir, (p) => {
+      forgeInstaller = await prepareForge(instance, instanceDir, selectedJava.path, (p) => {
         mainWindow?.webContents.send('launch-metrics', { stage: 'downloading', progress: Math.min(20, Math.round((p.percent || 0) * 0.2)), currentFile: 'Forge installer' });
       });
     } catch (e) {
@@ -4330,6 +4551,42 @@ function setupIPC() {
       try { url = (await curseForgeFetch(`/mods/${id}/files/${fileId}/download-url`)).data; } catch {}
     }
     if (!url || new URL(url).protocol !== 'https:') throw new Error('This author does not allow third-party launcher downloads for this file');
+    if (['mod', 'resourcepack', 'shader'].includes(type)) {
+      const instanceDir = getInstanceDir(instance);
+      const queued = activeInstanceName === instance.name;
+      if (!queued) applyContentInstalls(instanceDir, instance);
+      const staging = beginContentInstall(instanceDir);
+      const sub = type === 'mod' ? 'mods' : type === 'resourcepack' ? 'resourcepacks' : 'shaderpacks';
+      const relative = `${sub}/${filename}`;
+      assertManagedMutationAllowed(instance, relative);
+      const stagedFile = resolveSafePath(staging, sub, filename);
+      ensureDir(path.dirname(stagedFile));
+      try {
+        await fetchWithRetry(url, stagedFile, progress => sendInstallProgress(instance.name, 'downloading', `Downloading ${filename}`, progress.percent));
+        verifyCurseForgeFile(file, stagedFile);
+        if (!isValidJar(stagedFile)) throw new Error('Downloaded content is not a valid archive');
+        const disableFiles = [];
+        if (options.replaceFilename) {
+          const previous = `${sub}/${safeRemoteFilename(options.replaceFilename).replace(/\.disabled$/, '')}`;
+          assertManagedMutationAllowed(instance, previous);
+          disableFiles.push(previous);
+        }
+        const info = { projectId: `curseforge:${id}`, title: project.name || filename, iconUrl: project.logo?.url || null, installedVersion: String(fileId), installedAt: new Date().toISOString(), source: 'curseforge', projectType: type };
+        const metadata = { 'content_meta.json': { [`${type}:${filename}`]: info } };
+        if (type === 'mod') metadata['mods_meta.json'] = { [filename]: info };
+        queueContentInstall(instanceDir, staging, { files: [relative], disableFiles, metadata, gameVersion: instance.gameVersion, loader: instance.loader });
+        if (!queued) {
+          if (options.replaceFilename) createAutomaticInstanceBackup(instance, `Before updating ${project.name || filename}`);
+          applyContentInstalls(instanceDir, instance);
+        }
+        downloadManager.markUnder(staging, queued ? 'queued' : 'installed');
+        return { filename, projectId: `curseforge:${id}`, restartRequired: queued, queued };
+      } catch (error) {
+        fs.rmSync(staging, { recursive: true, force: true });
+        throw error;
+      }
+    }
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before changing a world data pack');
     let destinationDir;
     if (type === 'mod') destinationDir = getInstanceDir(instance, 'mods');
     else if (type === 'resourcepack') destinationDir = getInstanceDir(instance, 'resourcepacks');
@@ -4995,7 +5252,7 @@ function setupIPC() {
   });
 
   // ── Helper: process a single version file through verify pipeline ──
-  async function processSingleVersion(instance, versionId, writtenFiles) {
+  async function processSingleVersion(instance, versionId, writtenFiles, stagingRoot) {
     const instanceName = instance.name;
     const version = await modrinthFetch(`/version/${versionId}`);
     const file = version.files?.find(f => f.primary) || version.files?.[0];
@@ -5022,7 +5279,7 @@ function setupIPC() {
     const sub = projectType === 'resourcepack' ? 'resourcepacks'
       : projectType === 'shader' ? 'shaderpacks'
       : projectType === 'datapack' ? 'datapacks' : 'mods';
-    const targetDir = getInstanceDirByName(instanceName, sub);
+    const targetDir = stagingRoot ? resolveSafePath(stagingRoot, sub) : getInstanceDirByName(instanceName, sub);
     ensureDir(targetDir);
     const safeFilename = safeRemoteFilename(file.filename);
     const filePath = resolveSafePath(targetDir, safeFilename);
@@ -5079,142 +5336,51 @@ function setupIPC() {
     return { version, file, filePath, projectType, project };
   }
 
-  // ── Install mod (download + verify + save) with batch rollback ────
+  // Download and verify the complete batch before publishing it for the next launch.
   ipcMain.handle('install-mod', async (_, instanceName, options = {}) => {
-    const { versionIds, disableFiles } = options;
-    if (!versionIds?.length) throw new Error('No versions to install');
-    const safeName = sanitizeName(instanceName);
-    const registry = readJSON(INSTANCES_FILE) || [];
-    const instance = registry.find(item => item.name === safeName);
-    if (!instance) throw new Error('Instance not found');
-    const restartRequired = activeInstanceName === safeName;
-
-    const modsDir = getInstanceDirByName(safeName, 'mods');
-    ensureDir(modsDir);
-
-    // Batch tracking for rollback
-    const writtenFiles = [];
-    const disabledBackup = []; // { original, backup }
-
-    sendInstallProgress(instanceName, 'checking', 'Preparing…', 0);
-
-    // ── Disk space check with full file list (incl. optional deps) ──
-    const knownSizes = options.versionSizes || {};
-    let totalSize = 0;
-    for (const vid of versionIds) {
-      const cached = knownSizes[vid];
-      if (cached) {
-        totalSize += cached;
-      } else {
-        try {
-          const v = await modrinthFetch(`/version/${vid}`);
-          totalSize += v.files?.[0]?.size || 0;
-        } catch {}
-      }
-    }
-    const needed = Math.ceil(totalSize * 1.2);
-    if (!checkDiskSpace(modsDir, needed)) {
-      let avail = 0;
-      try { const s = fs.statfsSync(modsDir); avail = s.bsize * s.bfree; } catch {}
-      const msg = 'Not enough disk space' + (avail ? ` — need ${fmtBytes(needed)}, only ${fmtBytes(avail)} available` : '');
-      throw new Error(msg);
-    }
-
-    const updateBackup = options.createBackup === true
-      ? beginProtectedInstanceUpdate(instance, options.backupReason || 'Before updating instance content')
-      : null;
-
+    const { versionIds, disableFiles = [] } = options;
+    if (!Array.isArray(versionIds) || !versionIds.length || versionIds.length > 500 || versionIds.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9]+$/.test(id))) throw new Error('Invalid versions to install');
+    const { instance } = getRegisteredInstance(instanceName);
+    const instanceDir = getInstanceDir(instance);
+    const restartRequired = activeInstanceName === instance.name;
+    if (!restartRequired) applyContentInstalls(instanceDir, instance);
+    const disabled = [...new Set(disableFiles.map(file => {
+      const filename = safeRemoteFilename(file).replace(/\.disabled$/, '');
+      assertManagedMutationAllowed(instance, `mods/${filename}`);
+      return `mods/${filename}`;
+    }))];
+    const staging = beginContentInstall(instanceDir);
+    const metadata = { 'mods_meta.json': {}, 'content_meta.json': {} };
+    const files = [];
+    const installed = [];
     try {
-      // Disable conflicting files before starting
-      if (disableFiles?.length) {
-      for (const f of disableFiles) {
-          const safeFile = safeRemoteFilename(f);
-          assertManagedMutationAllowed(instance, `mods/${safeFile.endsWith('.disabled') ? safeFile.slice(0, -9) : safeFile}`);
-          const fullPath = resolveSafePath(modsDir, safeFile);
-          if (fs.existsSync(fullPath) && !fullPath.endsWith('.disabled')) {
-            const backup = fullPath + '.disabled';
-            fs.renameSync(fullPath, backup);
-            disabledBackup.push({ original: fullPath, backup });
-          }
-        }
-      }
-
-      // Process each version through the full pipeline
-      const installed = [];
-      for (let i = 0; i < versionIds.length; i++) {
-        const vid = versionIds[i];
-        sendInstallProgress(instanceName, 'downloading',
-          `Installing ${i + 1} of ${versionIds.length}…`, Math.round((i / versionIds.length) * 80));
-
-        const result = await processSingleVersion(instance, vid, writtenFiles);
-        // Save metadata (mods only — resource packs etc. live in their own folders)
-        const contentMetaFile = getInstanceDirByName(instanceName, 'content_meta.json');
-        let contentMeta = {};
-        try { contentMeta = JSON.parse(fs.readFileSync(contentMetaFile, 'utf8')); } catch {}
-        contentMeta[`${result.projectType}:${result.file.filename}`] = {
+      for (const vid of [...new Set(versionIds)]) {
+        const result = await processSingleVersion(instance, vid, [], staging);
+        const relative = path.relative(staging, result.filePath).split(path.sep).join('/');
+        assertManagedMutationAllowed(instance, relative);
+        const info = {
           projectId: result.version.project_id,
           title: result.project?.title || result.version.name || result.file.filename,
           iconUrl: result.project?.icon_url || null,
-          installedVersion: vid,
-          installedAt: new Date().toISOString(),
+          installedVersion: vid, installedAt: new Date().toISOString(),
           projectType: result.projectType,
         };
-        fs.writeFileSync(contentMetaFile, JSON.stringify(contentMeta, null, 2));
-
-        if (result.projectType === 'mod') {
-          const metaFile = getInstanceDirByName(instanceName, 'mods_meta.json');
-          let meta = {};
-          try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
-          meta[result.file.filename] = {
-            projectId: result.version.project_id,
-            title: result.version.name || result.file.filename,
-            iconUrl: null,
-            installedVersion: vid,
-            installedAt: new Date().toISOString(),
-            depData: result.version.dependencies || [],
-          };
-          if (result.project) {
-            meta[result.file.filename].iconUrl = result.project.icon_url || null;
-            meta[result.file.filename].title = result.project.title || result.version.name || result.file.filename;
-          }
-          fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
-        }
-
-        installed.push({ filename: result.file.filename, projectId: result.version.project_id, repaired: result.alreadyPresent !== true });
+        metadata['content_meta.json'][`${result.projectType}:${result.file.filename}`] = info;
+        if (result.projectType === 'mod') metadata['mods_meta.json'][result.file.filename] = { ...info, depData: result.version.dependencies || [] };
+        files.push(relative);
+        installed.push({ filename: result.file.filename, projectId: result.version.project_id });
       }
-
-      if (updateBackup) finishProtectedInstanceUpdate(instance);
-      sendInstallProgress(instanceName, 'done', `Installed ${installed.length} file${installed.length > 1 ? 's' : ''}`, 100);
-      return { installed, primary: installed[0] || null, restartRequired };
-    } catch (e) {
-      // ── Batch rollback on failure ──
-      for (const fp of writtenFiles) {
-        try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+      queueContentInstall(instanceDir, staging, { files: [...new Set(files)], disableFiles: disabled, metadata, gameVersion: instance.gameVersion, loader: instance.loader });
+      if (!restartRequired) {
+        if (options.createBackup === true) createAutomaticInstanceBackup(instance, options.backupReason || 'Before updating instance content');
+        applyContentInstalls(instanceDir, instance);
       }
-      for (const { original, backup } of disabledBackup) {
-        try {
-          if (fs.existsSync(backup) && !fs.existsSync(original)) {
-            fs.renameSync(backup, original);
-          }
-        } catch {}
-      }
-      // Clean metadata for partial installs
-      const metaFile = getInstanceDirByName(instanceName, 'mods_meta.json');
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
-        for (const fp of writtenFiles) {
-          delete meta[path.basename(fp)];
-        }
-        fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
-      } catch {}
-      if (updateBackup) {
-        try {
-          restoreBackup({ backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: updateBackup.id });
-        } catch (restoreError) {
-          diagnosticLog('ERROR', `Could not roll back failed update for ${instance.name}: ${restoreError.stack || restoreError.message || restoreError}`);
-        }
-      }
-      throw e;
+      sendInstallProgress(instance.name, 'done', restartRequired ? 'Downloaded · queued for the next launch' : `Installed ${installed.length} files`, 100);
+      downloadManager.markUnder(staging, restartRequired ? 'queued' : 'installed');
+      return { installed, primary: installed[0], restartRequired, queued: restartRequired };
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true });
+      throw error;
     }
   });
 
@@ -5516,7 +5682,7 @@ function setupIPC() {
 
   ipcMain.handle('clear-download-cache', async (_, confirmed = false) => {
     if (confirmed !== true) throw new Error('Confirmation is required');
-    if (mcClient || activeInstanceName || activeTransfers.size) throw new Error('Wait for running games and file operations to finish');
+    if (mcClient || activeInstanceName || activeTransfers.size || downloadManager.active) throw new Error('Wait for running games and file operations to finish');
     const cacheRoot = path.join(app.getPath('userData'), 'cache');
     await fs.promises.rm(cacheRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
     ensureDir(MOD_CACHE_DIR);
@@ -5698,7 +5864,7 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionCheckHandler(() => false);
   migrateSettings();
   migrateUserDataDir();
-  migrateInstances();
+  if (!process.argv.includes('--feature-smoke')) migrateInstances();
   migrateDefaultMemorySettings();
   const recoveryRegistry = readJSON(INSTANCES_FILE) || [];
   const recoveryRoots = recoveryRegistry.map(instance => {

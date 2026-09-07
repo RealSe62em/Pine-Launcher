@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const EventEmitter = require('events');
+const AdmZip = require('adm-zip');
 
 function freshModules() {
   const patchPath = require.resolve('../lib/mcl-reliability');
@@ -23,6 +24,78 @@ function makeHandler(Handler) {
   client.options = { overrides: {}, timeout: 1000 };
   return new Handler(client);
 }
+
+test('Forge processor outputs with empty URLs are deferred until the installer runs', async () => {
+  const { install, Handler } = freshModules();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-forge-output-'));
+  try {
+    install({ fetchImpl: async () => { throw new Error('Generated files must not be downloaded'); } });
+    const handler = makeHandler(Handler);
+    handler.options.root = dir;
+    handler.options.customArgs = ['-Dforgewrapper.installer=forge-1.21.11-61.2.1-installer.jar'];
+    const libraries = [{ name: 'net.minecraftforge:forge:1.21.11-61.2.1:client', downloads: { artifact: {
+      path: 'net/minecraftforge/forge/1.21.11-61.2.1/forge-1.21.11-61.2.1-client.jar',
+      url: '', sha1: '632ace45e535291c7576764c1c8d6388b73c9a75',
+    } } }];
+    const classes = await handler.downloadToDirectory(dir, libraries, 'classes-custom');
+    assert.equal(classes.length, 1);
+    assert.match(classes[0], /61\.2\.1-client\.jar$/);
+    handler.options.customArgs = [];
+    await assert.rejects(handler.downloadToDirectory(dir, libraries, 'classes-custom'), /no retry URL/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Forge downloadable libraries still fail verification when their hash is wrong', async () => {
+  const { install, Handler } = freshModules();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-forge-hash-'));
+  try {
+    install({ fetchImpl: async () => new Response('wrong content') });
+    const handler = makeHandler(Handler);
+    handler.options.root = dir;
+    handler.options.customArgs = ['-Dforgewrapper.installer=forge.jar'];
+    await assert.rejects(handler.downloadToDirectory(dir, [{ name: 'example:library:1', downloads: { artifact: {
+      path: 'example/library/1/library-1.jar', url: 'https://example.test/library.jar', sha1: '0'.repeat(40),
+    } } }], 'classes-custom'), /checksum failed after retry/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('installed bootstrap Forge launches directly without ForgeWrapper', async () => {
+  const { install, Handler } = freshModules();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-forge-native-'));
+  try {
+    const installer = path.join(dir, 'forge-installer.jar');
+    const zip = new AdmZip();
+    zip.addFile('version.json', Buffer.from(JSON.stringify({ mainClass: 'net.minecraftforge.bootstrap.ForgeBootstrap' })));
+    zip.writeZip(installer);
+    const relative = 'net/minecraftforge/forge/1.21.11-61.2.1/forge-1.21.11-61.2.1-client.jar';
+    const generated = path.join(dir, ...relative.split('/'));
+    fs.mkdirSync(path.dirname(generated), { recursive: true });
+    fs.writeFileSync(generated, 'generated client');
+    const hash = require('crypto').createHash('sha1').update('generated client').digest('hex');
+
+    install();
+    const handler = makeHandler(Handler);
+    handler.options.root = dir;
+    handler.options.overrides = { libraryRoot: dir, fw: { version: '1.6.0' } };
+    handler.options.forge = installer;
+    handler.options.customArgs = ['-Dforgewrapper.installer=' + installer, '-Dkeep=true'];
+    // Stub MCLC's original method through the cached-profile path.
+    fs.mkdirSync(path.join(dir, 'forge', '1.21.11'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'forge', '1.21.11', 'version.json'), JSON.stringify({
+      id: '1.21.11-forge-61.2.1', inheritsFrom: '1.21.11', forgeWrapperVersion: '1.6.0',
+      mainClass: 'io.github.zekerzhayard.forgewrapper.installer.Main',
+      libraries: [
+        { name: 'net.minecraftforge:forge:1.21.11-61.2.1:client', downloads: { artifact: { path: relative, sha1: hash, url: '' } } },
+        { name: 'io:github:zekerzhayard:ForgeWrapper:1.6.0' },
+      ],
+    }));
+    handler.version = { id: '1.21.11' };
+    const profile = await handler.getForgedWrapped();
+    assert.equal(profile.mainClass, 'net.minecraftforge.bootstrap.ForgeBootstrap');
+    assert.equal(profile.libraries.some(item => /ForgeWrapper/.test(item.name)), false);
+    assert.deepEqual(handler.options.customArgs, ['-Dkeep=true']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('patched downloads reject instead of silently succeeding', async () => {
   const { install, Handler } = freshModules();

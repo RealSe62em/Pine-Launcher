@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.5
+
+### Launching and content
+
+- Fixed Forge 1.21.11 and other modern Forge profiles by installing and launching their official native bootstrap instead of relying on the legacy wrapper path.
+- Queue mods added while Minecraft is running and apply them transactionally on the next launch from Pine.
+- Prevent Forge bootstrap messages about duplicate Java modules from being misreported as duplicate mod IDs.
+- Added a detailed instance health report in the Logs tab without interrupting every launch.
+
+### Launcher experience
+
+- Added a first-run spotlight tour covering accounts, instance creation, content, settings, appearance, updates, and launcher navigation.
+- Added server status, player count, version, and ping to recently visited server cards.
+- Added desktop shortcuts for recently visited servers and worlds, including server artwork when available.
+- Added resumable download controls, managed-pack update previews, instance recipes, and privacy-reviewed support reports.
+
+### Release quality
+
+- Added Windows Authenticode signing and timestamp verification to tagged releases.
+- Added renderer and IPC smoke tests on Windows and Linux CI.
+
 ## 1.2.4
 
 ### Instance creation and content

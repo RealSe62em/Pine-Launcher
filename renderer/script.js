@@ -3,6 +3,7 @@
 // progress, and launch metrics. ES module — no globals.
 // ─────────────────────────────────────────────────────────────
 import { tweenNumber, formatBytes, formatDuration, escHtml, debounce, stagger, pulseOnce, successRing, toast } from './animations.js';
+import { initFeatures, previewPackUpdate } from './features.js';
 import { classifyLine, stageLabel, shortFile, parseDownloadLine } from './launch-stages.js';
 
 const api = window.electronAPI;
@@ -106,7 +107,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindTopbarScroll();
   setStatus('Ready');
   void loadVersions();
+  await initFeatures({ api, state, loadSettings, refreshAccounts, selectInstance, switchView, switchInstanceTab, openCreateModal, openImportHub, launchInstance });
+  api.onDesktopShortcutReady(consumeDesktopShortcut);
+  await consumeDesktopShortcut();
 });
+
+async function consumeDesktopShortcut() {
+  try {
+    const request = await api.consumeDesktopShortcut();
+    if (request) launchInstance(request.instanceName, request.destination);
+  } catch (error) { toast('Could not open shortcut: ' + (error.message || error), 'error', 7000); }
+}
+
+async function addDesktopShortcut(instanceName, destination) {
+  const result = await api.createDesktopShortcut(instanceName, destination);
+  toast(result.platform === 'linux' ? 'Desktop shortcut created · your desktop may ask you to Allow Launching' : 'Desktop shortcut created', 'success', 6000);
+}
 
 // ── Tiny helpers ───────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
@@ -931,9 +947,11 @@ function renderRecentDestinations() {
             <strong title="${escHtml(title)}">${escHtml(title)}</strong>
             <input class="destination-name-input" value="${escHtml(title)}" maxlength="128" aria-label="Destination name" hidden>
             <button class="destination-title-action" type="button" data-title-action="copy" aria-label="Copy ${escHtml(title)}"><svg aria-hidden="true"><use href="#i-copy"/></svg></button>
+            <button class="destination-title-action" type="button" data-title-action="shortcut" title="Create desktop shortcut" aria-label="Create desktop shortcut for ${escHtml(title)}"${item.deletedInstance ? ' disabled' : ''}><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
             <button class="destination-title-action" type="button" data-title-action="edit" aria-label="Edit ${escHtml(title)} name"><svg aria-hidden="true"><use href="#i-edit"/></svg></button>
           </div>
           <span class="destination-address" title="${escHtml(detail)}">${escHtml(detail)}</span>
+          ${isServer ? '<span class="destination-server-status" data-server-status>Checking server…</span>' : ''}
           <span class="destination-stats">${visitLabel} · ${formatDestinationDate(item.lastUsed)}</span>
         </div>
       </div>
@@ -961,6 +979,13 @@ function renderRecentDestinations() {
         toast('Could not copy the name: ' + (error.message || error), 'error');
       }
     });
+    card.querySelector('[data-title-action="shortcut"]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try { await addDesktopShortcut(item.instanceName, item); }
+      catch (error) { toast('Could not create shortcut: ' + (error.message || error), 'error', 6000); }
+      finally { button.disabled = false; }
+    });
     card.querySelector('[data-title-action="edit"]')?.addEventListener('click', () => beginDestinationRename(card, item));
     card.querySelectorAll('.destination-action').forEach(button => button.addEventListener('click', async () => {
       selectDestinationAction(card, button);
@@ -981,7 +1006,7 @@ function renderRecentDestinations() {
         toast('Could not remove destination: ' + (error.message || error), 'error');
       }
     }));
-    if (item.type === 'multiplayer' && item.canFetchMetadata) hydrateServerMetadata(card, item);
+    if (item.type === 'multiplayer') hydrateServerMetadata(card, item);
   });
 }
 
@@ -1060,6 +1085,15 @@ async function hydrateServerMetadata(card, item) {
   try {
     const metadata = await api.getServerMetadata(item.instanceName, item.address);
     if (!metadata || !card.isConnected) return;
+    const statusLine = card.querySelector('[data-server-status]');
+    if (statusLine) {
+      const status = metadata.status || {};
+      statusLine.dataset.online = String(status.online === true);
+      statusLine.textContent = status.online
+        ? `${status.players}/${status.maxPlayers} players · ${status.version || 'Minecraft'} · ${status.latencyMs == null ? 'ping unavailable' : `${status.latencyMs} ms`}`
+        : (status.error || 'Server offline');
+      statusLine.title = status.description || statusLine.textContent;
+    }
     if (!item.hasCustomName && metadata.name) {
       const title = card.querySelector('.destination-info strong');
       if (title) { title.textContent = metadata.name; title.title = metadata.name; card.classList.add('has-detail'); }
@@ -1082,7 +1116,10 @@ async function hydrateServerMetadata(card, item) {
       card.querySelector('.destination-card-main')?.prepend(art);
       card.classList.add('has-art');
     }
-  } catch {}
+  } catch {
+    const statusLine = card.querySelector('[data-server-status]');
+    if (statusLine) { statusLine.dataset.online = 'false'; statusLine.textContent = 'Server unavailable'; }
+  }
 }
 
 function homeGreetingText() {
@@ -1632,7 +1669,20 @@ async function loadContentList() {
   const category = state.contentCategory;
   container.innerHTML = `<div class="skeleton skeleton-block"></div>`.repeat(3);
   try {
-    cachedMods = await api.getInstanceContent(state.currentInstance.name, category);
+    const instanceName = state.currentInstance.name;
+    const [content, pending] = await Promise.all([api.getInstanceContent(instanceName, category), api.getPendingContent(instanceName)]);
+    if (requestId !== state.contentRequestId || category !== state.contentCategory) return;
+    cachedMods = content;
+    const pendingBox = $('pending-content');
+    if (pendingBox) {
+      pendingBox.hidden = !pending.length;
+      pendingBox.innerHTML = pending.map(item => `<div><span><b>${item.files.length} downloaded file${item.files.length === 1 ? '' : 's'} waiting</b><small>Applies on the next launch · Minecraft ${escHtml(item.gameVersion)} · ${escHtml(item.loader)}</small></span><button class="btn-secondary" type="button" data-discard-install="${escHtml(item.id)}">Cancel download</button></div>`).join('');
+      pendingBox.querySelectorAll('[data-discard-install]').forEach(button => button.addEventListener('click', async () => {
+        button.disabled = true;
+        try { await api.discardContentInstall(instanceName, button.dataset.discardInstall); await loadContentList(); }
+        catch (error) { button.disabled = false; toast(error.message || String(error), 'error'); }
+      }));
+    }
     if (requestId !== state.contentRequestId || category !== state.contentCategory) return;
     if (category === 'mod') checkForModUpdates(state.currentInstance.name);
     else state.pendingModUpdates = [];
@@ -1846,6 +1896,7 @@ async function loadWorlds() {
           <button class="world-dock-action" data-world-action="open" type="button"><svg><use href="#i-folder"/></svg><span>Folder</span></button>
           <button class="world-dock-action" data-world-action="more" type="button" aria-expanded="false"><svg><use href="#i-more"/></svg><span>More</span></button>
           <div class="world-more-menu" hidden>
+            <button type="button" data-world-action="shortcut"><svg><use href="#i-monitor"/></svg><span><b>Create desktop shortcut</b><small>Open this world directly from your desktop</small></span></button>
             <button data-world-action="duplicate" type="button"><svg><use href="#i-copy"/></svg><span><b>Duplicate world</b><small>Make an independent copy</small></span></button>
             <button data-world-action="export" type="button"><svg><use href="#i-download"/></svg><span><b>Export world</b><small>Save it as a ZIP archive</small></span></button>
             <button class="world-delete" data-world-action="delete" type="button"><svg><use href="#i-trash"/></svg><span><b>Delete world</b><small>A restore point is created first</small></span></button>
@@ -1872,6 +1923,7 @@ async function loadWorlds() {
     card.querySelector('[data-world-action="more"]').setAttribute('aria-expanded', 'false');
     actionButton.disabled = true;
     try {
+      if (action === 'shortcut') await addDesktopShortcut(instance.name, { type: 'singleplayer', identifier: world.identifier, label: world.name });
       if (action === 'play') launchInstance(instance.name, { type: 'singleplayer', identifier: world.identifier, label: world.name, version: world.version });
       if (action === 'rename') {
         const name = await askForWorldName(world.name || world.identifier);
@@ -2076,16 +2128,14 @@ async function loadManagedPackPanel(instance) {
       if (!versionId) return;
       const version = versions.find(item => item.id === versionId);
       if (version?.current && !reinstall) return void toast('That version is already installed', 'success');
-      const confirmed = await backupConfirmation({
-        title: reinstall ? `Reinstall ${version?.name || 'this pack'}?` : `Change to ${version?.name || 'selected version'}?`,
-        message: 'Pine will create a restore point, keep worlds and user-added files, then replace only pack-managed files.',
-        action: reinstall ? 'Reinstall pack' : 'Change version',
-      });
-      if (!confirmed) return;
+      let fingerprint;
+      try { fingerprint = await previewPackUpdate(instance.name, versionId); }
+      catch (error) { return toast('Preview failed: ' + (error.message || error), 'error'); }
+      if (!fingerprint) return;
       const buttons = actionsHost.querySelectorAll('button');
       buttons.forEach(button => { button.disabled = true; });
       try {
-        await api.changeManagedPackVersion(instance.name, versionId);
+        await api.changeManagedPackVersion(instance.name, versionId, fingerprint);
         toast(`Pack changed to ${version?.name || 'selected version'}`, 'success', 5000);
         await refreshManagedPackInstance(instance.name);
       } catch (error) {
@@ -4751,7 +4801,7 @@ async function doInstallMod(inst, projectId, backupOptions = {}) {
     if (p.phase === 'downloading') setStatus(p.message || `Downloading… ${p.percent}%`);
     else if (p.phase === 'verifying') setStatus(p.message || 'Verifying file integrity…');
     else if (p.phase === 'caching') setStatus(p.message || 'Checking cache…');
-    else if (p.phase === 'done') setStatus('Installed ✅');
+    else if (p.phase === 'done') setStatus(p.message || 'Installed ✅');
     else setStatus(p.message || 'Installing…');
   };
   api.onInstallProgress(onProgress);
@@ -4759,9 +4809,10 @@ async function doInstallMod(inst, projectId, backupOptions = {}) {
   try {
     const result = await api.installMod(inst.name, { versionIds: allVersionIds, versionSizes, disableFiles, ...backupOptions });
     const primary = result.primary || result.installed?.[0];
-    const restartNote = result.restartRequired ? ' · available after Minecraft restarts' : '';
-    toast(`Installed ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}${restartNote}`, 'success', result.restartRequired ? 6500 : 3000);
-    setStatus(primary ? `Installed ${primary.filename}${restartNote}` : `Installed${restartNote}`);
+    const restartNote = result.restartRequired ? ' · will apply on the next launch from Pine' : '';
+    const installVerb = result.queued ? 'Downloaded' : 'Installed';
+    toast(`${installVerb} ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}${restartNote}`, 'success', result.restartRequired ? 6500 : 3000);
+    setStatus(primary ? `${installVerb} ${primary.filename}${restartNote}` : `${installVerb}${restartNote}`);
     if (state.currentInstance?.name === inst.name) loadContentList();
   } catch (e) {
     toast('Install failed: ' + (e.message || e), 'error', 5000);
@@ -5050,7 +5101,7 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
         } else {
           const result = await api.installCurseForgeContent(instanceSelect.value, { projectId, fileId: Number(fileSelect.value), type, world: worldSelect?.value || null });
           if (state.currentInstance?.name === instanceSelect.value) await loadContentList();
-          toast(`${project.name} installed${result?.restartRequired ? ' · available after Minecraft restarts' : ''}`, 'success', result?.restartRequired ? 6500 : 3000);
+          toast(`${project.name} ${result?.queued ? 'downloaded' : 'installed'}${result?.restartRequired ? ' · will apply on the next launch from Pine' : ''}`, 'success', result?.restartRequired ? 6500 : 3000);
         }
         close();
       } catch (installError) {

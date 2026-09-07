@@ -58,10 +58,10 @@ test('launch validation survives ordinary cache clearing and application updates
 });
 
 test('installing a mod during play reports restart behavior and repairs interrupted files', () => {
-  assert.match(main, /restartRequired = activeInstanceName === safeName/);
+  assert.match(main, /restartRequired = activeInstanceName === instance.name/);
   assert.match(main, /fileMatchesExpectedHash\(filePath, file\.hashes\)/);
   assert.match(main, /Replacing incomplete or unverified existing content file/);
-  assert.match(renderer, /available after Minecraft restarts/);
+  assert.match(renderer, /will apply on the next launch from Pine/);
 });
 
 test('missing account errors reopen the account chooser with a detailed fallback', () => {
@@ -146,6 +146,8 @@ test('frequently visited cards use real metadata and bottom-nav actions', () => 
   assert.match(renderer, /data-action="remove"/);
   assert.match(renderer, /destination-action-indicator/);
   assert.match(renderer, /api\.getServerMetadata/);
+  assert.match(renderer, /destination-server-status/);
+  assert.match(renderer, /status\.players/);
   assert.match(renderer, /api\.removeRecentDestination/);
   assert.match(main, /normalizeServerIcon\(saved\.icon\)/);
   assert.match(main, /listWorlds\(path\.join\(instanceDir, 'saves'\)\)/);
@@ -407,7 +409,8 @@ test('managed modpacks expose complete lifecycle controls and preserve user file
   assert.match(renderer, /Change version/);
   assert.match(renderer, /Reinstall pack/);
   assert.match(renderer, /Roll back to/);
-  assert.match(renderer, /keep worlds and user-added files/);
+  assert.match(renderer, /previewPackUpdate\(instance.name, versionId\)/);
+  assert.match(renderer, /changeManagedPackVersion\(instance.name, versionId, fingerprint\)/);
   assert.match(components, /\.managed-pack-card/);
   assert.match(components, /\.pack-health-grid/);
 });

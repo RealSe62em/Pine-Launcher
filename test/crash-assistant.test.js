@@ -20,6 +20,12 @@ test('returns an honest fallback when no rule matches', () => {
   assert.match(result.summary, /could not identify/i);
 });
 
+test('does not mistake a duplicate Java module warning for duplicate mods', () => {
+  const log = 'Ignoring duplicate module on SecureModuleFinder: jtracy: Jar[jar:file:///libraries/com/mojang/jtracy/1.0.37/jtracy-1.0.37-natives-linux.jar!/]';
+  const result = diagnoseCrash(log);
+  assert.equal(result.findings.some(finding => finding.id === 'duplicate-mod'), false);
+});
+
 test('redacts token-shaped diagnostic text', () => {
   assert.match(cleanEvidence('refresh_token=private-secret'), /\[redacted\]/);
   assert.doesNotMatch(cleanEvidence('refresh_token=private-secret'), /private-secret/);

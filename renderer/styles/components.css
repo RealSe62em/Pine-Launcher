@@ -2855,3 +2855,9 @@ html.reduced-motion *::after {
   margin-left: auto;
   color: var(--accent);
 }
+
+.pending-content { margin-bottom: 16px; padding: 14px; border: 1px solid var(--glass-stroke); border-radius: var(--r-md); background: var(--glass-surface-raised); }
+.pending-content > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; }
+.pending-content small { display: block; color: var(--text-md); margin-top: 4px; }
+.pending-content button { flex-shrink: 0; }
+@media (max-width: 640px) { .pending-content > div { align-items: flex-start; flex-direction: column; } }

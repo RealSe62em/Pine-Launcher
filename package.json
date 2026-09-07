@@ -3,7 +3,7 @@
   "productName": "Pine Launcher",
   "desktopName": "pine-launcher",
   "description": "A polished multi-instance Minecraft launcher with Modrinth integration",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -19,7 +19,8 @@
     "build:pacman": "npm run build:pacman:x64",
     "build:arch": "npm run build:pacman:x64",
     "build:all": "npm run build:installer && npm run build:deb:x64 && npm run build:deb:arm64 && npm run build:pacman:x64",
-    "build": "npm run build:installer"
+    "build": "npm run build:installer",
+    "test:smoke": "electron scripts/smoke-test.cjs --feature-smoke"
   },
   "author": "Pine Launcher",
   "license": "MIT",
