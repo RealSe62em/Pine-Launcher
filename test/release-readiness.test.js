@@ -45,5 +45,6 @@ test('website fallbacks point at every 1.2.4 native installer', () => {
   assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-archlinux-x64\.pacman/);
   assert.match(website, /D422508120424D40061D7364B0C87B95CE2FB14E87FAA8935DB41467D0C4E9D1/);
   assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.4'/);
+  assert.match(websiteScript, /Object\.values\(names\)\.some\(name => !assets\.get\(name\)\?\.browser_download_url\)/);
   assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.3/);
 });

@@ -93,8 +93,6 @@ async function syncLatestRelease() {
   const release = await response.json();
   const version = String(release.tag_name || '').replace(/^v/i, '');
   if (!version || compareVersions(version, FALLBACK_VERSION) < 0) return;
-  if (version) document.querySelectorAll('[data-release-version]').forEach((element) => { element.textContent = version; });
-
   const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
   const names = {
     x64: 'PineLauncherSetup-x64.exe',
@@ -103,6 +101,9 @@ async function syncLatestRelease() {
     linuxArm64: `PineLauncher-${version}-linux-arm64.deb`,
     arch: `PineLauncher-${version}-archlinux-x64.pacman`
   };
+  if (Object.values(names).some(name => !assets.get(name)?.browser_download_url)) return;
+  document.querySelectorAll('[data-release-version]').forEach((element) => { element.textContent = version; });
+
   for (const [build, name] of Object.entries(names)) {
     const asset = assets.get(name);
     if (!asset?.browser_download_url) continue;
