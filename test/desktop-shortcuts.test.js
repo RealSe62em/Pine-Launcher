@@ -19,7 +19,7 @@ test('Linux shortcuts preserve destination identity and use the saved server ima
   assert.match(text, /Exec="\/opt\/Pine Launcher\/pine-launcher" "--pine-shortcut=[a-f0-9]{32}"/);
   const expectedIcon = path.join(options.storage, result.id + '.png').replaceAll('\\', '\\\\');
   assert.ok(text.includes(`Icon=${expectedIcon}`));
-  assert.equal(fs.statSync(result.path).mode & 0o111, 0o111);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(result.path).mode & 0o111, 0o111);
   assert.deepEqual(fs.readFileSync(path.join(options.storage, result.id + '.png')), png);
   assert.equal(readDesktopShortcut(options.storage, result.id, [options.instance]).destination.identifier, 'play.example.test:25565');
   const validator = spawnSync('desktop-file-validate', [result.path], { encoding: 'utf8' });
