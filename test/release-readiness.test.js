@@ -36,15 +36,15 @@ test('Linux release builders install every native compression prerequisite', () 
   assert.match(workflow, /apt-get install --yes libarchive-tools zstd/);
 });
 
-test('website fallbacks point at every 1.2.4 native installer', () => {
-  assert.match(website, /data-release-version>1\.2\.4</);
-  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.4\/PineLauncher-1\.2\.4-archlinux-x64\.pacman/);
-  assert.match(website, /D422508120424D40061D7364B0C87B95CE2FB14E87FAA8935DB41467D0C4E9D1/);
-  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.4'/);
+test('website fallbacks point at every 1.2.5 native installer', () => {
+  assert.match(website, /data-release-version>1\.2\.5</);
+  assert.match(website, /releases\/download\/v1\.2\.5\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.5\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.5\/PineLauncher-1\.2\.5-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.5\/PineLauncher-1\.2\.5-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.5\/PineLauncher-1\.2\.5-archlinux-x64\.pacman/);
+  assert.match(website, /61FF2E92D54C8494EB7E0E44144F39DD90208AE86D339ACAF32648F94845EA90/);
+  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.5'/);
   assert.match(websiteScript, /Object\.values\(names\)\.some\(name => !assets\.get\(name\)\?\.browser_download_url\)/);
   assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.3/);
 });
