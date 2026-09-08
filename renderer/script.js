@@ -2717,7 +2717,7 @@ function renderSettingsLayout() {
             <button class="btn btn-primary" id="update-check-btn" type="button">Check for updates</button>
             <button class="btn btn-primary" id="update-action-btn" type="button" hidden></button>
           </div>
-          <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Windows packages are verified before automatic installation; Linux opens the official release packages.</p>
+          <p class="text-muted update-source-note">Updates come from official Pine Launcher GitHub Releases. Pine downloads the correct package, verifies it, installs it, and restarts automatically.</p>
         </div>
       </div>
     </div>
@@ -2937,13 +2937,11 @@ function renderUpdatePanel() {
   check.textContent = update.status === 'checking' ? 'Checking...' : 'Check for updates';
 
   const action = $('update-action-btn');
-  const manualDownload = update.status === 'available' && update.manualDownloadUrl;
-  const canDownload = !manualDownload && (update.status === 'available' || (update.status === 'error' && update.availableVersion));
+  const canDownload = update.status === 'available' || (update.status === 'error' && update.availableVersion);
   const canInstall = update.status === 'downloaded';
-  action.hidden = !manualDownload && !canDownload && !canInstall && update.status !== 'downloading' && update.status !== 'installing';
+  action.hidden = !canDownload && !canInstall && update.status !== 'downloading' && update.status !== 'installing';
   action.disabled = update.status === 'downloading' || update.status === 'installing';
-  if (manualDownload) action.textContent = 'Open GitHub release';
-  else if (canDownload) action.textContent = update.status === 'error' ? 'Retry download' : 'Download update';
+  if (canDownload) action.textContent = update.status === 'error' ? 'Retry update' : 'Install update';
   else if (canInstall) action.textContent = 'Restart and install';
   else if (update.status === 'downloading') action.textContent = `Downloading ${Math.round(update.percent || 0)}%`;
   else if (update.status === 'installing') action.textContent = 'Restarting...';
@@ -2965,13 +2963,10 @@ async function checkForLauncherUpdates() {
 async function runUpdateAction() {
   const update = state.updateState;
   try {
-    if (update.manualDownloadUrl) {
-      await api.openUpdateDownload(update.manualDownloadUrl);
-      return;
-    }
-    const next = update.status === 'downloaded'
+    let next = update.status === 'downloaded'
       ? await api.installUpdate()
       : await api.downloadUpdate();
+    if (next?.status === 'downloaded') next = await api.installUpdate();
     applyUpdateState(next, false);
     if (next?.installBlocked) toast(next.message, 'error', 7000);
   } catch (error) {

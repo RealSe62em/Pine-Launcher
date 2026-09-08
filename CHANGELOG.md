@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.6
+
+### Updates
+
+- Download, install, and restart launcher updates from inside Pine on Windows, Debian, Ubuntu, and Arch Linux instead of opening the GitHub Releases page.
+- Select the correct native Linux package for the current distribution and CPU architecture automatically.
+- Verify Linux update packages against GitHub's published SHA-256 digest before installation.
+- Keep Minecraft shutdown protection in place before restarting Pine to install an update.
+
 ## 1.2.5
 
 ### Launching and content
@@ -18,7 +27,7 @@
 
 ### Release quality
 
-- Added Windows Authenticode signing and timestamp verification to tagged releases.
+- Added Windows Authenticode signing and timestamp verification when release signing credentials are configured.
 - Added renderer and IPC smoke tests on Windows and Linux CI.
 
 ## 1.2.4

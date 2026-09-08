@@ -77,27 +77,28 @@ test('download progress is clamped and exposed to the renderer', () => {
   assert.equal(state.bytesPerSecond, 25);
 });
 
-test('installation is blocked while Minecraft is active', () => {
+test('installation is blocked while Minecraft is active', async () => {
   const { updater, value, timers } = manager({ isGameActive: () => true });
   updater.emit('update-downloaded', { version: '1.1.10' });
-  const state = value.installUpdate();
+  const state = await value.installUpdate();
   assert.equal(state.status, 'downloaded');
   assert.equal(state.installBlocked, true);
   assert.equal(timers.length, 0);
   assert.equal(updater.installs, 0);
 });
 
-test('downloaded updates restart through the NSIS updater', () => {
+test('downloaded updates restart through the NSIS updater', async () => {
   const { updater, value, timers } = manager();
   updater.emit('update-downloaded', { version: '1.1.10' });
-  const state = value.installUpdate();
+  const state = await value.installUpdate();
   assert.equal(state.status, 'installing');
   assert.equal(timers.length, 1);
   timers[0].callback();
   assert.equal(updater.installs, 1);
 });
 
-test('Linux packages can check GitHub without using the Windows installer', async () => {
+test('Linux packages download and install inside Pine without opening GitHub', async () => {
+  let installedPath = null;
   const { updater, value } = manager({
     isPackaged: true,
     platform: 'linux',
@@ -106,17 +107,26 @@ test('Linux packages can check GitHub without using the Windows installer', asyn
       releaseDate: '2026-08-22T00:00:00Z',
       releaseNotes: 'Linux update',
       url: 'https://github.com/RealSe62em/Pine-Launcher/releases/tag/v1.2.2',
+      package: { name: 'PineLauncher-1.2.2-linux-amd64.deb', kind: 'deb', url: 'https://github.com/example.deb' },
     }),
+    downloadLinuxUpdate: async (releasePackage, progress) => {
+      assert.equal(releasePackage.kind, 'deb');
+      progress({ percent: 100, bytes: 100, total: 100 });
+      return '/tmp/PineLauncher-1.2.2-linux-amd64.deb';
+    },
+    installLinuxUpdate: async packagePath => { installedPath = packagePath; },
   });
   value.start();
   const state = await value.checkForUpdates();
   assert.equal(state.status, 'available');
   assert.equal(state.availableVersion, '1.2.2');
-  assert.match(state.message, /\.deb or Arch package/i);
-  assert.match(state.manualDownloadUrl, /releases\/tag\/v1\.2\.2/);
+  assert.match(state.message, /ready to download/i);
   assert.equal(updater.checks, 0);
   await value.downloadUpdate();
   assert.equal(updater.downloads, 0);
+  assert.equal(value.getState().status, 'downloaded');
+  await value.installUpdate();
+  assert.equal(installedPath, '/tmp/PineLauncher-1.2.2-linux-amd64.deb');
 });
 
 test('Linux development and unpacked builds keep manual update checks accessible', async () => {

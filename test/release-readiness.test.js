@@ -13,7 +13,7 @@ const website = fs.readFileSync(path.join(root, 'website', 'index.html'), 'utf8'
 const websiteScript = fs.readFileSync(path.join(root, 'website', 'script.js'), 'utf8');
 
 test('release uses the planned updater-visible version', () => {
-  assert.equal(pkg.version, '1.2.5');
+  assert.equal(pkg.version, '1.2.6');
   assert.equal(pkg.dependencies['electron-updater'], '6.8.9');
 });
 

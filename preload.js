@@ -119,7 +119,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
-  openUpdateDownload: (url) => ipcRenderer.invoke('open-update-download', url),
 
   onUpdateState: (cb) => ipcRenderer.on('update-state', (_, value) => cb(value)),
   onLaunchProgress: (cb) => ipcRenderer.on('launch-progress', (_, v) => cb(v)),

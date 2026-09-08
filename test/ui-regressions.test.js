@@ -300,11 +300,13 @@ test('animated instance art stays animated and banner blur uses live image layer
   assert.match(components, /\.instance-banner-blur[\s\S]*?filter:\s*blur\(10px\)/);
 });
 
-test('Linux update checks stay enabled and open the verified GitHub release', () => {
-  assert.match(preload, /openUpdateDownload/);
-  assert.match(main, /ipcMain\.handle\('open-update-download'/);
-  assert.match(renderer, /update\.manualDownloadUrl/);
-  assert.match(renderer, /Open GitHub release/);
+test('Linux update checks download and install the verified native package inside Pine', () => {
+  assert.match(main, /downloadLinuxUpdate: downloadLinuxReleasePackage/);
+  assert.match(main, /installLinuxUpdate: installLinuxReleasePackage/);
+  assert.match(main, /failed SHA-256 verification/);
+  assert.match(main, /execFile\('pkexec'/);
+  assert.match(renderer, /if \(next\?\.status === 'downloaded'\) next = await api\.installUpdate\(\)/);
+  assert.doesNotMatch(renderer, /Open GitHub release|openUpdateDownload/);
   assert.match(renderer, /btn btn-primary" id="update-check-btn"/);
   assert.match(read('lib/updater.js'), /platform === 'linux' \|\| \(isPackaged && platform === 'win32'\)/);
 });

@@ -474,6 +474,62 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function linuxReleasePackage(assets, version) {
+  const onArch = fs.existsSync('/etc/arch-release') || fs.existsSync('/usr/bin/pacman');
+  const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
+  if (onArch && architecture !== 'x64') throw new Error('Pine does not currently publish an Arch Linux ARM64 package.');
+  const name = onArch
+    ? `PineLauncher-${version}-archlinux-x64.pacman`
+    : `PineLauncher-${version}-linux-${architecture === 'arm64' ? 'arm64' : 'amd64'}.deb`;
+  const asset = Array.isArray(assets) ? assets.find(entry => entry?.name === name) : null;
+  if (!asset?.browser_download_url) throw new Error(`The ${name} update package is missing from the latest release.`);
+  const digest = String(asset.digest || '').match(/^sha256:([a-f0-9]{64})$/i)?.[1] || null;
+  if (!digest) throw new Error(`The ${name} update package has no trusted SHA-256 digest.`);
+  return { name, url: asset.browser_download_url, digest, kind: onArch ? 'pacman' : 'deb' };
+}
+
+async function downloadLinuxReleasePackage(releasePackage, onProgress) {
+  const name = path.basename(String(releasePackage?.name || ''));
+  if (name !== releasePackage?.name || !/^PineLauncher-[0-9][a-zA-Z0-9.+-]*-(?:linux-(?:amd64|arm64)\.deb|archlinux-x64\.pacman)$/.test(name)) {
+    throw new Error('GitHub returned an invalid Linux update package.');
+  }
+  const parsed = new URL(String(releasePackage.url || ''));
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || !parsed.pathname.startsWith('/RealSe62em/Pine-Launcher/releases/download/')) {
+    throw new Error('Refusing an untrusted Linux update URL.');
+  }
+  const updateDir = path.join(app.getPath('userData'), 'updates');
+  ensureDir(updateDir);
+  const destination = path.join(updateDir, name);
+  await fetchWithRetry(parsed.href, destination, progress => onProgress?.({
+    percent: progress.percent,
+    transferred: progress.bytes,
+    total: progress.total,
+  }));
+  if (releasePackage.digest) {
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(destination)).digest('hex');
+    if (actual.toLowerCase() !== releasePackage.digest.toLowerCase()) {
+      fs.rmSync(destination, { force: true });
+      throw new Error('The Linux update package failed SHA-256 verification.');
+    }
+  }
+  return destination;
+}
+
+async function installLinuxReleasePackage(packagePath, releasePackage) {
+  const updateDir = path.resolve(app.getPath('userData'), 'updates');
+  const resolved = path.resolve(String(packagePath || ''));
+  if (!resolved.startsWith(updateDir + path.sep) || path.basename(resolved) !== releasePackage?.name || !fs.existsSync(resolved)) {
+    throw new Error('The downloaded Linux update package is unavailable.');
+  }
+  const installer = releasePackage.kind === 'pacman' ? '/usr/bin/pacman' : '/usr/bin/apt-get';
+  const args = releasePackage.kind === 'pacman'
+    ? [installer, '-U', '--noconfirm', resolved]
+    : [installer, 'install', '-y', resolved];
+  await new Promise((resolve, reject) => execFile('pkexec', args, { windowsHide: true }, error => error ? reject(error) : resolve()));
+  app.relaunch();
+  app.quit();
+}
+
 function normalizeInstanceRoot(value, { create = false } = {}) {
   if (value == null || value === '') return INSTANCES_DIR;
   if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('The custom instance location must be an absolute path');
@@ -2387,15 +2443,6 @@ function setupIPC() {
   ipcMain.handle('check-for-updates', async () => updateManager?.checkForUpdates({ manual: true }));
   ipcMain.handle('download-update', async () => updateManager?.downloadUpdate());
   ipcMain.handle('install-update', async () => updateManager?.installUpdate());
-  ipcMain.handle('open-update-download', async (_, url) => {
-    const parsed = new URL(String(url || ''));
-    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || !parsed.pathname.startsWith('/RealSe62em/Pine-Launcher/releases/')) {
-      throw new Error('Invalid update download URL');
-    }
-    await shell.openExternal(parsed.href);
-    return true;
-  });
-
   ipcMain.handle('copy-text', async (_, value) => {
     if (typeof value !== 'string' || value.length > 10 * 1024 * 1024) throw new Error('Invalid clipboard text');
     let lastError;
@@ -5890,6 +5937,8 @@ app.whenReady().then(() => {
       }
     },
     isGameActive: () => Boolean(mcClient || activeInstanceName),
+    downloadLinuxUpdate: downloadLinuxReleasePackage,
+    installLinuxUpdate: installLinuxReleasePackage,
     fetchLatestRelease: async () => {
       const response = await portableFetch('https://api.github.com/repos/RealSe62em/Pine-Launcher/releases/latest', {
         headers: { Accept: 'application/vnd.github+json', 'User-Agent': `PineLauncher/${app.getVersion()}` },
@@ -5899,7 +5948,13 @@ app.whenReady().then(() => {
       const release = await response.json();
       const version = String(release.tag_name || '').replace(/^v/i, '');
       if (!/^\d+\.\d+\.\d+(?:[-+][a-z0-9.-]+)?$/i.test(version)) throw new Error('GitHub returned an invalid release version');
-      return { version, releaseDate: release.published_at, releaseNotes: release.body, url: release.html_url };
+      return {
+        version,
+        releaseDate: release.published_at,
+        releaseNotes: release.body,
+        url: release.html_url,
+        package: process.platform === 'linux' ? linuxReleasePackage(release.assets, version) : null,
+      };
     },
     log: (level, message) => diagnosticLog(String(level || 'info').toUpperCase(), `[Updater] ${message}`),
   });
