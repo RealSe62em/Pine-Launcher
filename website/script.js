@@ -1,11 +1,11 @@
 const RELEASES = {
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.5/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.5/PineLauncherSetup-arm64.exe',
-  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.5/PineLauncher-1.2.5-linux-amd64.deb',
-  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.5/PineLauncher-1.2.5-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.5/PineLauncher-1.2.5-archlinux-x64.pacman'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.6/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.6/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.6/PineLauncher-1.2.6-linux-amd64.deb',
+  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.6/PineLauncher-1.2.6-linux-arm64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.6/PineLauncher-1.2.6-archlinux-x64.pacman'
 };
-const FALLBACK_VERSION = '1.2.5';
+const FALLBACK_VERSION = '1.2.6';
 const ANALYTICS_ID = 'G-FR14WGWZY2';
 const CONSENT_KEY = 'pine_analytics_consent';
 
