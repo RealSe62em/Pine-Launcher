@@ -40,7 +40,7 @@ test('lightweight manifests contain recipes and hashes without embedding private
 });
 
 test('recipes preserve disabled files and reject modified provider builds', t => {
-  const { verifiedRecipeFile } = require('../lib/pack-export');
+  const { remoteRecipeFile, verifiedRecipeFile } = require('../lib/pack-export');
   const crypto = require('node:crypto');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-recipe-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -50,4 +50,7 @@ test('recipes preserve disabled files and reject modified provider builds', t =>
   assert.equal(result.path, 'mods/example.jar.disabled'); assert.equal(result.hashes.sha256.length, 64);
   fs.writeFileSync(file, 'locally modified');
   assert.throws(() => verifiedRecipeFile(file, 'mods/example.jar', { hashes: { sha1 } }, 'https://example.invalid/mod'), /differs/);
+  assert.deepEqual(remoteRecipeFile('resourcepacks\\example.zip', { hashes: { sha512: 'A'.repeat(128), md5: 'b'.repeat(32) }, size: 42 }, 'https://example.invalid/pack'), {
+    path: 'resourcepacks/example.zip', hashes: { sha512: 'a'.repeat(128) }, downloads: ['https://example.invalid/pack'], fileSize: 42,
+  });
 });

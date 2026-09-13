@@ -43,6 +43,15 @@ test('profile choice is authoritative over stale loader UI state', () => {
   assert.deepEqual(normalizeProfileLoader('performance', 'vanilla', '0.19.3'), {
     profile: 'performance', loader: 'fabric', loaderVersion: '0.19.3',
   });
+  assert.deepEqual(normalizeProfileLoader('builder', 'forge', '0.19.3'), {
+    profile: 'builder', loader: 'fabric', loaderVersion: '0.19.3',
+  });
+  assert.deepEqual(normalizeProfileLoader('pvp', 'vanilla', '0.19.3'), {
+    profile: 'pvp', loader: 'fabric', loaderVersion: '0.19.3',
+  });
+  assert.deepEqual(normalizeProfileLoader('custom', 'neoforge', '21.1.200'), {
+    profile: 'custom', loader: 'neoforge', loaderVersion: '21.1.200',
+  });
 });
 
 test('maps JVM class-file versions to Java releases', () => {

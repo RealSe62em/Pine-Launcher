@@ -11,6 +11,7 @@ const renderer = read('renderer/script.js');
 const html = read('renderer/index.html');
 const styles = read('renderer/style.css');
 const components = read('renderer/styles/components.css');
+const features = read('renderer/styles/features.css');
 const preload = read('preload.js');
 const main = read('main.js');
 const website = read('website/index.html');
@@ -20,6 +21,16 @@ test('custom install location keeps browse controls visually separate from the p
   assert.match(styles, /\.instance-location-row\s*\{[^}]*gap:\s*14px/s);
 });
 
+test('instance creation reports every missing required field together', () => {
+  assert.match(renderer, /const missing = \[\]/);
+  assert.match(renderer, /if \(!name\) missing\.push/);
+  assert.match(renderer, /if \(!version\) missing\.push/);
+  assert.match(renderer, /state\.selectedLoader !== 'vanilla' && !loaderVer/);
+  assert.match(renderer, /missing\.map\(item => item\.message\)\.join\('; '\)/);
+  assert.match(renderer, /first\?\.scrollIntoView\(\{ behavior: 'smooth', block: 'center' \}\)/);
+  assert.match(components, /\.create-field-invalid\s*\{[\s\S]*?var\(--danger\)/);
+});
+
 test('loader selection retries failures and requests versions when a profile changes', () => {
   assert.match(renderer, /Could not load — click to retry/);
   assert.match(renderer, /function selectProfile[\s\S]*?loadLoaderVersions\(\);\s*\n\}/);
@@ -27,14 +38,55 @@ test('loader selection retries failures and requests versions when a profile cha
   assert.match(main, /const loaderVersionCache = new Map\(\)/);
 });
 
-test('performance preset is preflighted for the selected version and displays skipped mods', () => {
-  assert.match(preload, /checkPerformancePreset/);
-  assert.match(main, /ipcMain\.handle\('check-performance-preset'/);
-  assert.match(renderer, /refreshPerformanceCompatibility\(\)/);
+test('all curated presets are preflighted for the selected version and display skipped mods', () => {
+  for (const profile of ['performance', 'beginner', 'builder', 'pvp']) {
+    assert.match(html, new RegExp(`data-profile="${profile}"`));
+  }
+  assert.match(preload, /checkInstancePreset/);
+  assert.match(main, /ipcMain\.handle\('check-instance-preset'/);
+  assert.match(renderer, /refreshPresetCompatibility\(\)/);
   assert.match(renderer, /will be installed · \$\{preview\.excluded\.length\} will be skipped/);
   assert.match(renderer, /Skipped · \$\{escHtml\(item\.reason\)\}/);
-  assert.match(renderer, /state\.performanceCompatibility\.included\.find/);
+  assert.match(renderer, /state\.presetCompatibility\.included\.find/);
   assert.doesNotMatch(renderer, /const PERFORMANCE_MODS/);
+  assert.match(html, /class="modal create-instance-modal"/);
+  assert.match(components, /#modal-overlay \.create-instance-modal\s*\{[\s\S]*?width:\s*min\(760px/);
+  assert.match(components, /\.profile-grid\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
+});
+
+test('launcher surfaces share one dialog, button, empty-state, and tab language', () => {
+  const buttonRule = components.match(/\.btn\s*\{([^}]*)\}/)?.[1] || '';
+  const modalRootRule = components.match(/\.modal-root\s*\{([^}]*)\}/)?.[1] || '';
+  const modalRule = components.match(/\.modal\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(buttonRule, /align-items:\s*center/);
+  assert.match(modalRootRule, /align-items:\s*flex-end/);
+  assert.match(modalRootRule, /backdrop-filter:\s*none/);
+  assert.match(modalRule, /border-radius:\s*var\(--r-xl\)/);
+  assert.match(modalRule, /animation:\s*sheet-up/);
+  assert.equal((components.match(/^\.btn-icon\s*\{/gm) || []).length, 1);
+  assert.doesNotMatch(renderer, /class="modal" style="max-width/);
+  assert.doesNotMatch(renderer, /class="modal-(?:card|head|actions)"|class="icon-btn"/);
+  assert.match(renderer, /function bindAccessibleLayers\(\)/);
+  assert.match(renderer, /function bindTabKeys\(host, selector\)/);
+  assert.match(renderer, /function emptyStateMarkup\(title, copy, icon/);
+  assert.match(html, /id="instance-tabs"[^>]*role="tablist"/);
+  assert.match(html, /data-content-type="mod"[^>]*role="tab"[^>]*aria-selected="true"/);
+  assert.match(html, /class="btn btn-secondary"[^>]*id="hero-create-btn"/);
+  assert.match(html, /class="btn btn-primary"[^>]*id="library-create-btn"/);
+  assert.match(read('renderer/features.js'), /class="modal-close"/);
+});
+
+test('discover search focus stays inside its pill without a Linux first-frame flash', () => {
+  const searchInputRule = components.match(/\.search-container-input\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(searchInputRule, /flex:\s*1 1 0/);
+  assert.match(searchInputRule, /min-width:\s*0/);
+  assert.match(searchInputRule, /box-shadow:\s*none/);
+  assert.match(components, /\.search-container-input:hover,\s*\.search-container-input:focus,\s*\.search-container-input:focus-visible\s*\{[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s);
+  assert.doesNotMatch(components, /(?:^|,)\s*input:hover\s*(?:,|\{)/m);
+  assert.doesNotMatch(components, /(?:^|,)\s*input:focus\s*(?:,|\{)/m);
+  assert.match(preload, /platform:\s*process\.platform/);
+  assert.match(renderer, /document\.documentElement\.dataset\.platform\s*=\s*api\?\.platform/);
+  assert.match(components, /html\[data-platform="linux"\] \.search-container\s*\{[^}]*backdrop-filter:\s*none/s);
 });
 
 test('startup restores the selected account rather than only listing account names', () => {
@@ -44,7 +96,7 @@ test('startup restores the selected account rather than only listing account nam
 });
 
 test('nonfatal mod compatibility findings stay in diagnostics and launch logs', () => {
-  assert.match(main, /findDuplicateModIds\(modsDir\)[\s\S]*?diagnosticLog\('WARN', warning\)[\s\S]*?send\('launch-log'/);
+  assert.match(main, /inspectLaunchMods\(modsDir, instance\.loader, instance\.gameVersion\)[\s\S]*?modInspection\.duplicates[\s\S]*?diagnosticLog\('WARN', warning\)[\s\S]*?send\('launch-log'/);
   assert.doesNotMatch(main, /send\('launch-warning'/);
   const warningHandler = renderer.match(/api\.onLaunchWarning\([\s\S]*?\n\s*\}\);/)?.[0] || '';
   assert.match(warningHandler, /appendLog/);
@@ -103,6 +155,35 @@ test('the import hub uses aligned action icons and a folder glyph', () => {
   assert.match(components, /\.import-hub-body \.export-choice-icon\s*\{[^}]*display:\s*grid !important[^}]*place-items:\s*center/s);
 });
 
+test('export choices center fixed-size icons without applying text-column alignment', () => {
+  assert.match(components, /\.export-choice > \.export-choice-icon\s*\{[^}]*flex:\s*0 0 38px[^}]*display:\s*grid[^}]*place-items:\s*center[^}]*align-self:\s*center/s);
+  assert.match(components, /\.export-choice > \.export-choice-icon svg\s*\{[^}]*display:\s*block[^}]*width:\s*20px[^}]*height:\s*20px/s);
+  assert.match(components, /\.export-choice > \.choice-check\s*\{[^}]*flex:\s*0 0 24px[^}]*display:\s*grid[^}]*place-items:\s*center[^}]*align-self:\s*center/s);
+  assert.match(components, /\.export-choice > \.choice-check svg\s*\{[^}]*display:\s*block[^}]*width:\s*14px[^}]*height:\s*14px/s);
+});
+
+test('share recipes resolve resource packs and present reviewable download cards', () => {
+  const features = read('renderer/features.js');
+  const featureStyles = read('renderer/styles/features.css');
+  assert.match(main, /readJSON\(path\.join\(root, 'content_meta\.json'\)\)/);
+  assert.match(main, /version_file\/\$\{sha1\}\?algorithm=sha1/);
+  assert.match(main, /project_type:resourcepack/);
+  assert.match(main, /searchResourcePackCandidates\(instance, item\)/);
+  assert.match(preload, /getRecipePreview:\s*\(name, resourcepackMatches\)/);
+  assert.match(features, /class="recipe-section"/);
+  assert.match(features, /class="recipe-unavailable"/);
+  assert.match(features, /Is this the resource pack you want the recipe to download\?/);
+  assert.match(features, /resourcepackMatches:\s*Object\.fromEntries\(selectedMatches\)/);
+  assert.doesNotMatch(features, /JSON\.stringify\(recipe\.omitted/);
+  assert.match(featureStyles, /\.recipe-file-list/);
+  assert.match(featureStyles, /\.recipe-candidate\.selected/);
+});
+
+test('instance settings keeps consistent space between form sections', () => {
+  assert.match(components, /#edit-sheet-body\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*gap:\s*var\(--s-4\)/s);
+  assert.match(components, /#edit-sheet-body > \.upload-grid\s*\{\s*margin-bottom:\s*0/);
+});
+
 test('launcher folder imports preserve complete gameplay state with progress and cancellation', () => {
   assert.match(renderer, /Complete safe copy is selected by default/);
   assert.match(renderer, /sourceFingerprint:\s*transfer\.fingerprint/);
@@ -120,14 +201,35 @@ test('managed Java provisioning does not produce a frightening install warning',
   assert.doesNotMatch(main, /Install a compatible Java version or select it in Settings/);
 });
 
-test('account menu expands every saved account without rebuilding the menu', () => {
-  assert.match(renderer, /Show all \$\{state\.accounts\.length\} accounts/);
-  assert.match(renderer, /menu\.classList\.toggle\('accounts-expanded'/);
-  assert.match(components, /account-menu\.accounts-expanded \.account-switch-row\.account-extra/);
+test('account menu paginates saved accounts in stable six-row pages', () => {
+  assert.match(renderer, /const ACCOUNT_PAGE_SIZE = 6/);
+  assert.match(renderer, /state\.accounts\.slice\(start, start \+ ACCOUNT_PAGE_SIZE\)/);
+  assert.match(renderer, /Page \$\{state\.accountPage \+ 1\} of \$\{pageCount\}/);
+  assert.match(renderer, /data-act="account-prev"/);
+  assert.match(renderer, /data-act="account-next"/);
+  assert.doesNotMatch(renderer, /accountsExpanded|toggle-more|account-extra/);
+  assert.match(components, /\.account-switch-row\s*\{[^}]*flex:\s*0 0 50px[^}]*min-height:\s*50px/s);
+  assert.match(components, /\.account-pagination\s*\{/);
 });
 
 test('async mod update checks immediately re-render the visible list', () => {
   assert.match(renderer, /async function checkForModUpdates[\s\S]*?renderContentList\(\);/);
+});
+
+test('content offers an actionable whole-instance mod compatibility check', () => {
+  assert.match(html, /id="check-mod-compatibility"[\s\S]*?Check compatibility/);
+  assert.match(preload, /checkModCompatibility:\s*\(instanceName\)/);
+  assert.match(main, /ipcMain\.handle\('check-mod-compatibility'/);
+  assert.match(main, /type:\s*'replace'[\s\S]*?versionId/);
+  assert.match(main, /MISSING_DEPENDENCY|PROVIDER_MISSING_DEPENDENCY/);
+  assert.match(main, /DUPLICATE_MOD_ID/);
+  assert.match(main, /WRONG_LOADER/);
+  assert.match(main, /PROVIDER_VERSION_MISMATCH/);
+  assert.match(main, /DECLARED_CONFLICT/);
+  assert.match(renderer, /function openModCompatibilityCheck\(\)/);
+  assert.match(renderer, /function applyCompatibilityAction\(action, finding, overlay\)/);
+  assert.match(renderer, /createBackup:\s*true, backupReason:/);
+  assert.match(components, /\.compatibility-finding\s*\{/);
 });
 
 test('pride account matching is case-insensitive', () => {
@@ -167,7 +269,8 @@ test('destination cards support deleted instances, copy, rename, and smooth deta
   assert.match(components, /destination-card\.has-detail \.destination-address/);
   assert.match(components, /@keyframes destination-name-set/);
   assert.match(components, /\.destination-card\s*\{[\s\S]*?backdrop-filter:\s*none/);
-  assert.match(components, /\.destination-card\s*\{[\s\S]*?content-visibility:\s*auto/);
+  assert.match(components, /\.destination-grid\s*\{[\s\S]*?padding:\s*10px[\s\S]*?contain:\s*layout paint style/);
+  assert.match(components, /\.destination-card\s*\{[\s\S]*?contain:\s*layout style/);
   assert.match(components, /destination-card::after/);
 });
 
@@ -215,11 +318,22 @@ test('ordinary users are not asked to configure third-party credentials', () => 
 });
 
 test('high-density home and performance surfaces avoid live scrolling blur', () => {
+  assert.match(renderer, /classList\.toggle\('is-scrolling', optimizeHomeScroll\)/);
+  assert.match(renderer, /requestAnimationFrame\(\(\) => \{[\s\S]*?lastScrollY = y/);
+  assert.match(read('renderer/styles/base.css'), /html\.is-scrolling body::after\s*\{\s*opacity:\s*0/);
+  assert.match(read('renderer/styles/shell.css'), /html\.is-scrolling \.topbar\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.doesNotMatch(read('renderer/styles/shell.css'), /html\.is-scrolling \.tabbar\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.doesNotMatch(read('renderer/styles/shell.css'), /html\.is-scrolling \.main \*/);
   assert.match(read('renderer/styles/shell.css'), /\.main\s*\{[\s\S]*?scroll-behavior:\s*auto/);
   assert.match(components, /#modal-overlay\s*\{[\s\S]*?backdrop-filter:\s*none/);
-  assert.match(components, /#modal-overlay \.modal\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.match(components, /#modal-overlay \.create-instance-modal\s*\{[\s\S]*?backdrop-filter:\s*none/);
   assert.match(components, /\.perf-mods-list\s*\{[^}]*contain:\s*layout paint style/);
   assert.match(components, /\.destination-actions\s*\{[\s\S]*?backdrop-filter:\s*none/);
+  assert.match(components, /\.destination-card\s*\{[\s\S]*?transform:\s*translateZ\(0\)/);
+  assert.match(components, /html\.is-scrolling \.destination-grid\s*\{\s*pointer-events:\s*none/);
+  assert.match(components, /#view-home \.instance-card\s*\{[\s\S]*?content-visibility:\s*auto/);
+  assert.match(components, /#view-home \.recent-card\s*\{[\s\S]*?content-visibility:\s*auto/);
+  assert.match(renderer, /directionStartY - y >= 42/);
 });
 
 test('Microsoft account addition forces a chooser and saved accounts can re-authenticate safely', () => {
@@ -233,7 +347,7 @@ test('Microsoft account addition forces a chooser and saved accounts can re-auth
 
 test('installing Discover content without an instance gives guidance and a create action', () => {
   assert.match(renderer, /function showInstallNeedsInstanceWarning\(\)/);
-  assert.match(renderer, /Create an instance first, then return to Discover and select the mod you want to install/);
+  assert.match(renderer, /Go create an instance, then return to Discover and select the mod again/);
   assert.match(renderer, /data-create-instance/);
   assert.match(renderer, /event\.target\.closest\('\[data-create-instance\]'\)[\s\S]*?openCreateModal\(\)/);
 });
@@ -255,6 +369,8 @@ test('instance backups stay inside the instance header experience with safe upda
   assert.match(renderer, /Entire instance/);
   assert.match(renderer, /Worlds only/);
   assert.match(renderer, /Contains worlds from a newer Minecraft version/);
+  assert.match(renderer, /class="btn btn-primary backup-create-button"/);
+  assert.doesNotMatch(components, /\.backup-create-button\s*\{[^}]*background:/);
   assert.match(renderer, /setInstanceBackupRetention/);
   assert.match(preload, /createInstanceBackup/);
   assert.match(main, /beginProtectedInstanceUpdate\(instance, `Before updating/);
@@ -429,7 +545,7 @@ test('NeoForge has verified installation, exact compatibility, and a complete lo
   assert.match(main, /ipcMain\.handle\('repair-neoforge'/);
   assert.match(main, /ipcMain\.handle\('rollback-neoforge'/);
   assert.match(main, /createAutomaticInstanceBackup\(instance, reason\)/);
-  assert.match(main, /restoreBackup\(\{ backupsDir: BACKUPS_DIR, instance, instanceDir, id: backup\.id \}\)/);
+  assert.match(main, /runBackupInWorker\('restore', \{ backupsDir: BACKUPS_DIR, instance, instanceDir, id: backup\.id \}\)/);
   assert.match(main, /withNeoForgeOperation/);
   assert.match(main, /Wait for the NeoForge operation to finish before launching/);
   assert.match(preload, /getNeoForgeStatus/);
@@ -477,4 +593,43 @@ test('step six manages worlds with guarded renames, data packs, screenshots, and
   assert.match(renderer, /class="world-action-dock"/);
   assert.match(renderer, /class="world-more-menu"/);
   assert.match(components, /#worlds-grid[\s\S]*?minmax\(min\(470px, 100%\), 1fr\)/);
+});
+
+test('Discover mod cards browse and install compatible older versions', () => {
+  assert.match(renderer, /data-act="versions"/);
+  assert.match(renderer, /async function openModVersionBrowser/);
+  assert.match(renderer, /api\.getProjectVersions\(projectId, \[instance\.loader\], \[instance\.gameVersion\]\)/);
+  assert.match(renderer, /data-use-version/);
+  assert.match(renderer, /data-version-instance-trigger/);
+  assert.match(renderer, /data-version-instance-icon/);
+  assert.match(renderer, /preferred\.iconData/);
+  assert.match(renderer, /role="listbox"/);
+  assert.match(renderer, /doInstallMod\(instance, projectId, \{\}, version\)/);
+  assert.match(main, /The selected version does not belong to this project/);
+  assert.match(components, /\.version-browser-row/);
+  assert.match(components, /\.version-instance-menu/);
+});
+
+test('appearance colors persist and support presets plus a custom picker', () => {
+  assert.match(renderer, /const ACCENT_PRESETS =/);
+  assert.match(renderer, /id="set-custom-accent" type="color"/);
+  assert.match(renderer, /state\.settingsDirty = true;[\s\S]*?saveAllSettings\(null, \{ silent: true \}\)/);
+  assert.match(renderer, /--accent-grad/);
+  assert.match(main, /accentColor: \/\^#\[0-9a-f\]\{6\}\$\/i/);
+  assert.match(components, /\.custom-color-control/);
+});
+
+test('wardrobe, screenshot viewer, and sync controls keep their interactive states visible', () => {
+  assert.match(main, /textures\.minecraft\.net/);
+  assert.match(renderer, /host\.addEventListener\('pointermove'/);
+  assert.match(renderer, /new lib\.SkinViewer/);
+  assert.match(renderer, /viewer\.controls\.enableRotate = true/);
+  assert.match(renderer, /hitCount >= 15/);
+  assert.match(renderer, /triggerWardrobeCrystalEasterEgg/);
+  assert.match(renderer, /zoomLevel = \(zoomLevel \+ 1\) % 3/);
+  assert.match(renderer, /translate3d\(\$\{panX\}px,\$\{panY\}px,0\)/);
+  assert.match(renderer, /check-visual.*?<svg aria-hidden="true"><use href="#i-check"/);
+  assert.match(features, /\.skin-card-actions \{[^}]*align-items:center/);
+  assert.match(features, /\.sync-choice input:checked \+ \.check-visual svg/);
+  assert.match(features, /@keyframes wardrobe-fallout/);
 });

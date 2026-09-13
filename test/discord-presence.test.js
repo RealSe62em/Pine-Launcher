@@ -9,6 +9,8 @@ const {
   encodeFrame,
   isPrivateServerAddress,
   normalizeServerIcon,
+  normalizeActivityButtons,
+  normalizeActivityUrl,
   normalizeServerAddress,
   parseGamePresenceLine,
   serverDisplayAddress,
@@ -19,6 +21,9 @@ test('uses native Discord IPC endpoints on Windows and Linux', () => {
   assert.equal(discordIpcEndpoints({ platform: 'win32', maxPipeIndex: 0 })[0], '\\\\?\\pipe\\discord-ipc-0');
   const linux = discordIpcEndpoints({ platform: 'linux', maxPipeIndex: 0 });
   assert.ok(linux.some(endpoint => endpoint.endsWith('/discord-ipc-0')));
+  assert.ok(linux.some(endpoint => endpoint.endsWith('/snap.discord/discord-ipc-0')));
+  assert.ok(linux.some(endpoint => endpoint.endsWith('/app/com.discordapp.Discord/discord-ipc-0')));
+  assert.ok(linux.some(endpoint => endpoint.endsWith('/app/dev.vencord.Vesktop/discord-ipc-0')));
   assert.ok(linux.every(endpoint => !endpoint.includes('\\\\?\\pipe')));
 });
 
@@ -53,6 +58,23 @@ test('accepts real PNG server icons and rejects placeholder text', () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
   assert.match(normalizeServerIcon(png.toString('base64')), /^data:image\/png;base64,/);
   assert.equal(normalizeServerIcon('not-an-icon'), null);
+});
+
+test('keeps up to two secure Rich Presence buttons', () => {
+  assert.deepEqual(normalizeActivityButtons([
+    { label: 'Join Pine Discord', url: 'https://discord.gg/XT3HNASPVs' },
+    { label: 'Unsafe', url: 'javascript:alert(1)' },
+    { label: 'Website', url: 'https://example.com/path' },
+  ]), [
+    { label: 'Join Pine Discord', url: 'https://discord.gg/XT3HNASPVs' },
+    { label: 'Website', url: 'https://example.com/path' },
+  ]);
+});
+
+test('allows secure activity links and rejects other protocols', () => {
+  assert.equal(normalizeActivityUrl('https://discord.gg/XT3HNASPVs'), 'https://discord.gg/XT3HNASPVs');
+  assert.equal(normalizeActivityUrl('http://discord.gg/XT3HNASPVs'), undefined);
+  assert.equal(normalizeActivityUrl('javascript:alert(1)'), undefined);
 });
 
 test('recognizes game activity log lines', () => {
@@ -100,17 +122,24 @@ test('completes a Discord desktop handshake and publishes activity', async t => 
   presence.setEnabled(true);
   presence.setActivity({
     details: 'Playing Pine Test',
+    detailsUrl: 'https://discord.gg/XT3HNASPVs',
     state: 'On Test Server',
+    stateUrl: 'https://discord.gg/XT3HNASPVs',
     largeImageKey: 'pine_logo',
     largeImageText: 'Pine Launcher',
+    largeImageUrl: 'https://discord.gg/XT3HNASPVs',
+    buttons: [{ label: 'Join Pine Discord', url: 'https://discord.gg/XT3HNASPVs' }],
   });
   const activity = await Promise.race([
     activityPromise,
     new Promise((_, reject) => setTimeout(() => reject(new Error('Discord IPC activity timed out')), 3000)),
   ]);
   assert.equal(activity.details, 'Playing Pine Test');
+  assert.equal(activity.details_url, 'https://discord.gg/XT3HNASPVs');
   assert.equal(activity.state, 'On Test Server');
-  assert.deepEqual(activity.assets, { large_image: 'pine_logo', large_text: 'Pine Launcher' });
+  assert.equal(activity.state_url, 'https://discord.gg/XT3HNASPVs');
+  assert.deepEqual(activity.assets, { large_image: 'pine_logo', large_text: 'Pine Launcher', large_url: 'https://discord.gg/XT3HNASPVs' });
+  assert.deepEqual(activity.buttons, [{ label: 'Join Pine Discord', url: 'https://discord.gg/XT3HNASPVs' }]);
   presence.destroy();
   await new Promise(resolve => server.close(resolve));
 });

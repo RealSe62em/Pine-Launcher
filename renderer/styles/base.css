@@ -49,6 +49,9 @@ body::after {
   mix-blend-mode: overlay;
 }
 
+/* The full-window grain blend is expensive while a long view is moving. */
+html.is-scrolling body::after { opacity: 0; }
+
 #app, .app {
   position: relative;
   z-index: 2;

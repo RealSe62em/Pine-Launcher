@@ -1,5 +1,123 @@
 # Changelog
 
+## 1.2.7
+
+### Instance creation and presets
+
+- Added Beginner, Builder, and PvP presets, each combining a shared performance foundation with mods chosen for that play style.
+- Refreshed the Performance preset with a maintained optimization stack including Sodium, Lithium, FerriteCore, ImmediatelyFast, Entity Culling, More Culling, Dynamic FPS, Fabric API, and Mod Menu.
+- Added version-aware lighting optimization: Phosphor for older supported releases and Starlight where appropriate.
+- Removed obsolete, unrelated, and conflicting mods from the Performance preset.
+- Check every preset mod and required dependency against the selected Minecraft version before creating the instance.
+- Show compatible preset mods, skipped mods, and the reason for each skipped entry before creation.
+- Expanded the profile chooser into a responsive six-card grid with clearer icons, descriptions, and preset guidance.
+- Validate the instance name, Minecraft version, and loader version together, highlight every missing field, and scroll to the full validation summary instead of reporting one field at a time.
+
+### Mod compatibility and content management
+
+- Added a full **Check compatibility** tool to every instance's Mods section.
+- Detect loader mismatches, unsupported Minecraft versions, duplicate mod IDs, missing dependencies, incompatible dependency versions, declared conflicts, and known broken releases.
+- Parse Fabric, Quilt, Forge, and NeoForge metadata using loader-specific rules so dependency declarations are no longer misreported as duplicate mods.
+- Inspect nested Fabric modules without blaming the containing mod for IDs supplied only by bundled libraries.
+- Understand stable, beta, semantic, wildcard, interval, and prerelease version requirements when comparing installed mods.
+- Suggest safe next steps for each finding, including installing dependencies, changing versions, disabling a file, or removing a conflicting mod.
+- Revalidate provider metadata before applying a suggested repair and create a restore point before changing files.
+- Fixed false duplicate-ID reports involving Forge, Minecraft, GeckoLib, and Yet Another Config Lib metadata.
+- Improved Java runtime verification so a compatible selected runtime is not reported as an unknown version.
+- Added **Versions** to Discover mod cards so users can browse and install compatible older releases.
+- Added a themed version browser with release type, publication date, loader support, Minecraft versions, and the target instance's real icon.
+- Added **Update all** for available mod updates.
+- Added per-mod **Freeze** and **Unfreeze** controls to keep a chosen version out of automatic update checks.
+- Preserve the current Mods scroll position when freezing or unfreezing a project.
+
+### Skins and capes
+
+- Added a **Skins & capes** studio to the account menu.
+- Added a local skin wardrobe for Microsoft and offline accounts with PNG validation, classic/slim selection, import, preview, apply, and delete controls.
+- Apply Microsoft-account skins directly through Minecraft Services while keeping offline skins local to Pine.
+- Added a true Three.js Minecraft model with correct classic/slim geometry, outer skin layers, idle animation, lighting, automatic rotation, and full mouse drag rotation.
+- Added a damage interaction with a red animated anger mark that grows with repeated hits.
+- Added a hidden 15-hit end-crystal sequence using the installed Minecraft client's obsidian, end-crystal, and explosion textures.
+- Paginate saved skins in four-item, 2×2 pages.
+- Load, preview, equip, and unequip capes owned by the selected Microsoft account.
+- Fixed legacy Minecraft cape texture URLs and crop cape atlases to one clean visible cape face.
+- Display capes as full-width horizontal rows with four capes per page.
+
+### Screenshots
+
+- Added a dedicated Screenshots tab to every instance.
+- Browse Minecraft screenshots as themed cards with filenames, dates, and file sizes.
+- Open screenshots in a full themed viewer instead of selecting them automatically.
+- Select screenshots using the corner control or right-click, then export the selected set as a ZIP.
+- Delete screenshots with confirmation or open the instance screenshot folder directly.
+- Added click-focused zoom at 200% and 350%, a third-click reset, and drag-to-pan while zoomed.
+
+### Minecraft settings, sync, and automation
+
+- Added a searchable visual editor for Minecraft's `options.txt`, including readable labels for common video, audio, control, and gameplay settings.
+- Preserve unknown settings and values containing colons when saving.
+- Create a restore point before writing edited Minecraft settings.
+- Added selective cross-instance sync for game settings, multiplayer servers, resource packs, data packs, command history, and creative hotbars.
+- Added a themed source-instance picker with real instance artwork and visible selection checkmarks.
+- Create a full restore point of the destination before syncing anything.
+- Added launch automation with optional pre-launch commands, post-exit commands, and environment variables.
+- Run automation in the instance folder and persist environment-variable changes with the rest of the instance settings.
+- Moved Minecraft settings and sync below Launch automation for a clearer settings flow.
+
+### Instance recipes and exports
+
+- Rebuilt recipe previews with readable included-download and unavailable-download cards instead of raw JSON blocks.
+- Resolve resource packs through their recorded provider metadata when available.
+- Search unresolved resource packs by name and let the user confirm the correct downloadable match.
+- Preserve verified provider hashes and download information in generated recipes.
+- Improved export-choice icon alignment, selection indicators, descriptions, and action spacing.
+
+### Accounts
+
+- Paginate the account switcher at six accounts per page so large account lists no longer compress or overflow.
+- Keep the active account visible and preserve the account menu while switching accounts.
+- Replaced the tiny account arrow with a themed SVG chevron positioned beside the username.
+- Rotate the account chevron when the menu opens and truncate long account names cleanly.
+
+### Discord Rich Presence
+
+- Added a **Join Pine Discord** Rich Presence button using Pine's Discord invite.
+- Added secure Rich Presence button and activity URL handling.
+- Expanded Linux Discord IPC discovery to native Discord, Snap, Flatpak, Vesktop, Vencord, WebCord, ArmCord, and Equibop locations.
+- Fixed Pine activity failing to appear for many Linux Discord installations.
+
+### Appearance and library
+
+- Fixed custom accent colors being lost after restarting Pine.
+- Added more accent-color presets and a full custom color picker.
+- Recalculate the launcher gradient, glow, dim, hover, and text colors from the selected accent.
+- Added a persistent **Compact library** option for denser instance cards.
+- Improved instance artwork handling in custom pickers so saved images appear instead of letter placeholders.
+
+### Interface consistency and accessibility
+
+- Standardized primary, secondary, ghost, icon, and destructive buttons across Home, Library, Discover, Settings, backups, imports, exports, and instance tools.
+- Fixed button labels sitting too low on Linux and aligned text and icons consistently.
+- Restyled confirmation dialogs, creation sheets, backup controls, empty states, filters, and action bars to match Pine's glass design.
+- Restored bottom-sheet entry motion for dialogs while retaining the updated visual styling.
+- Fixed card edges being clipped inside horizontally scrolling server and world containers.
+- Fixed export icons and selection marks sitting above their visual center.
+- Fixed uneven spacing in Instance Settings.
+- Added semantic tab roles, selected states, clearer labels, and keyboard-focus behavior to instance navigation.
+- Fixed the first-letter focus rectangle flash in Discover search on Linux without changing Windows behavior.
+- Kept the bottom navigation glass effect active during optimized scrolling.
+
+### Performance and reliability
+
+- Reduced frame-by-frame compositing when scrolling through frequently visited servers and worlds.
+- Cache expensive glass surfaces during active scrolling without making unrelated buttons lose their glass appearance.
+- Keep destination cards on reusable compositor layers and batch scroll-driven updates to one animation frame.
+- Bound the number of live Discover cards during long browsing sessions.
+- Move expensive filesystem inspection, backup copying, restore, pruning, and deletion work away from Electron's main thread.
+- Cache unchanged mod archive inspections and deduplicate concurrent scans.
+- Batch game-log disk writes and renderer updates instead of processing every log line separately.
+- Added regression coverage for presets, Linux rendering, recipes, account pagination, compatibility checks, older versions, appearance persistence, wardrobe interactions, screenshot controls, sync controls, and backend performance.
+
 ## 1.2.6
 
 ### Updates

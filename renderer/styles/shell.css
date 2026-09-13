@@ -195,8 +195,12 @@
   animation: pulse-soft 2s ease-in-out infinite;
 }
 
-.account-name { font-size: var(--text-caption); font-weight: 500; color: var(--text-hi); }
-.account-caret { color: var(--text-lo); font-size: 8px; }
+.account-info { display:flex; min-width:0; align-items:center; gap:6px; }
+.account-name { overflow:hidden; max-width:132px; color:var(--text-hi); font-size:var(--text-caption); font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
+.account-caret { display:grid; place-items:center; width:22px; height:22px; flex:none; border:1px solid transparent; border-radius:50%; color:var(--text-lo); background:rgba(255,255,255,.035); transition:transform var(--dur-fast) var(--ease-ios),color var(--dur-fast),background var(--dur-fast),border-color var(--dur-fast); }
+.account-caret svg { width:13px; height:13px; }
+.account:hover .account-caret { color:var(--text-hi); background:var(--glass-surface-overlay); border-color:var(--glass-stroke); }
+.account[aria-expanded="true"] .account-caret { color:var(--accent); background:var(--accent-dim); border-color:color-mix(in srgb,var(--accent) 35%,transparent); transform:rotate(180deg); }
 
 /* ── Floating Bottom Tab Bar ──────────────────────────────── */
 .tabbar {
@@ -227,6 +231,15 @@
   background: var(--glass-leak);
   pointer-events: none;
 }
+
+/* Backdrop blur resamples everything below fixed glass on every scroll frame.
+   Use an opaque equivalent only while content is moving, then restore glass. */
+html.is-scrolling .topbar {
+  background: rgb(27, 27, 31);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html.is-scrolling .topbar::before { opacity: .35; }
 
 .tabbar-item {
   flex: 1;

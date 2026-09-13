@@ -8,6 +8,8 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const {
   knownModrinthIncompatibility,
+  inspectModSet,
+  analyzeFabricRelations,
   findDuplicateModIds,
   findLoaderIncompatibleMods,
   quarantineKnownBrokenMods,
@@ -16,6 +18,7 @@ const {
   quarantineLoaderIncompatibleMods,
   quarantineDuplicateModIds,
   readModIds,
+  versionPredicateSatisfies,
 } = require('../lib/mod-compatibility');
 
 function writeFabricJar(file, metadata) {
@@ -70,6 +73,25 @@ test('does not mistake Fabric dependency keys for mod IDs', () => {
     assert.equal(fs.existsSync(infiniteTrading), true);
     assert.equal(fs.existsSync(fullBrightness), true);
     assert.equal(fs.existsSync(collective), true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Forge duplicate checks ignore dependency modIds in mods.toml', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-forge-dependencies-'));
+  const writeForgeJar = (filename, modId, dependencies = []) => {
+    const dependencyTables = dependencies.map(dependency => `\n[[dependencies.${modId}]]\nmodId="${dependency}"\nmandatory=true`).join('');
+    const archive = new AdmZip();
+    archive.addFile('META-INF/mods.toml', Buffer.from(`modLoader="javafml"\n[[mods]]\nmodId="${modId}"\nversion="1"${dependencyTables}`));
+    archive.writeZip(path.join(dir, filename));
+  };
+  try {
+    writeForgeJar('yet_another_config_lib_v3.jar', 'yet_another_config_lib_v3', ['forge', 'minecraft']);
+    writeForgeJar('geckolib.jar', 'geckolib', ['forge', 'minecraft']);
+    writeForgeJar('verity.jar', 'verity', ['forge', 'minecraft', 'geckolib', 'yet_another_config_lib_v3']);
+
+    assert.deepEqual(readModIds(path.join(dir, 'verity.jar')), ['verity']);
+    assert.deepEqual(findDuplicateModIds(dir), []);
+    assert.deepEqual(inspectModSet(dir, 'forge', '1.20.1').duplicates, []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -160,5 +182,76 @@ test('loader compatibility inspection does not mutate mod files', () => {
     assert.equal(result.length, 1);
     assert.equal(fs.existsSync(jar), true);
     assert.equal(fs.existsSync(jar + '.disabled'), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('consolidated inspection finds broken, duplicate, and wrong-loader mods in one pass', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-consolidated-mod-scan-'));
+  try {
+    writeFabricJar(path.join(dir, 'viafabric.jar'), { id: 'viafabric', provides: ['shared_api'], version: '0.4.21+173-1.14-1.21' });
+    writeFabricJar(path.join(dir, 'duplicate.jar'), { id: 'duplicate', provides: ['shared_api'], version: '1' });
+    const forge = new AdmZip();
+    forge.addFile('META-INF/mods.toml', Buffer.from('modLoader="javafml"\n[[mods]]\nmodId="forge_only"'));
+    forge.writeZip(path.join(dir, 'forge-only.jar'));
+    const result = inspectModSet(dir, 'fabric', '1.21.11');
+    assert.equal(result.knownBroken[0].id, 'viafabric');
+    assert.equal(result.duplicates[0].id, 'shared_api');
+    assert.match(result.incompatible.find(item => item.filename === 'forge-only.jar').reason, /Forge/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Fabric dependency checks explain missing, wrong-version, and conflicting mods', () => {
+  const records = [
+    { filename: 'iris.jar', fabricMetadata: { id: 'iris', name: 'Iris', version: '1.11.2+mc26.2', depends: { sodium: '[0.9.1,0.10.0)' } } },
+    { filename: 'sodium.jar', fabricMetadata: { id: 'sodium', name: 'Sodium', version: '0.9.2-beta.1+mc26.2', breaks: { iris: '<=1.11.2' }, depends: { fabric_api: '*' } } },
+  ];
+  const issues = analyzeFabricRelations(records, { minecraft: '26.2' });
+  assert.equal(issues.some(issue => issue.code === 'DEPENDENCY_VERSION' && issue.targetId === 'sodium'), true);
+  assert.equal(issues.some(issue => issue.code === 'DECLARED_CONFLICT' && issue.targetId === 'iris'), true);
+  assert.equal(issues.some(issue => issue.code === 'MISSING_DEPENDENCY' && issue.targetId === 'fabric_api'), true);
+});
+
+test('Fabric predicates support intervals, comparator sets, alternatives, and prereleases', () => {
+  assert.equal(versionPredicateSatisfies('0.9.1', '[0.9.1,0.10.0)'), true);
+  assert.equal(versionPredicateSatisfies('0.9.2-beta.1+mc26.2', '[0.9.1,0.10.0)'), false);
+  assert.equal(versionPredicateSatisfies('1.11.2+mc26.2', '<=1.11.2'), true);
+  assert.equal(versionPredicateSatisfies('2.5.0', ['<2', '>=2.4 <3']), true);
+});
+
+test('Fabric checks recognize nested API modules without treating them as duplicate top-level mods', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-nested-fabric-api-'));
+  try {
+    const nested = new AdmZip();
+    nested.addFile('fabric.mod.json', Buffer.from(JSON.stringify({ id: 'fabric-resource-loader-v0', version: '3.0.0' })));
+    const api = new AdmZip();
+    api.addFile('fabric.mod.json', Buffer.from(JSON.stringify({ id: 'fabric-api', version: '1', jars: [{ file: 'META-INF/jars/resource-loader.jar' }] })));
+    api.addFile('META-INF/jars/resource-loader.jar', nested.toBuffer());
+    api.writeZip(path.join(dir, 'fabric-api.jar'));
+    writeFabricJar(path.join(dir, 'consumer.jar'), { id: 'consumer', version: '1', depends: { 'fabric-resource-loader-v0': '>=2' } });
+    const result = inspectModSet(dir, 'fabric', '1.21.11');
+    assert.equal(result.relations.length, 0);
+    assert.equal(result.duplicates.length, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Fabric duplicate checks ignore Forge metadata carried by a multi-loader jar', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-multiloader-metadata-'));
+  try {
+    writeFabricJar(path.join(dir, 'architectury.jar'), { id: 'architectury', version: '19.0.1' });
+    const multi = new AdmZip();
+    multi.addFile('fabric.mod.json', Buffer.from(JSON.stringify({ id: 'healthindicators', version: '21.11.1', depends: { architectury: '>=19' } })));
+    multi.addFile('META-INF/mods.toml', Buffer.from('[[mods]]\nmodId="architectury"'));
+    multi.writeZip(path.join(dir, 'healthindicators.jar'));
+    assert.equal(inspectModSet(dir, 'fabric', '1.21.11').duplicates.length, 0);
+    assert.deepEqual(readModIds(path.join(dir, 'healthindicators.jar')), ['healthindicators']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('consolidated inspection marks damaged JAR files as unreadable', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-damaged-mod-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'broken.jar'), 'not a zip');
+    const result = inspectModSet(dir, 'fabric', '1.21.11');
+    assert.equal(result.records[0].readable, false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

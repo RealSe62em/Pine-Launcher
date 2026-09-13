@@ -7,6 +7,7 @@ import { initFeatures, previewPackUpdate } from './features.js';
 import { classifyLine, stageLabel, shortFile, parseDownloadLine } from './launch-stages.js';
 
 const api = window.electronAPI;
+document.documentElement.dataset.platform = api?.platform || 'unknown';
 
 // ── State ───────────────────────────────────────────────────
 const state = {
@@ -17,13 +18,13 @@ const state = {
   currentInstance: null,
   selectedLoader: 'vanilla',
   chosenProfile: null,
-  performanceMods: [],
-  performanceCompatibility: null,
-  performanceChecking: false,
-  performanceCheckRequestId: 0,
+  presetMods: [],
+  presetCompatibility: null,
+  presetChecking: false,
+  presetCheckRequestId: 0,
   authData: null,
   accounts: [],
-  accountsExpanded: false,
+  accountPage: null,
   recentDestinations: [],
   commandSearchRequestId: 0,
   updateState: {
@@ -72,6 +73,21 @@ const state = {
 };
 const SEARCH_LIMIT = 20;
 const DISCOVER_DOM_LIMIT = 120;
+const ACCOUNT_PAGE_SIZE = 6;
+const ACCENT_PRESETS = [
+  { color: '#ff5cb9', name: 'Pine pink' },
+  { color: '#e879f9', name: 'Orchid' },
+  { color: '#a78bfa', name: 'Lavender' },
+  { color: '#7c5cff', name: 'Violet' },
+  { color: '#3b82f6', name: 'Blue' },
+  { color: '#5ce0ff', name: 'Cyan' },
+  { color: '#14b8a6', name: 'Teal' },
+  { color: '#4ade80', name: 'Emerald' },
+  { color: '#a3e635', name: 'Lime' },
+  { color: '#fbbf24', name: 'Amber' },
+  { color: '#fb923c', name: 'Orange' },
+  { color: '#f87171', name: 'Coral' },
+];
 const TERMINAL_BANNER = String.raw`
           /\
          /**\
@@ -91,6 +107,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindModal();
   bindEditSheet();
   bindDuplicateEvents();
+  bindAccessibleLayers();
   bindGlobalKeys();
   bindLaunchEvents();
   bindUpdateEvents();
@@ -127,6 +144,107 @@ async function addDesktopShortcut(instanceName, destination) {
 // ── Tiny helpers ───────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
 function setStatus(msg) { const el = $('status-text'); if (el) el.textContent = msg; }
+function emptyStateMarkup(title, copy, icon = 'i-info') {
+  return `<div class="empty-state empty-state-compact"><div class="empty-state-icon"><svg width="22" height="22" aria-hidden="true"><use href="#${icon}"/></svg></div><div class="empty-state-title">${escHtml(title)}</div>${copy ? `<div class="empty-state-sub">${escHtml(copy)}</div>` : ''}</div>`;
+}
+
+const layerFocus = new WeakMap();
+function layerIsOpen(layer) {
+  return layer?.matches('.modal-root.visible:not([hidden]), .sheet-root.visible:not([hidden])');
+}
+function focusableIn(layer) {
+  return [...layer.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter(element => element.getClientRects().length > 0 && !element.hidden);
+}
+function prepareAccessibleLayer(layer) {
+  if (!layerIsOpen(layer) || layerFocus.get(layer)?.active) return;
+  const panel = layer.querySelector('.modal, .sheet');
+  if (panel) {
+    if (!panel.hasAttribute('role')) panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    const title = panel.querySelector('.modal-title, .sheet-title');
+    if (title && !panel.hasAttribute('aria-labelledby')) {
+      if (!title.id) title.id = `pine-dialog-title-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      panel.setAttribute('aria-labelledby', title.id);
+    }
+  }
+  layer.querySelectorAll('.modal-close:not([aria-label])')
+    .forEach(button => button.setAttribute('aria-label', 'Close dialog'));
+  layerFocus.set(layer, { active: true, previous: document.activeElement });
+  requestAnimationFrame(() => {
+    const preferred = layer.querySelector('[autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), .btn-primary:not([disabled]), .modal-close:not([disabled])');
+    preferred?.focus?.();
+  });
+}
+function releaseAccessibleLayer(layer) {
+  const state = layerFocus.get(layer);
+  if (!state?.active) return;
+  layerFocus.set(layer, { ...state, active: false });
+  if (state.previous?.isConnected) requestAnimationFrame(() => state.previous.focus?.());
+}
+function topOpenLayer() {
+  return [...document.querySelectorAll('.modal-root.visible:not([hidden]), .sheet-root.visible:not([hidden])')]
+    .sort((a, b) => (Number.parseInt(getComputedStyle(a).zIndex, 10) || 0) - (Number.parseInt(getComputedStyle(b).zIndex, 10) || 0)).at(-1);
+}
+function closeAccessibleLayer(layer) {
+  if (!layer) return;
+  if (layer.id === 'modal-overlay') return closeModal();
+  if (layer.id === 'edit-sheet-root') return $('edit-sheet-cancel')?.click();
+  const close = layer.querySelector('[data-close], [data-cancel], #confirm-cancel, .modal-close');
+  if (close) close.click();
+}
+function bindAccessibleLayers() {
+  document.querySelectorAll('.modal-root, .sheet-root').forEach(prepareAccessibleLayer);
+  const observer = new MutationObserver(records => {
+    records.forEach(record => {
+      if (record.type === 'attributes') {
+        if (layerIsOpen(record.target)) prepareAccessibleLayer(record.target);
+        else releaseAccessibleLayer(record.target);
+      }
+      record.addedNodes.forEach(node => {
+        if (!(node instanceof Element)) return;
+        if (node.matches('.modal-root, .sheet-root')) prepareAccessibleLayer(node);
+        node.querySelectorAll?.('.modal-root, .sheet-root').forEach(prepareAccessibleLayer);
+      });
+      record.removedNodes.forEach(node => {
+        if (!(node instanceof Element)) return;
+        if (node.matches('.modal-root, .sheet-root')) releaseAccessibleLayer(node);
+        node.querySelectorAll?.('.modal-root, .sheet-root').forEach(releaseAccessibleLayer);
+      });
+    });
+  });
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden'] });
+  document.addEventListener('keydown', event => {
+    const layer = topOpenLayer();
+    if (!layer) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeAccessibleLayer(layer);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = focusableIn(layer);
+    if (!focusable.length) return event.preventDefault();
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }, true);
+}
+
+function bindTabKeys(host, selector) {
+  host?.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tabs = [...host.querySelectorAll(selector)].filter(tab => !tab.disabled && !tab.hidden);
+    if (!tabs.length) return;
+    const current = Math.max(0, tabs.indexOf(document.activeElement));
+    const index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault();
+    tabs[index].focus();
+    tabs[index].click();
+  });
+}
 
 // ── Java check on boot ────────────────────────────────────
 async function checkJava() {
@@ -158,15 +276,38 @@ function bindTopbarScroll() {
   const topbar = document.querySelector('.topbar');
   if (!container || !topbar) return;
   let lastScrollY = 0;
+  let scrollDirection = 0;
+  let directionStartY = 0;
+  let framePending = false;
+  let scrollEndTimer = null;
   container.addEventListener('scroll', () => {
-    const y = container.scrollTop;
-    if (y > lastScrollY && y > 60) {
-      topbar.classList.add('topbar-hidden');
-    } else if (y < lastScrollY) {
-      topbar.classList.remove('topbar-hidden');
+    const optimizeHomeScroll = $('view-home')?.classList.contains('active')
+      && !$('destination-grid')?.hidden;
+    document.documentElement.classList.toggle('is-scrolling', optimizeHomeScroll);
+    clearTimeout(scrollEndTimer);
+    if (optimizeHomeScroll) {
+      scrollEndTimer = setTimeout(() => document.documentElement.classList.remove('is-scrolling'), 140);
     }
-    lastScrollY = y;
-  });
+    if (framePending) return;
+    framePending = true;
+    requestAnimationFrame(() => {
+      const y = container.scrollTop;
+      const nextDirection = Math.sign(y - lastScrollY);
+      if (nextDirection && nextDirection !== scrollDirection) {
+        scrollDirection = nextDirection;
+        directionStartY = y;
+      }
+      if (y <= 20) {
+        topbar.classList.remove('topbar-hidden');
+      } else if (scrollDirection > 0 && y > 60 && y - directionStartY >= 18) {
+        topbar.classList.add('topbar-hidden');
+      } else if (scrollDirection < 0 && directionStartY - y >= 42) {
+        topbar.classList.remove('topbar-hidden');
+      }
+      lastScrollY = y;
+      framePending = false;
+    });
+  }, { passive: true });
 }
 
 function bindGlobalKeys() {
@@ -178,7 +319,6 @@ function bindGlobalKeys() {
     if (e.key === 'Escape') {
       closeCommandPalette();
       closeAccountMenu();
-      closeModal();
     }
   });
 }
@@ -358,20 +498,20 @@ function bindCommandItems(results, items) {
 }
 
 // ── Account menu ────────────────────────────────────────────
-function toggleAccountMenu() {
-  const existing = $('account-menu');
-  if (existing) { existing.remove(); $('account-row')?.setAttribute('aria-expanded', 'false'); return; }
-  const menu = document.createElement('div');
-  menu.id = 'account-menu';
-  menu.className = `account-menu${state.accountsExpanded ? ' accounts-expanded' : ''}`;
-  const accountRows = state.accounts.map((account, index) => {
+function renderAccountMenuPage(menu) {
+  const pageCount = Math.max(1, Math.ceil(state.accounts.length / ACCOUNT_PAGE_SIZE));
+  const selectedIndex = state.accounts.findIndex(account => account.key === state.selectedAccountKey);
+  const requestedPage = Number.isInteger(state.accountPage) ? state.accountPage : Math.max(0, Math.floor(selectedIndex / ACCOUNT_PAGE_SIZE));
+  state.accountPage = Math.max(0, Math.min(requestedPage, pageCount - 1));
+  const start = state.accountPage * ACCOUNT_PAGE_SIZE;
+  const accountRows = state.accounts.slice(start, start + ACCOUNT_PAGE_SIZE).map(account => {
     const selected = account.key === state.selectedAccountKey;
     const isOffline = account.meta?.type === 'offline';
     const initial = (account.profile?.name || 'G')[0].toUpperCase();
     const avatar = !isOffline && account.profile?.uuid
       ? `<img src="https://mc-heads.net/avatar/${encodeURIComponent(account.profile.uuid)}/36" alt="${escHtml(initial)}">`
       : escHtml(initial);
-    return `<div class="account-switch-row${selected ? ' selected' : ''}${index >= 3 ? ' account-extra' : ''}" data-account-key="${escHtml(account.key)}">
+    return `<div class="account-switch-row${selected ? ' selected' : ''}" data-account-key="${escHtml(account.key)}">
       <button class="account-switch-main" type="button" data-act="select-account" aria-label="Use ${escHtml(account.profile.name)}">
         <span class="avatar">${avatar}</span>
         <span class="account-menu-info"><span class="account-menu-name">${escHtml(account.profile.name)}</span><span class="account-menu-sub">${isOffline ? 'Offline' : 'Microsoft'}${selected ? ' · Active' : ''}</span></span>
@@ -382,8 +522,16 @@ function toggleAccountMenu() {
   }).join('');
 
   menu.innerHTML = `<div class="account-switch-list">${accountRows || '<div class="account-menu-empty">No saved accounts</div>'}</div>
-    ${state.accounts.length > 3 ? `<button class="account-menu-item account-show-more" data-act="toggle-more" aria-expanded="${state.accountsExpanded}">${state.accountsExpanded ? 'Show fewer accounts' : `Show all ${state.accounts.length} accounts`}</button>` : ''}
+    ${pageCount > 1 ? `<nav class="account-pagination" aria-label="Saved account pages">
+      <button type="button" data-act="account-prev" aria-label="Previous account page" ${state.accountPage === 0 ? 'disabled' : ''}><svg aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+      <span>Page ${state.accountPage + 1} of ${pageCount}</span>
+      <button type="button" data-act="account-next" aria-label="Next account page" ${state.accountPage === pageCount - 1 ? 'disabled' : ''}><svg aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
+    </nav>` : ''}
     ${state.accounts.length ? '<div class="account-menu-divider"></div>' : ''}
+    <button class="account-menu-item" data-act="skins">
+      <svg width="14" height="14" aria-hidden="true"><use href="#i-user"/></svg>
+      Skins &amp; capes
+    </button>
     <button class="account-menu-item" data-act="signin">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-plus"/></svg>
       Add Microsoft account
@@ -391,8 +539,16 @@ function toggleAccountMenu() {
     <button class="account-menu-item" data-act="offline">
       <svg width="14" height="14" aria-hidden="true"><use href="#i-user"/></svg>
       Add offline account
-    </button>
-  `;
+    </button>`;
+}
+
+function toggleAccountMenu() {
+  const existing = $('account-menu');
+  if (existing) { existing.remove(); $('account-row')?.setAttribute('aria-expanded', 'false'); return; }
+  const menu = document.createElement('div');
+  menu.id = 'account-menu';
+  menu.className = 'account-menu';
+  renderAccountMenuPage(menu);
   const row = $('account-row');
   if (!row) return;
   row.parentElement.appendChild(menu);
@@ -404,6 +560,7 @@ function toggleAccountMenu() {
     const action = e.target.closest('[data-act]');
     const act = action?.dataset.act;
     const key = action?.closest('[data-account-key]')?.dataset.accountKey;
+    if (act === 'skins') openSkinStudio();
     if (act === 'signin') handleAuth({ mode: 'add' });
     if (act === 'offline') openOfflineModal();
     if (act === 'select-account' && key) {
@@ -419,12 +576,10 @@ function toggleAccountMenu() {
       toggleAccountMenu();
       return;
     }
-    if (act === 'toggle-more') {
-      state.accountsExpanded = !state.accountsExpanded;
-      menu.classList.toggle('accounts-expanded', state.accountsExpanded);
-      action.setAttribute('aria-expanded', String(state.accountsExpanded));
-      action.textContent = state.accountsExpanded ? 'Show fewer accounts' : `Show all ${state.accounts.length} accounts`;
-      if (state.accountsExpanded) menu.querySelector('.account-extra .account-switch-main')?.focus();
+    if (act === 'account-prev' || act === 'account-next') {
+      state.accountPage += act === 'account-next' ? 1 : -1;
+      renderAccountMenuPage(menu);
+      menu.querySelector(`[data-act="${act}"]`)?.focus();
       return;
     }
     menu.remove();
@@ -492,12 +647,40 @@ function bindTabBar() {
   $('dp-stop-game')?.addEventListener('click', stopFrozenGame);
   $('clear-log-btn')?.addEventListener('click', clearLogs);
   $('instance-add-content')?.addEventListener('click', openContentAdder);
+  $('check-mod-compatibility')?.addEventListener('click', openModCompatibilityCheck);
+  $('update-all-content')?.addEventListener('click', async event => {
+    if (!state.currentInstance || !state.pendingModUpdates.length) return;
+    const button = event.currentTarget;
+    const updates = [...state.pendingModUpdates];
+    button.disabled = true;
+    try {
+      for (let index = 0; index < updates.length; index++) {
+        const update = updates[index];
+        const mod = cachedMods.find(item => item.projectId === update.projectId);
+        if (!mod) continue;
+        button.textContent = `Updating ${index + 1} of ${updates.length}`;
+        await updateMod(state.currentInstance, mod);
+      }
+      await loadContentList();
+      toast(`${updates.length} project${updates.length === 1 ? '' : 's'} updated`, 'success');
+    } finally { button.disabled = false; }
+  });
   $('instance-play-btn')?.addEventListener('click', () => state.currentInstance && launchInstance(state.currentInstance.name));
   $('instance-backups-btn')?.addEventListener('click', openBackupPanel);
   $('worlds-backup-btn')?.addEventListener('click', backupAllWorlds);
   $('worlds-screenshots-btn')?.addEventListener('click', async () => {
     if (!state.currentInstance) return;
     try { await api.openInstanceScreenshots(state.currentInstance.name); } catch (error) { toast('Could not open screenshots: ' + (error.message || error), 'error'); }
+  });
+  $('screenshots-folder')?.addEventListener('click', async () => {
+    if (state.currentInstance) await api.openInstanceScreenshots(state.currentInstance.name);
+  });
+  $('screenshots-export')?.addEventListener('click', async () => {
+    if (!state.currentInstance || !selectedScreenshots.size) return;
+    try {
+      const saved = await api.exportInstanceScreenshots(state.currentInstance.name, [...selectedScreenshots]);
+      if (saved) toast(`${selectedScreenshots.size} screenshots exported`, 'success');
+    } catch (error) { toast(error.message || 'Could not export screenshots', 'error'); }
   });
   $('instance-settings-btn')?.addEventListener('click', openEditSheet);
   $('hero-launch-button')?.addEventListener('click', quickLaunch);
@@ -657,6 +840,9 @@ function bindViewLinks() {
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.addEventListener('click', () => switchInstanceTab(tab.dataset.tab));
   });
+  bindTabKeys($('instance-tabs'), '[role="tab"]');
+  bindTabKeys($('content-categories'), '[role="tab"]');
+  bindTabKeys($('library-sort'), '[role="tab"]');
 }
 
 // ── View routing ────────────────────────────────────────────
@@ -871,7 +1057,7 @@ function renderHome() {
   if (!recent || !grid) return;
 
   if (!state.instances.length) {
-    recent.innerHTML = `<div class="empty-rail">No recent instances yet. Tap + to create your first one.</div>`;
+    recent.innerHTML = emptyStateMarkup('No recent instances yet', 'Create your first instance to see it here.', 'i-library');
     grid.innerHTML = '';
     return;
   }
@@ -1189,8 +1375,8 @@ function renderInstanceCard(inst) {
     </div>
     <div class="instance-card-actions">
       ${isLaunching
-        ? `<span class="text-muted" style="display:flex;align-items:center;gap:6px">
-             <span class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+        ? `<span class="instance-launching">
+             <span class="spinner spinner-xs"></span>
              Launching…
            </span>`
         : `<button class="btn btn-primary btn-sm" data-act="play">
@@ -1434,7 +1620,7 @@ function openInstanceView() {
       ? `<img src="${escHtml(inst.iconData)}" alt="">`
       : initial;
     header.innerHTML = `
-      <div class="instance-icon" style="width:48px;height:48px;font-size:18px">${iconHtml}</div>
+      <div class="instance-icon instance-header-icon">${iconHtml}</div>
       <div>
         <div class="instance-header-name">${escHtml(name)}</div>
         <div class="instance-header-meta">
@@ -1456,11 +1642,273 @@ function switchInstanceTab(tab) {
   if (activeTab === 'settings' && tab !== 'settings' && state.instanceSettingsDirty) {
     saveInstanceSettings(null, { silent: true });
   }
-  document.querySelectorAll('#instance-tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('#instance-tabs .tab').forEach((t) => {
+    const active = t.dataset.tab === tab;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', String(active));
+  });
   document.querySelectorAll('#instance-tab-content .tab-pane').forEach((p) => p.classList.toggle('active', p.dataset.tab === tab));
   if (tab === 'content') loadContentList();
   if (tab === 'worlds') loadWorlds();
+  if (tab === 'screenshots') loadScreenshots();
   if (tab === 'settings') loadInstanceSettings();
+}
+
+let selectedScreenshots = new Set();
+async function loadScreenshots() {
+  const host = $('screenshots-grid');
+  if (!host || !state.currentInstance) return;
+  host.innerHTML = '<div class="skeleton skeleton-block"></div>'.repeat(4);
+  try {
+    const items = await api.getInstanceScreenshots(state.currentInstance.name);
+    selectedScreenshots = new Set([...selectedScreenshots].filter(name => items.some(item => item.name === name)));
+    host.innerHTML = items.length ? items.map(item => `<article class="screenshot-card${selectedScreenshots.has(item.name) ? ' selected' : ''}" data-shot="${escHtml(item.name)}">
+      <button class="screenshot-select" type="button" aria-label="Select ${escHtml(item.name)}"><span><svg><use href="#i-check"/></svg></span><img src="${item.data}" alt="${escHtml(item.name)}"></button>
+      <div class="screenshot-card-copy"><div><strong>${escHtml(item.name)}</strong><small>${escHtml(formatBackupDate(item.modifiedAt))} · ${formatBytes(item.bytes)}</small></div><button class="btn btn-ghost btn-icon" data-delete-shot type="button" aria-label="Delete ${escHtml(item.name)}"><svg><use href="#i-trash"/></svg></button></div>
+    </article>`).join('') : emptyStateMarkup('No screenshots yet', 'Screenshots taken in Minecraft will appear here.', 'i-monitor');
+    host.querySelectorAll('[data-shot]').forEach(card => card.addEventListener('click', async event => {
+      const name = card.dataset.shot;
+      if (event.target.closest('[data-delete-shot]')) {
+        const confirmed = await backupConfirmation({ title: `Delete ${name}?`, message: 'This permanently removes the selected screenshot.', action: 'Delete', danger: true });
+        if (confirmed) { await api.deleteInstanceScreenshot(state.currentInstance.name, name); selectedScreenshots.delete(name); await loadScreenshots(); }
+        return;
+      }
+      if (event.target.closest('.screenshot-select > span')) return toggleScreenshotSelection(card, name);
+      const item = items.find(entry => entry.name === name);
+      if (item) openScreenshotViewer(item);
+    }));
+    host.querySelectorAll('[data-shot]').forEach(card => card.addEventListener('contextmenu', event => { event.preventDefault(); toggleScreenshotSelection(card, card.dataset.shot); }));
+    updateScreenshotSelection();
+  } catch (error) { host.innerHTML = emptyStateMarkup('Could not load screenshots', error.message || String(error), 'i-alert'); }
+}
+
+function toggleScreenshotSelection(card, name) {
+  selectedScreenshots.has(name) ? selectedScreenshots.delete(name) : selectedScreenshots.add(name);
+  card.classList.toggle('selected', selectedScreenshots.has(name));
+  updateScreenshotSelection();
+}
+
+function openScreenshotViewer(item) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible screenshot-viewer-root';
+  overlay.innerHTML = `<div class="screenshot-viewer" role="dialog" aria-modal="true" aria-label="${escHtml(item.name)}"><div class="screenshot-viewer-bar"><div><strong>${escHtml(item.name)}</strong><span>${escHtml(formatBackupDate(item.modifiedAt))} · ${formatBytes(item.bytes)}</span></div><div class="screenshot-zoom-status"><span data-zoom-label>100%</span><button class="modal-close" data-close type="button"><svg><use href="#i-x"/></svg></button></div></div><div class="screenshot-stage" data-screenshot-stage><img src="${item.data}" alt="${escHtml(item.name)}" draggable="false"></div><div class="screenshot-viewer-footer"><span>Click to zoom · drag while zoomed · third click resets</span><button class="btn btn-secondary" data-select type="button">${selectedScreenshots.has(item.name) ? 'Deselect' : 'Select screenshot'}</button></div></div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) close();
+    if (event.target.closest('[data-select]')) { selectedScreenshots.has(item.name) ? selectedScreenshots.delete(item.name) : selectedScreenshots.add(item.name); close(); loadScreenshots(); }
+  });
+  overlay.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+  const stage = overlay.querySelector('[data-screenshot-stage]');
+  const image = stage.querySelector('img');
+  const zoomLabel = overlay.querySelector('[data-zoom-label]');
+  const scales = [1, 2, 3.5];
+  let zoomLevel = 0;
+  let panX = 0;
+  let panY = 0;
+  let drag = null;
+  let dragged = false;
+  const paint = () => {
+    const scale = scales[zoomLevel];
+    image.style.transform = `translate3d(${panX}px,${panY}px,0) scale(${scale})`;
+    stage.classList.toggle('is-zoomed', zoomLevel > 0);
+    zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+  };
+  image.addEventListener('pointerdown', event => {
+    if (!zoomLevel) return;
+    drag = { x: event.clientX, y: event.clientY, panX, panY };
+    dragged = false;
+    image.setPointerCapture(event.pointerId);
+    stage.classList.add('is-dragging');
+  });
+  image.addEventListener('pointermove', event => {
+    if (!drag) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) dragged = true;
+    panX = drag.panX + dx;
+    panY = drag.panY + dy;
+    paint();
+  });
+  const stopDrag = () => { drag = null; stage.classList.remove('is-dragging'); };
+  image.addEventListener('pointerup', stopDrag);
+  image.addEventListener('pointercancel', stopDrag);
+  image.addEventListener('click', event => {
+    if (dragged) { dragged = false; return; }
+    zoomLevel = (zoomLevel + 1) % 3;
+    if (!zoomLevel) {
+      panX = 0; panY = 0; image.style.transformOrigin = '50% 50%';
+    } else {
+      const bounds = image.getBoundingClientRect();
+      const originX = Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100));
+      const originY = Math.max(0, Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100));
+      image.style.transformOrigin = `${originX}% ${originY}%`;
+    }
+    paint();
+  });
+  paint();
+  overlay.querySelector('[data-close]')?.focus();
+}
+
+function updateScreenshotSelection() {
+  if ($('screenshot-selection-count')) $('screenshot-selection-count').textContent = `${selectedScreenshots.size} selected`;
+  if ($('screenshots-export')) $('screenshots-export').disabled = selectedScreenshots.size === 0;
+}
+
+async function openSkinStudio() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible skin-studio-root';
+  overlay.innerHTML = `<div class="modal skin-studio" role="dialog" aria-modal="true"><div class="modal-header"><div><h2 class="modal-title">Skins &amp; capes</h2><p class="modal-sub">Your local wardrobe and Minecraft profile.</p></div><button class="modal-close" data-close type="button"><svg><use href="#i-x"/></svg></button></div><div class="modal-body"><div class="skin-studio-loading">Loading your wardrobe…</div></div></div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  let skinPage = 0;
+  let capePage = 0;
+  let minecraftTextures = null;
+  overlay.addEventListener('click', event => { if (event.target === overlay || event.target.closest('[data-close]')) close(); });
+  const render = async () => {
+    const body = overlay.querySelector('.modal-body');
+    try {
+      const [data, textures] = await Promise.all([api.getSkinLibrary(), minecraftTextures ? Promise.resolve(minecraftTextures) : api.getMinecraftUiTextures()]);
+      minecraftTextures = textures;
+      const offline = !data.canApply;
+      const skinPages = Math.max(1, Math.ceil(data.saved.length / 4));
+      const capePages = Math.max(1, Math.ceil(data.capes.length / 4));
+      skinPage = Math.min(skinPage, skinPages - 1);
+      capePage = Math.min(capePage, capePages - 1);
+      const shownSkins = data.saved.slice(skinPage * 4, skinPage * 4 + 4);
+      const shownCapes = data.capes.slice(capePage * 4, capePage * 4 + 4);
+      body.innerHTML = `<div class="skin-profile-banner"><div><strong>${escHtml(data.account?.name || 'No account selected')}</strong><span>${offline ? 'Local wardrobe · sign in with Microsoft to apply skins in Minecraft' : 'Changes are applied through Minecraft Services'}</span></div><div class="skin-import-actions"><select class="input" data-skin-variant><option value="classic">Classic</option><option value="slim">Slim</option></select><button class="btn btn-primary" data-import-skin type="button">Import skin</button></div></div>
+        <section><div class="studio-section-title"><strong>Saved skins</strong><span>${data.saved.length} · Page ${skinPage + 1}/${skinPages}</span></div><div class="skin-grid">${shownSkins.length ? shownSkins.map(skin => `<article class="skin-card" data-skin="${escHtml(skin.id)}"><button class="skin-texture" data-hit-skin type="button" title="Click the character"><canvas width="128" height="160" data-skin-preview="${escHtml(skin.id)}" aria-label="Rotating preview of ${escHtml(skin.name)}"></canvas><span class="skin-rage-symbol" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M10 25h10c4 0 6-2 6-6V9M54 25H44c-4 0-6-2-6-6V9M10 39h10c4 0 6 2 6 6v10M54 39H44c-4 0-6 2-6 6v10"/></svg></span></button><div><strong>${escHtml(skin.name)}</strong><small>${escHtml(skin.variant)}</small></div><div class="skin-card-actions"><button class="btn btn-primary btn-sm" data-apply-skin ${offline ? 'disabled' : ''}>Apply</button><button class="btn btn-ghost btn-icon" data-delete-skin><svg><use href="#i-trash"/></svg></button></div></article>`).join('') : emptyStateMarkup('Your wardrobe is empty', 'Import a 64×64 or legacy 64×32 PNG skin.', 'i-user')}</div>${skinPages > 1 ? `<nav class="studio-pagination"><button data-skin-prev ${skinPage === 0 ? 'disabled' : ''}><svg><use href="#i-chevron-left"/></svg></button><span>${skinPage + 1} of ${skinPages}</span><button data-skin-next ${skinPage === skinPages - 1 ? 'disabled' : ''}><svg><use href="#i-chevron-right"/></svg></button></nav>` : ''}</section>
+        <section><div class="studio-section-title"><strong>Owned capes</strong><span>${data.capes.length} · Page ${capePage + 1}/${capePages}</span></div><div class="cape-list">${shownCapes.length ? shownCapes.map(cape => `<button class="cape-card${cape.state === 'ACTIVE' ? ' selected' : ''}" data-cape="${escHtml(cape.id)}" ${offline ? 'disabled' : ''}><span class="cape-art">${cape.data ? `<img src="${escHtml(cape.data)}" alt="">` : '<svg><use href="#i-alert"/></svg>'}</span><span><strong>${escHtml(cape.alias || 'Minecraft cape')}</strong><small>${cape.state === 'ACTIVE' ? 'Equipped' : 'Click to equip'}</small></span></button>`).join('') : '<p class="text-muted">No capes are attached to this Minecraft profile.</p>'}</div>${capePages > 1 ? `<nav class="studio-pagination"><button data-cape-prev ${capePage === 0 ? 'disabled' : ''}><svg><use href="#i-chevron-left"/></svg></button><span>${capePage + 1} of ${capePages}</span><button data-cape-next ${capePage === capePages - 1 ? 'disabled' : ''}><svg><use href="#i-chevron-right"/></svg></button></nav>` : ''}<div class="cape-actions"><button class="btn btn-ghost" data-cape="" ${offline ? 'disabled' : ''}>Unequip active cape</button></div></section>`;
+      body.querySelector('[data-import-skin]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; try { await api.importSkin(body.querySelector('[data-skin-variant]').value, false); await render(); } catch (e) { toast(e.message || e, 'error', 6000); event.currentTarget.disabled = false; } });
+      for (const skin of shownSkins) renderSkinFigure(body.querySelector(`[data-skin-preview="${CSS.escape(skin.id)}"]`), skin.data, skin.variant, minecraftTextures);
+      body.querySelector('[data-skin-prev]')?.addEventListener('click', () => { skinPage--; render(); });
+      body.querySelector('[data-skin-next]')?.addEventListener('click', () => { skinPage++; render(); });
+      body.querySelector('[data-cape-prev]')?.addEventListener('click', () => { capePage--; render(); });
+      body.querySelector('[data-cape-next]')?.addEventListener('click', () => { capePage++; render(); });
+      body.querySelectorAll('[data-skin]').forEach(card => card.addEventListener('click', async event => {
+        if (event.target.closest('[data-apply-skin]')) { try { await api.applySkin(card.dataset.skin); toast('Skin applied to your Minecraft profile', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }
+        if (event.target.closest('[data-delete-skin]')) { await api.deleteSkin(card.dataset.skin); await render(); }
+      }));
+      body.querySelectorAll('[data-cape]').forEach(card => card.addEventListener('click', async () => { try { await api.setActiveCape(card.dataset.cape || null); toast(card.dataset.cape ? 'Cape equipped' : 'Cape unequipped', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }));
+    } catch (error) { body.innerHTML = emptyStateMarkup('Could not load your wardrobe', error.message || String(error), 'i-alert'); }
+  };
+  await render();
+}
+
+function renderSkinFigure(canvas, source, variant = 'classic', minecraftTextures = null) {
+  if (!canvas || !source) return;
+  const lib = window.skinview3d;
+  if (!lib?.SkinViewer) {
+    canvas.classList.add('skin-render-error');
+    return;
+  }
+  const viewer = new lib.SkinViewer({
+    canvas,
+    width: 128,
+    height: 160,
+    skin: source,
+    model: variant === 'slim' ? 'slim' : 'default',
+    animation: new lib.IdleAnimation(),
+    zoom: .78,
+    fov: 46,
+    pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+  });
+  viewer.autoRotate = true;
+  viewer.autoRotateSpeed = .55;
+  viewer.controls.enableRotate = true;
+  viewer.controls.enableZoom = false;
+  viewer.controls.enablePan = false;
+  viewer.globalLight.intensity = 2.6;
+  viewer.cameraLight.intensity = .75;
+
+  const host = canvas.parentElement;
+  let hitCount = 0;
+  let pointerStart = null;
+  let dragged = false;
+  let detonated = false;
+  let animationTimer = null;
+  let angryTimer = null;
+  host.addEventListener('pointerdown', event => {
+    pointerStart = { x: event.clientX, y: event.clientY };
+    dragged = false;
+    viewer.autoRotate = false;
+    host.classList.add('is-rotating');
+  });
+  host.addEventListener('pointermove', event => {
+    if (!pointerStart) return;
+    if (Math.abs(event.clientX - pointerStart.x) + Math.abs(event.clientY - pointerStart.y) > 5) dragged = true;
+  });
+  const stopRotation = () => { pointerStart = null; host.classList.remove('is-rotating'); };
+  host.addEventListener('pointerup', stopRotation);
+  host.addEventListener('pointercancel', stopRotation);
+  host.addEventListener('click', () => {
+    if (dragged || detonated) { dragged = false; return; }
+    hitCount += 1;
+    host.style.setProperty('--rage-scale', String(Math.min(1.38, .82 + hitCount * .037)));
+    host.classList.remove('skin-hurt');
+    void host.offsetWidth;
+    host.classList.add('skin-hurt', 'is-angry');
+    clearTimeout(animationTimer);
+    clearTimeout(angryTimer);
+    viewer.animation = new lib.HitAnimation();
+    viewer.animation.speed = 2.2;
+    animationTimer = setTimeout(() => { if (canvas.isConnected) viewer.animation = new lib.IdleAnimation(); }, 460);
+    setTimeout(() => host.classList.remove('skin-hurt'), 380);
+    angryTimer = setTimeout(() => host.classList.remove('is-angry'), 1150);
+    if (hitCount >= 15) {
+      detonated = true;
+      triggerWardrobeCrystalEasterEgg(host.closest('.skin-studio-root'), minecraftTextures, host.closest('.skin-card'));
+    }
+  });
+
+  const cleanupTimer = setInterval(() => {
+    if (canvas.isConnected) return;
+    clearInterval(cleanupTimer);
+    clearTimeout(animationTimer);
+    clearTimeout(angryTimer);
+    viewer.dispose();
+  }, 800);
+}
+
+function triggerWardrobeCrystalEasterEgg(root, textures = {}, sourceCard = null) {
+  if (!root || root.dataset.crystalEvent) return;
+  root.dataset.crystalEvent = 'true';
+  const body = root.querySelector('.skin-studio .modal-body');
+  if (!body) return;
+  sourceCard?.classList.add('crystal-builder');
+  const event = document.createElement('div');
+  event.className = 'wardrobe-crystal-event';
+  const obsidianStyle = textures.obsidian ? `style="--obsidian-texture:url('${textures.obsidian}')"` : '';
+  const crystalStyle = textures.crystal ? `style="--crystal-texture:url('${textures.crystal}')"` : '';
+  event.innerHTML = `<div class="minecraft-altar"><div class="minecraft-crystal" ${crystalStyle}><i class="crystal-cage cage-one"></i><i class="crystal-cage cage-two"></i><i class="crystal-heart"></i></div><div class="minecraft-obsidian" ${obsidianStyle}></div></div><div class="minecraft-explosions">${[0,1,2].map(index => `<img data-explosion="${index}" alt="">`).join('')}</div>`;
+  body.appendChild(event);
+
+  setTimeout(() => root.classList.add('wardrobe-crystal-placed'), 430);
+  setTimeout(() => {
+    root.classList.add('wardrobe-detonating');
+    root.querySelectorAll('.skin-card').forEach(card => card.classList.add('skin-death'));
+    const pieces = root.querySelectorAll('.skin-profile-banner, .studio-section-title, .skin-card, .cape-card, .studio-pagination, .cape-actions');
+    pieces.forEach(piece => {
+      const bounds = piece.getBoundingClientRect();
+      const floor = Math.max(90, window.innerHeight - bounds.bottom - 24);
+      piece.style.setProperty('--blast-x', `${(Math.random() - .5) * 620}px`);
+      piece.style.setProperty('--blast-y', `${floor}px`);
+      piece.style.setProperty('--blast-r', `${(Math.random() - .5) * 520}deg`);
+    });
+    const frames = Array.isArray(textures.explosions) ? textures.explosions : [];
+    const explosionImages = [...event.querySelectorAll('[data-explosion]')];
+    let frame = 0;
+    if (frames.length) {
+      explosionImages.forEach(image => { image.src = frames[0]; });
+      const animation = setInterval(() => {
+        frame += 1;
+        explosionImages.forEach((image, index) => { image.src = frames[Math.min(frames.length - 1, frame + index)]; });
+        if (frame >= frames.length - 1) clearInterval(animation);
+      }, 48);
+    }
+  }, 1080);
+  setTimeout(() => root.remove(), 3080);
 }
 
 function formatBackupDate(value) {
@@ -1477,7 +1925,7 @@ function backupConfirmation({ title, message, action = 'Continue', danger = fals
     overlay.innerHTML = `
       <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="backup-confirm-title">
         <div class="modal-header"><div><h2 class="modal-title" id="backup-confirm-title">${escHtml(title)}</h2></div></div>
-        <div class="modal-body"><div class="confirm-warn"><svg width="22" height="22" aria-hidden="true"><use href="#i-alert-triangle"/></svg><span>${escHtml(message)}</span></div></div>
+        <div class="modal-body"><div class="confirm-warn ${danger ? 'is-danger' : 'is-neutral'}"><svg width="22" height="22" aria-hidden="true"><use href="#${danger ? 'i-alert-triangle' : 'i-info'}"/></svg><span>${escHtml(message)}</span></div></div>
         <div class="modal-footer"><button class="btn btn-secondary" data-cancel type="button">Cancel</button><button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-confirm type="button">${escHtml(action)}</button></div>
       </div>`;
     document.body.appendChild(overlay);
@@ -1523,7 +1971,7 @@ async function openBackupPanel() {
             <label><span>Backup type</span><select class="input" data-backup-scope><option value="full">Entire instance</option><option value="worlds">Worlds only</option></select></label>
             <label><span>Description (optional)</span><input class="input" data-backup-description maxlength="160" placeholder="Before changing my mod list"><small>A private note to help you remember why you made this restore point.</small></label>
           </div>
-          <div class="backup-create-action"><button class="btn backup-create-button" data-create-backup type="button"><svg width="17" height="17" aria-hidden="true"><use href="#i-backup"/></svg><span>Create backup</span></button></div>
+          <div class="backup-create-action"><button class="btn btn-primary backup-create-button" data-create-backup type="button"><svg width="17" height="17" aria-hidden="true"><use href="#i-backup"/></svg><span>Create backup</span></button></div>
         </section>
         <div class="backup-list-heading">
           <div><strong>Restore points</strong><span data-backup-count>Loading…</span></div>
@@ -1532,7 +1980,7 @@ async function openBackupPanel() {
             <small>Pine creates safety backups before updates and keeps the newest amount selected above. Backups you create yourself are always kept until you delete them.</small>
           </label>
         </div>
-        <div class="backup-list" data-backup-list><div class="backup-empty">Loading backups…</div></div>
+        <div class="backup-list" data-backup-list>${emptyStateMarkup('Loading backups…', '', 'i-backup')}</div>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -1558,7 +2006,7 @@ async function openBackupPanel() {
     retention.value = result.retention || 5;
     count.textContent = `${backups.length} backup${backups.length === 1 ? '' : 's'}`;
     if (!backups.length) {
-      list.innerHTML = '<div class="backup-empty"><strong>No backups yet</strong><span>Create a restore point before making a risky change.</span></div>';
+      list.innerHTML = emptyStateMarkup('No backups yet', 'Create a restore point before making a risky change.', 'i-backup');
       return;
     }
     list.innerHTML = backups.map(backup => `
@@ -1633,7 +2081,7 @@ async function openBackupPanel() {
   });
 
   try { await refresh(); }
-  catch (error) { list.innerHTML = `<div class="backup-empty">Could not load backups: ${escHtml(error.message || error)}</div>`; }
+  catch (error) { list.innerHTML = emptyStateMarkup('Could not load backups', error.message || String(error), 'i-alert'); }
 }
 
 let cachedMods = [];
@@ -1647,8 +2095,12 @@ const CONTENT_LABELS = {
 function switchContentCategory(type) {
   if (!CONTENT_LABELS[type] || state.contentCategory === type) return;
   state.contentCategory = type;
+  const compatibilityButton = $('check-mod-compatibility');
+  if (compatibilityButton) compatibilityButton.hidden = type !== 'mod';
   $('content-categories')?.querySelectorAll('[data-content-type]').forEach(button => {
-    button.classList.toggle('active', button.dataset.contentType === type);
+    const active = button.dataset.contentType === type;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
   });
   const search = $('content-search');
   if (search) {
@@ -1694,7 +2146,7 @@ async function loadContentList() {
   } catch (error) {
     if (requestId !== state.contentRequestId) return;
     container.classList.remove('content-switching');
-    container.innerHTML = `<div class="text-muted" style="text-align:center;padding:24px">Failed to load ${CONTENT_LABELS[category].plural}: ${escHtml(error.message || error)}</div>`;
+    container.innerHTML = emptyStateMarkup(`Could not load ${CONTENT_LABELS[category].plural}`, error.message || String(error), 'i-alert');
   }
 }
 
@@ -1719,6 +2171,8 @@ async function checkForModUpdates(instanceName) {
     if (state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
     state.pendingModUpdates = [];
   }
+  const updateAll = $('update-all-content');
+  if (updateAll) { updateAll.hidden = state.contentCategory !== 'mod' || !state.pendingModUpdates.length; updateAll.textContent = `Update all (${state.pendingModUpdates.length})`; }
   renderContentList();
 }
 
@@ -1732,8 +2186,8 @@ function renderContentList() {
     : cachedMods;
   if (!filtered.length) {
     container.innerHTML = query
-      ? `<div class="text-muted" style="text-align:center;padding:24px">No ${labels.plural} match "${escHtml(query)}"</div>`
-      : `<div class="text-muted" style="text-align:center;padding:24px">No ${labels.plural} installed.${state.contentCategory === 'datapack' ? ' Data packs are stored inside individual worlds.' : ' Click "Add content" to install some.'}</div>`;
+      ? emptyStateMarkup(`No ${labels.plural} found`, `Nothing matches “${query}”.`, 'i-search')
+      : emptyStateMarkup(`No ${labels.plural} installed`, state.contentCategory === 'datapack' ? 'Data packs are stored inside individual worlds.' : 'Use Add content to install some.', 'i-library');
     return;
   }
   container.innerHTML = filtered.map((m) => {
@@ -1750,6 +2204,7 @@ function renderContentList() {
       </div>
       <div class="content-item-actions">
         ${update ? `<button class="btn btn-primary btn-sm" data-act="update">Update</button>` : ''}
+        ${m.projectId ? `<button class="btn btn-secondary btn-sm" data-act="freeze" title="${m.frozen ? 'Allow updates' : 'Keep this version'}">${m.frozen ? 'Unfreeze' : 'Freeze'}</button>` : ''}
         <button class="btn btn-secondary btn-sm" data-act="toggle">${m.disabled ? 'Enable' : 'Disable'}</button>
         <button class="btn btn-secondary btn-sm" data-act="remove">
           <svg width="12" height="12" aria-hidden="true"><use href="#i-trash"/></svg>
@@ -1783,6 +2238,15 @@ function renderContentList() {
       const mod = cachedMods.find((m) => (m.projectId || m.filename) === pid);
       if (mod && mod.projectId) updateMod(state.currentInstance, mod);
     });
+    row.querySelector('[data-act="freeze"]')?.addEventListener('click', async e => {
+      e.stopPropagation();
+      const mod = cachedMods.find(item => (item.projectId || item.filename) === pid);
+      if (!mod?.projectId) return;
+      const scrollHost = $('content');
+      const scrollTop = scrollHost?.scrollTop || 0;
+      try { const wasFrozen = mod.frozen; await api.setProjectFrozen(state.currentInstance.name, mod.projectId, !wasFrozen); mod.frozen = !wasFrozen; toast(wasFrozen ? 'Updates enabled for this project' : 'This project will keep its current version', 'success'); await checkForModUpdates(state.currentInstance.name); requestAnimationFrame(() => { if (scrollHost) scrollHost.scrollTop = scrollTop; }); }
+      catch (error) { toast(error.message || error, 'error'); }
+    });
   });
 }
 
@@ -1797,7 +2261,6 @@ async function removeContentItem(item) {
     setStatus(`Removed ${item.title || item.filename}`);
     await loadContentList();
   } catch (error) {
-    setStatus('Remove failed: ' + (error.message || error));
     toast('Remove failed: ' + (error.message || error), 'error', 4000);
   }
 }
@@ -1840,6 +2303,109 @@ async function updateMod(inst, mod) {
   } catch (e) {
     toast('Update failed: ' + (e.message || e), 'error', 4000);
   }
+}
+
+async function applyCompatibilityAction(action, finding, overlay) {
+  const instance = state.currentInstance;
+  if (!instance) return;
+  if (action.type === 'search') {
+    overlay.remove();
+    state.discoverCategory = 'mod';
+    $('discover-categories')?.querySelectorAll('[data-category]').forEach(chip => chip.classList.toggle('chip-active', chip.dataset.category === 'mod'));
+    const input = $('search-input');
+    if (input) input.value = action.query || finding.targetId || '';
+    const loader = $('filter-loader');
+    if (loader) loader.value = instance.loader === 'vanilla' ? '' : instance.loader;
+    switchView('discover');
+    moveDiscoverIndicator();
+    await searchMods(false);
+    return;
+  }
+  if (action.type === 'disable') {
+    const confirmed = await backupConfirmation({ title: `Disable ${action.filename}?`, message: 'Pine will keep the file and rename it so Minecraft does not load it. You can enable it again from Content.', action: 'Disable mod' });
+    if (!confirmed) return;
+    await api.disableMod(instance.name, action.filename);
+  } else if (action.type === 'remove') {
+    const confirmed = await backupConfirmation({ title: `Remove ${action.filename}?`, message: 'This permanently removes the mod file from this instance.', action: 'Remove mod', danger: true });
+    if (!confirmed) return;
+    await api.removeMod(instance.name, action.filename);
+  } else if (action.type === 'replace' || action.type === 'install') {
+    const verb = action.type === 'replace' ? 'Change mod version' : 'Install dependency';
+    const confirmed = await backupConfirmation({ title: `${verb}?`, message: `${action.label}. Pine will verify the download and create a restore point before changing the instance.`, action: verb });
+    if (!confirmed) return;
+    const loaders = instance.loader === 'vanilla' ? [] : [instance.loader];
+    const check = await api.checkInstallFeasibility(instance.name, action.projectId, action.versionId, loaders, instance.gameVersion);
+    if (!check.feasible) throw new Error(check.errors?.[0]?.message || 'The suggested version is no longer compatible');
+    const versionIds = [action.versionId, ...(check.requiredDepVersionIds || [])];
+    const versionSizes = { [action.versionId]: check.file?.size || 0, ...(check.requiredDepSizes || {}) };
+    const disableFiles = [action.type === 'replace' ? action.filename : null,
+      ...(check.warnings || []).filter(warning => ['DUPLICATE', 'INCOMPATIBLE_INSTALLED'].includes(warning.code)).map(warning => warning.existingFile)]
+      .filter(Boolean);
+    await api.installMod(instance.name, { versionIds: [...new Set(versionIds)], versionSizes, disableFiles: [...new Set(disableFiles)], createBackup: true, backupReason: `Before compatibility repair: ${finding.title}` });
+  } else if (action.type === 'replace-curseforge' || action.type === 'install-curseforge') {
+    const replacing = action.type === 'replace-curseforge';
+    const confirmed = await backupConfirmation({ title: replacing ? 'Change mod version?' : 'Install dependency?', message: `${action.label}. Pine will create a restore point before changing the instance.`, action: replacing ? 'Change mod version' : 'Install dependency' });
+    if (!confirmed) return;
+    await api.installCurseForgeContent(instance.name, { projectId: action.projectId, fileId: Number(action.fileId), type: 'mod', replaceFilename: replacing ? action.filename : null, createBackup: true });
+  }
+  toast('Compatibility change applied', 'success');
+  await loadContentList();
+  await renderCompatibilityResults(overlay);
+}
+
+async function renderCompatibilityResults(overlay) {
+  const body = overlay.querySelector('[data-compatibility-body]');
+  const instance = state.currentInstance;
+  if (!body || !instance) return;
+  body.innerHTML = '<div class="compatibility-loading"><span class="spinner"></span><strong>Checking every enabled mod…</strong><small>Reading local metadata and comparing provider versions.</small></div>';
+  const report = await api.checkModCompatibility(instance.name);
+  if (!overlay.isConnected || state.currentInstance?.name !== instance.name) return;
+  const healthy = !report.findings.length;
+  body.innerHTML = `<section class="compatibility-summary ${healthy ? 'is-healthy' : ''}">
+    <span><svg aria-hidden="true"><use href="#i-${healthy ? 'check' : 'alert-triangle'}"/></svg></span>
+    <div><strong>${healthy ? 'Your enabled mods look compatible' : `${report.counts.errors} problem${report.counts.errors === 1 ? '' : 's'} · ${report.counts.warnings} warning${report.counts.warnings === 1 ? '' : 's'}`}</strong><small>${report.checkedMods} enabled mod${report.checkedMods === 1 ? '' : 's'} checked for ${escHtml(report.instance.loader)} · Minecraft ${escHtml(report.instance.gameVersion)}</small></div>
+  </section>
+  <div class="compatibility-findings">${healthy ? `<div class="compatibility-empty"><svg aria-hidden="true"><use href="#i-check"/></svg><strong>No conflicts found</strong><span>Pine checked loader support, game versions, duplicate IDs, dependencies, declared conflicts, and known broken builds.</span></div>` : report.findings.map((finding, findingIndex) => `
+    <article class="compatibility-finding is-${escHtml(finding.severity)}">
+      <span class="compatibility-finding-icon"><svg aria-hidden="true"><use href="#i-${finding.severity === 'error' ? 'alert-triangle' : 'info'}"/></svg></span>
+      <div class="compatibility-finding-copy"><strong>${escHtml(finding.title)}</strong><p>${escHtml(finding.detail || '')}</p>
+        ${finding.actions?.length ? `<div class="compatibility-actions">${finding.actions.map((action, actionIndex) => `<button class="btn ${actionIndex === 0 ? 'btn-primary' : 'btn-secondary'} btn-sm" type="button" data-compatibility-finding="${findingIndex}" data-compatibility-action="${actionIndex}">${escHtml(action.label)}</button>`).join('')}</div>` : '<small>No automatic change is safe here. Review the named files or change the instance version.</small>'}
+      </div>
+    </article>`).join('')}</div>`;
+  overlay._compatibilityReport = report;
+}
+
+async function openModCompatibilityCheck() {
+  const instance = state.currentInstance;
+  if (!instance || $('mod-compatibility-root')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'mod-compatibility-root';
+  overlay.className = 'modal-root visible';
+  overlay.innerHTML = `<div class="modal modal-lg compatibility-modal">
+    <div class="modal-header"><div><h2 class="modal-title">Mod compatibility</h2><p class="modal-sub">${escHtml(instance.name)} · actionable checks before you launch</p></div><button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body compatibility-body" data-compatibility-body></div>
+    <div class="modal-footer"><button class="btn btn-secondary" data-close type="button">Done</button><button class="btn btn-primary" data-recheck type="button"><svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', async event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) { overlay.remove(); return; }
+    if (event.target.closest('[data-recheck]')) {
+      try { await renderCompatibilityResults(overlay); } catch (error) { toast('Compatibility check failed: ' + (error.message || error), 'error', 7000); }
+      return;
+    }
+    const button = event.target.closest('[data-compatibility-action]');
+    if (!button) return;
+    const report = overlay._compatibilityReport;
+    const finding = report?.findings?.[Number(button.dataset.compatibilityFinding)];
+    const action = finding?.actions?.[Number(button.dataset.compatibilityAction)];
+    if (!finding || !action) return;
+    button.disabled = true;
+    try { await applyCompatibilityAction(action, finding, overlay); }
+    catch (error) { toast('Could not apply suggestion: ' + (error.message || error), 'error', 7000); }
+    finally { if (button.isConnected) button.disabled = false; }
+  });
+  try { await renderCompatibilityResults(overlay); }
+  catch (error) { if (overlay.isConnected) overlay.querySelector('[data-compatibility-body]').innerHTML = `<div class="compatibility-empty is-error"><svg aria-hidden="true"><use href="#i-alert-triangle"/></svg><strong>Compatibility check failed</strong><span>${escHtml(error.message || String(error))}</span></div>`; }
 }
 
 async function openContentAdder() {
@@ -2090,6 +2656,70 @@ function managedPackSourceLabel(source) {
   return source === 'curseforge' ? 'CurseForge' : source === 'modrinth' ? 'Modrinth' : 'Managed pack';
 }
 
+const GAME_OPTION_LABELS = {
+  fov: 'Field of view', gamma: 'Brightness', renderDistance: 'Render distance', simulationDistance: 'Simulation distance',
+  fullscreen: 'Fullscreen', enableVsync: 'VSync', maxFps: 'Maximum FPS', guiScale: 'Interface scale',
+  particles: 'Particles', graphicsMode: 'Graphics quality', entityShadows: 'Entity shadows',
+  soundCategory_master: 'Master volume', lang: 'Language', autoJump: 'Auto-jump', toggleSprint: 'Toggle sprint',
+  toggleCrouch: 'Toggle crouch', mouseSensitivity: 'Mouse sensitivity', narrator: 'Narrator', showSubtitles: 'Subtitles',
+};
+
+async function openGameOptionsEditor() {
+  if (!state.currentInstance) return;
+  const instanceName = state.currentInstance.name;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  overlay.innerHTML = `<div class="modal game-options-modal" role="dialog" aria-modal="true"><div class="modal-header"><div><h2 class="modal-title">Game settings</h2><p class="modal-sub">${escHtml(instanceName)} · options.txt</p></div><button class="modal-close" data-close><svg><use href="#i-x"/></svg></button></div><div class="modal-body"><input class="input" data-option-search placeholder="Search video, audio, controls, and mod settings…"><div class="game-option-list" data-option-list><span class="spinner"></span></div></div><div class="modal-footer"><span class="text-muted">A restore point is created before saving.</span><button class="btn btn-secondary" data-close>Cancel</button><button class="btn btn-primary" data-save-options>Save settings</button></div></div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', event => { if (event.target === overlay || event.target.closest('[data-close]')) close(); });
+  try {
+    const rows = await api.getGameOptions(instanceName);
+    const list = overlay.querySelector('[data-option-list]');
+    const render = () => {
+      const query = overlay.querySelector('[data-option-search]').value.trim().toLowerCase();
+      list.innerHTML = rows.map((row, index) => ({ row, index, label: GAME_OPTION_LABELS[row.key] || row.key.replace(/^key_/, '').replace(/[._]/g, ' ') }))
+        .filter(item => !query || `${item.label} ${item.row.key} ${item.row.value}`.toLowerCase().includes(query))
+        .map(item => `<label class="game-option-row"><span><strong>${escHtml(item.label)}</strong><small>${escHtml(item.row.key)}</small></span><input class="input" data-option-index="${item.index}" value="${escHtml(item.row.value)}"></label>`).join('') || emptyStateMarkup('No matching settings', 'Try another word.', 'i-search');
+      list.querySelectorAll('[data-option-index]').forEach(input => input.addEventListener('input', () => { rows[Number(input.dataset.optionIndex)].value = input.value; }));
+    };
+    overlay.querySelector('[data-option-search]').addEventListener('input', debounce(render, 80));
+    render();
+    overlay.querySelector('[data-save-options]').addEventListener('click', async event => { event.currentTarget.disabled = true; try { await api.saveGameOptions(instanceName, rows); close(); toast('Minecraft settings saved', 'success'); } catch (error) { toast(error.message || error, 'error', 6000); event.currentTarget.disabled = false; } });
+  } catch (error) { overlay.querySelector('[data-option-list]').innerHTML = emptyStateMarkup('No game settings yet', 'Launch this instance once so Minecraft can create options.txt.', 'i-info'); }
+}
+
+function openInstanceSync() {
+  if (!state.currentInstance) return;
+  const target = state.currentInstance;
+  const sources = state.instances.filter(instance => instance.name !== target.name);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  let selectedSource = sources[0]?.name || '';
+  overlay.innerHTML = `<div class="modal sync-modal" role="dialog" aria-modal="true"><div class="modal-header"><div><h2 class="modal-title">Sync into ${escHtml(target.name)}</h2><p class="modal-sub">Copy only the parts you choose from another instance.</p></div><button class="modal-close" data-close><svg><use href="#i-x"/></svg></button></div><div class="modal-body"><label>Source instance</label><div class="sync-source-picker"><button class="btn btn-secondary sync-source-button" data-sync-source-button type="button"><span>${selectedSource ? `${escHtml(selectedSource)} · ${escHtml(sources[0]?.gameVersion || '')}` : 'No other instances'}</span><span>⌄</span></button><div class="sync-source-menu" data-sync-source-menu hidden>${sources.map((instance,index) => `<button class="sync-source-option${index === 0 ? ' selected' : ''}" data-sync-source="${escHtml(instance.name)}" type="button"><span class="instance-icon">${instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml(instance.name[0])}</span><span><strong>${escHtml(instance.name)}</strong><small>${escHtml(instance.loader)} · ${escHtml(instance.gameVersion)}</small></span></button>`).join('')}</div></div><div class="sync-choice-grid">${[['options','Game settings'],['servers','Multiplayer servers'],['resourcepacks','Resource packs'],['datapacks','Data packs'],['commands','Command history'],['hotbars','Creative hotbars']].map(([key,label]) => `<label class="sync-choice"><input type="checkbox" data-sync-part="${key}"><span class="check-visual"><svg aria-hidden="true"><use href="#i-check"/></svg></span><strong>${label}</strong></label>`).join('')}</div><div class="confirm-warn is-neutral"><svg><use href="#i-backup"/></svg><span>Pine creates a full restore point of ${escHtml(target.name)} before copying anything.</span></div></div><div class="modal-footer"><button class="btn btn-secondary" data-close>Cancel</button><button class="btn btn-primary" data-run-sync ${sources.length ? '' : 'disabled'}>Sync selected</button></div></div>`;
+  document.body.appendChild(overlay);
+  const sourceMenu = overlay.querySelector('[data-sync-source-menu]');
+  overlay.querySelector('[data-sync-source-button]')?.addEventListener('click', () => { sourceMenu.hidden = !sourceMenu.hidden; });
+  sourceMenu?.querySelectorAll('[data-sync-source]').forEach(option => option.addEventListener('click', () => {
+    selectedSource = option.dataset.syncSource;
+    const source = sources.find(item => item.name === selectedSource);
+    overlay.querySelector('[data-sync-source-button] span').textContent = `${source.name} · ${source.gameVersion}`;
+    sourceMenu.querySelectorAll('.sync-source-option').forEach(item => item.classList.toggle('selected', item === option));
+    sourceMenu.hidden = true;
+  }));
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', async event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) return close();
+    if (event.target.closest('[data-run-sync]')) {
+      const selections = Object.fromEntries([...overlay.querySelectorAll('[data-sync-part]')].map(input => [input.dataset.syncPart, input.checked]));
+      if (!Object.values(selections).some(Boolean)) return toast('Choose at least one thing to sync', 'error');
+      const button = event.target.closest('[data-run-sync]'); button.disabled = true;
+      try { const copied = await api.syncInstanceData(selectedSource, target.name, selections); close(); toast(copied.length ? `Synced ${copied.length} selected areas` : 'The source had no matching files yet', copied.length ? 'success' : 'info'); }
+      catch (error) { toast(error.message || error, 'error', 6000); button.disabled = false; }
+    }
+  });
+}
+
 async function refreshManagedPackInstance(name) {
   await loadInstances();
   const refreshed = state.instances.find(instance => instance.name === name);
@@ -2212,9 +2842,22 @@ function loadInstanceSettings() {
       <div class="settings-row"><label>Width</label><input id="inst-res-w" class="input" type="number" value="${inst.windowWidth || 1280}"></div>
       <div class="settings-row"><label>Height</label><input id="inst-res-h" class="input" type="number" value="${inst.windowHeight || 720}"></div>
     </div>
+    <div class="settings-card launch-automation-card">
+      <div class="settings-card-title">Launch automation</div>
+      <p class="text-muted settings-card-note">Advanced commands run in the instance folder. Leave them empty for normal launches.</p>
+      <div class="settings-row"><label>Before launch</label><input id="inst-pre-launch" class="input" value="${escHtml(inst.hooks?.preLaunch || '')}" placeholder="Optional command"></div>
+      <div class="settings-row"><label>After exit</label><input id="inst-post-exit" class="input" value="${escHtml(inst.hooks?.postExit || '')}" placeholder="Optional command"></div>
+      <div class="settings-row"><label>Environment variables</label><textarea id="inst-environment" class="input studio-textarea" placeholder="MANGOHUD=1&#10;GAMEMODERUNEXEC=1">${escHtml(Object.entries(inst.hooks?.environment || {}).map(([key,value]) => `${key}=${value}`).join('\n'))}</textarea></div>
+    </div>
+    <div class="settings-card instance-tools-card">
+      <div><div class="settings-card-title">Minecraft settings &amp; sync</div><p class="text-muted settings-card-note">Edit options without opening text files, or copy selected preferences from another instance. Pine creates a restore point before writing.</p></div>
+      <div class="instance-tool-actions"><button class="btn btn-secondary" id="edit-game-options" type="button">Edit game settings</button><button class="btn btn-secondary" id="sync-instance-settings" type="button">Sync from instance</button></div>
+    </div>
     <button class="btn btn-primary" id="inst-save-btn">Save settings</button>
   `;
   $('inst-save-btn')?.addEventListener('click', saveInstanceSettings);
+  $('edit-game-options')?.addEventListener('click', openGameOptionsEditor);
+  $('sync-instance-settings')?.addEventListener('click', openInstanceSync);
   if (inst.modpack) loadManagedPackPanel(inst);
   if (inst.loader === 'neoforge') loadNeoForgePanel(inst);
   $('inst-pack-state')?.addEventListener('change', async event => {
@@ -2232,7 +2875,7 @@ function loadInstanceSettings() {
     toast(event.currentTarget.value === 'locked' ? 'Managed files are protected' : event.currentTarget.value === 'unlocked' ? 'Manual pack changes are allowed' : 'Pack management paused', 'success');
   });
   state.instanceSettingsDirty = false;
-  form.querySelectorAll('input:not([data-pack-control]), select:not([data-pack-control])').forEach(input => input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
+  form.querySelectorAll('input:not([data-pack-control]), select:not([data-pack-control]), textarea:not([data-pack-control])').forEach(input => input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
     state.instanceSettingsDirty = true;
     clearTimeout(state.instanceSettingsSaveTimer);
     state.instanceSettingsSaveTimer = setTimeout(() => saveInstanceSettings(null, { silent: true }), 500);
@@ -2250,6 +2893,10 @@ async function saveInstanceSettings(button = null, { silent = false } = {}) {
     windowWidth: parseInt($('inst-res-w')?.value) || 1280,
     windowHeight: parseInt($('inst-res-h')?.value) || 720,
     modpackLockState: $('inst-pack-state')?.value,
+    hooks: {
+      preLaunch: $('inst-pre-launch')?.value || '', postExit: $('inst-post-exit')?.value || '',
+      environment: Object.fromEntries(String($('inst-environment')?.value || '').split(/\r?\n/).map(line => line.split(/=(.*)/s)).filter(parts => parts[0] && parts.length > 1).map(([key,value]) => [key.trim(), value || ''])),
+    },
   };
   try {
     const updated = await api.updateInstance(state.currentInstance.name, data);
@@ -2324,11 +2971,9 @@ async function reauthenticateAccount(key) {
     updateAuthUI();
     updatePride();
     renderHome();
-    setStatus(`${account.profile.name} re-authenticated`);
     toast(`${account.profile.name} re-authenticated`, 'success');
     return true;
   } catch (error) {
-    setStatus('Re-authentication failed: ' + (error.message || error));
     toast('Could not re-authenticate: ' + (error.message || error), 'error', 6000);
     return false;
   }
@@ -2341,7 +2986,6 @@ async function handleAuth(options = { mode: 'add' }) {
     state.authData = await api.microsoftLogin(options);
     await refreshAccounts();
     updateAuthUI(); updatePride();
-    setStatus(`Signed in as ${state.authData.profile.name}`);
     toast('Signed in', 'success');
     return true;
   } catch (e) {
@@ -2357,7 +3001,6 @@ async function signOut() {
     await refreshAccounts();
     state.authData = await api.getAuth();
     updateAuthUI();
-    setStatus('Signed out');
     toast('Signed out', 'success');
   } catch (e) {
     setStatus('Sign out failed: ' + (e.message || e));
@@ -2370,7 +3013,7 @@ function openOfflineModal() {
   overlay.className = 'modal-root visible';
   overlay.style.zIndex = '300';
   overlay.innerHTML = `
-    <div class="modal" style="max-width:420px">
+    <div class="modal modal-sm">
       <div class="modal-header">
         <div><h2 class="modal-title">Play offline</h2><p class="modal-sub">Choose a username to play without a Microsoft account.</p></div>
         <button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
@@ -2402,7 +3045,6 @@ function openOfflineModal() {
       state.authData = await api.offlineLogin(name);
       await refreshAccounts();
       updateAuthUI(); updatePride();
-      setStatus(`Playing offline as ${name}`);
       toast('Offline account set', 'success');
       close();
     } catch (e) {
@@ -2432,20 +3074,20 @@ function openAccountRequiredModal(instanceName) {
     '</div>',
   ].join('') : '';
   overlay.innerHTML = [
-    '<div class="modal" style="max-width:470px">',
+    '<div class="modal modal-md">',
     '<div class="modal-header">',
     '<div><h2 class="modal-title">Choose an account first</h2>',
     '<p class="modal-sub">Pine needs a player account before it can launch this instance.</p></div>',
-    '<button class="modal-close" data-close type="button" aria-label="Close">X</button>',
+    '<button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>',
     '</div>',
     '<div class="modal-body">',
     alternatives,
     '<label for="required-offline-name">Offline username</label>',
     '<input id="required-offline-name" class="input" placeholder="Enter 3-16 characters" autocomplete="off" maxlength="16" spellcheck="false">',
     '<div id="required-account-error" class="modal-error text-muted" hidden></div>',
-    '<div class="text-muted" style="margin-top:10px;font-size:12px">Offline accounts only work on servers that allow offline players. For normal online play, use Microsoft sign-in.</div>',
+    '<div class="modal-note">Offline accounts only work on servers that allow offline players. For normal online play, use Microsoft sign-in.</div>',
     '</div>',
-    '<div class="modal-footer" style="gap:8px;flex-wrap:wrap">',
+    '<div class="modal-footer modal-footer-wrap">',
     '<button class="btn btn-secondary" data-cancel type="button">Cancel</button>',
     '<button class="btn btn-secondary" data-microsoft type="button">Sign in with Microsoft</button>',
     '<button class="btn btn-primary" data-offline type="button">Use offline name</button>',
@@ -2481,7 +3123,6 @@ function openAccountRequiredModal(instanceName) {
       await refreshAccounts();
       updateAuthUI();
       updatePride();
-      setStatus('Playing offline as ' + offlineName);
       toast('Offline account set', 'success');
       continueLaunch();
     } catch (loginError) {
@@ -2562,7 +3203,7 @@ function updatePride() {
   const enabled = eligible && state.settings.gayMode !== false;
   document.documentElement.classList.toggle('pride-mode', !!enabled);
   const row = $('gay-mode-row');
-  if (row) row.style.display = eligible ? '' : 'none';
+  if (row) row.hidden = !eligible;
   return eligible;
 }
 
@@ -2574,8 +3215,21 @@ async function loadSettings() {
 
 function applyAppearanceSettings() {
   const accent = /^#[0-9a-f]{6}$/i.test(state.settings.accentColor || '') ? state.settings.accentColor : '#ff5cb9';
-  document.documentElement.style.setProperty('--accent', accent);
+  const red = Number.parseInt(accent.slice(1, 3), 16);
+  const green = Number.parseInt(accent.slice(3, 5), 16);
+  const blue = Number.parseInt(accent.slice(5, 7), 16);
+  const lighten = channel => Math.round(channel + (255 - channel) * 0.28);
+  const accent2 = `#${[lighten(red), lighten(green), lighten(blue)].map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty('--accent', accent);
+  rootStyle.setProperty('--accent-2', accent2);
+  rootStyle.setProperty('--accent-dim', `rgba(${red}, ${green}, ${blue}, 0.20)`);
+  rootStyle.setProperty('--accent-glow', `0 0 24px rgba(${red}, ${green}, ${blue}, 0.35)`);
+  rootStyle.setProperty('--accent-grad', `linear-gradient(135deg, ${accent} 0%, ${accent2} 100%)`);
+  rootStyle.setProperty('--text-on-accent', luminance > 0.68 ? '#101014' : '#ffffff');
   document.documentElement.classList.toggle('reduced-motion', state.settings.reducedMotion === true);
+  document.documentElement.classList.toggle('compact-library', state.settings.compactLibrary === true);
   updatePride();
 }
 
@@ -2605,6 +3259,7 @@ function renderSettingsLayout() {
           <div class="settings-row"><label>Download limit (concurrent)</label>
             <input id="set-dl-limit" class="input" type="number" min="2" max="16" step="1" value="${s.dlLimit || 4}">
           </div>
+          <div class="settings-row"><label>Compact library</label><label class="snapshot-inline settings-toggle-inline"><input type="checkbox" id="set-compact-library" ${s.compactLibrary ? 'checked' : ''}><span class="check-visual"></span></label></div>
         </div>
       </div>
       <div class="settings-pane" data-cat="java">
@@ -2640,22 +3295,29 @@ function renderSettingsLayout() {
       <div class="settings-pane" data-cat="appearance">
         <div class="settings-card">
           <div class="settings-card-title">Appearance</div>
-          <div class="settings-row"><label>Accent color</label>
-            <div class="color-swatches">
-              ${['#7c5cff', '#5ce0ff', '#ff5cb9', '#4ade80', '#fbbf24', '#f87171'].map((c) =>
-                `<button class="color-swatch ${s.accentColor === c ? 'active' : ''}" data-color="${c}" style="background:${c}" aria-label="Accent ${c}"></button>`
+          <div class="settings-row settings-row-col"><label>Accent presets</label>
+            <div class="color-swatches" role="group" aria-label="Accent color presets">
+              ${ACCENT_PRESETS.map(({ color, name }) =>
+                `<button class="color-swatch ${String(s.accentColor || '').toLowerCase() === color ? 'active' : ''}" data-color="${color}" style="background:${color}" aria-label="${name}" title="${name}" type="button"></button>`
               ).join('')}
             </div>
           </div>
-          <div class="settings-row" id="gay-mode-row"${updatePride() ? '' : ' style="display:none"'}>
+          <div class="settings-row"><label for="set-custom-accent">Custom color</label>
+            <label class="custom-color-control${ACCENT_PRESETS.some(preset => preset.color === String(s.accentColor || '').toLowerCase()) ? '' : ' active'}" for="set-custom-accent">
+              <input id="set-custom-accent" type="color" value="${/^#[0-9a-f]{6}$/i.test(s.accentColor || '') ? escHtml(s.accentColor) : '#ff5cb9'}" data-independent>
+              <span class="custom-color-preview" style="background:${/^#[0-9a-f]{6}$/i.test(s.accentColor || '') ? escHtml(s.accentColor) : '#ff5cb9'}"></span>
+              <span><strong>Choose any color</strong><small id="custom-color-value">${/^#[0-9a-f]{6}$/i.test(s.accentColor || '') ? escHtml(String(s.accentColor).toUpperCase()) : '#FF5CB9'}</small></span>
+            </label>
+          </div>
+          <div class="settings-row" id="gay-mode-row"${updatePride() ? '' : ' hidden'}>
             <label>Gay mode</label>
-            <label class="snapshot-inline" style="position:static;padding:0">
+            <label class="snapshot-inline settings-toggle-inline">
               <input type="checkbox" id="gay-mode-toggle" ${s.gayMode !== false && updatePride() ? 'checked' : ''}>
               <span class="check-visual"></span>
             </label>
           </div>
           <div class="settings-row"><label>Reduce animations</label>
-            <label class="snapshot-inline" style="position:static;padding:0">
+            <label class="snapshot-inline settings-toggle-inline">
               <input type="checkbox" id="set-reduced-motion" ${s.reducedMotion ? 'checked' : ''}>
               <span class="check-visual"></span>
             </label>
@@ -2669,24 +3331,24 @@ function renderSettingsLayout() {
         <div class="settings-card">
           <div class="settings-card-title">Discord Rich Presence</div>
           <div class="settings-row"><label>Show Pine on your Discord profile</label>
-            <label class="snapshot-inline" style="position:static;padding:0">
+            <label class="snapshot-inline settings-toggle-inline">
               <input type="checkbox" id="set-discord-presence" ${s.discordPresence !== false ? 'checked' : ''}>
               <span class="check-visual"></span>
             </label>
           </div>
           <div class="settings-row"><label>Show instance name</label>
-            <label class="snapshot-inline" style="position:static;padding:0">
+            <label class="snapshot-inline settings-toggle-inline">
               <input type="checkbox" id="set-discord-instance" ${s.discordShowInstance !== false ? 'checked' : ''}>
               <span class="check-visual"></span>
             </label>
           </div>
           <div class="settings-row"><label>Show multiplayer server</label>
-            <label class="snapshot-inline" style="position:static;padding:0">
+            <label class="snapshot-inline settings-toggle-inline">
               <input type="checkbox" id="set-discord-server" ${s.discordShowServer !== false ? 'checked' : ''}>
               <span class="check-visual"></span>
             </label>
           </div>
-          <p class="text-muted" style="margin:12px 0 0;line-height:1.55">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
+          <p class="text-muted settings-card-note">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
         </div>
       </div>
       <div class="settings-pane" data-cat="storage">
@@ -2732,15 +3394,30 @@ function renderSettingsLayout() {
       if (btn.dataset.cat === 'storage') void loadStorageUsage();
     });
   });
-  layout.querySelectorAll('.color-swatch').forEach((s) => {
-    s.addEventListener('click', () => {
-      const color = s.dataset.color;
-      document.documentElement.style.setProperty('--accent', color);
-      layout.querySelectorAll('.color-swatch').forEach((sw) => sw.classList.remove('active'));
-      s.classList.add('active');
-      state.settings.accentColor = color;
-    });
+  const chooseAccent = (color, saveImmediately = false) => {
+    if (!/^#[0-9a-f]{6}$/i.test(color || '')) return;
+    const normalized = color.toLowerCase();
+    state.settings.accentColor = normalized;
+    state.settingsDirty = true;
+    applyAppearanceSettings();
+    layout.querySelectorAll('.color-swatch').forEach(swatch => swatch.classList.toggle('active', swatch.dataset.color === normalized));
+    const picker = $('set-custom-accent');
+    const preview = layout.querySelector('.custom-color-preview');
+    const custom = layout.querySelector('.custom-color-control');
+    const value = $('custom-color-value');
+    if (picker && picker.value !== normalized) picker.value = normalized;
+    if (preview) preview.style.background = normalized;
+    if (value) value.textContent = normalized.toUpperCase();
+    custom?.classList.toggle('active', !ACCENT_PRESETS.some(preset => preset.color === normalized));
+    clearTimeout(state.settingsSaveTimer);
+    if (saveImmediately) void saveAllSettings(null, { silent: true });
+    else state.settingsSaveTimer = setTimeout(() => saveAllSettings(null, { silent: true }), 300);
+  };
+  layout.querySelectorAll('.color-swatch').forEach(swatch => {
+    swatch.addEventListener('click', () => chooseAccent(swatch.dataset.color, true));
   });
+  $('set-custom-accent')?.addEventListener('input', event => chooseAccent(event.target.value));
+  $('set-custom-accent')?.addEventListener('change', event => chooseAccent(event.target.value, true));
   $('update-check-btn')?.addEventListener('click', checkForLauncherUpdates);
   $('update-action-btn')?.addEventListener('click', runUpdateAction);
   $('storage-refresh')?.addEventListener('click', loadStorageUsage);
@@ -2821,6 +3498,7 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
     discordPresence: $('set-discord-presence')?.checked !== false,
     discordShowInstance: $('set-discord-instance')?.checked !== false,
     discordShowServer: $('set-discord-server')?.checked !== false,
+    compactLibrary: $('set-compact-library')?.checked === true,
   };
   try {
     state.settings = await api.saveSettings(state.settings);
@@ -2841,13 +3519,12 @@ async function resetSettings() {
     launchBehavior: 'Keep open', dlLimit: 4, javaPath: '', minMemory: '4G', maxMemory: '4G',
     jvmArgs: '', windowWidth: 1280, windowHeight: 720, accentColor: '#ff5cb9',
     reducedMotion: false, gayMode: true, discordPresence: true,
-    discordShowInstance: true, discordShowServer: true,
+    discordShowInstance: true, discordShowServer: true, compactLibrary: false,
   };
   try {
     state.settings = await api.saveSettings(state.settings);
     applyAppearanceSettings();
     renderSettingsLayout();
-    setStatus('Settings reset');
     toast('Settings reset to defaults', 'success');
   } catch (e) {
     toast('Could not reset settings: ' + (e.message || e), 'error', 4500);
@@ -3138,6 +3815,7 @@ function openCreateModal() {
     overlay.classList.add('visible');
   }
   $('modal-name').value = '';
+  clearCreateValidation();
   $('modal-loader-version').disabled = true;
   $('modal-loader-version').innerHTML = '<option value="">N/A</option>';
   $('modal-progress').setAttribute('hidden', '');
@@ -3146,11 +3824,11 @@ function openCreateModal() {
   $('modal-progress-fill').style.width = '0%';
   $('modal-progress-text').textContent = 'Creating instance…';
   state.chosenProfile = 'vanilla';
-  state.performanceMods = [];
-  state.performanceCompatibility = null;
-  state.performanceChecking = false;
-  state.performanceCheckRequestId += 1;
-  state.removedPerfMods = new Set();
+  state.presetMods = [];
+  state.presetCompatibility = null;
+  state.presetChecking = false;
+  state.presetCheckRequestId += 1;
+  state.removedPresetMods = new Set();
   state.selectedLoader = 'vanilla';
   state.pendingIcon = null;
   state.pendingBanner = null;
@@ -3169,7 +3847,7 @@ function openCreateModal() {
   document.querySelectorAll('.profile-card').forEach((c) => c.classList.remove('selected'));
   document.querySelector('.profile-card[data-profile="vanilla"]')?.classList.add('selected');
   buildLoaderSegmented();
-  setCollapsible($('perf-mods-wrap'), false);
+  setCollapsible($('preset-mods-wrap'), false);
   // Reset upload fields
   ['icon', 'banner'].forEach((t) => {
     const input = $(`modal-${t}`);
@@ -3795,7 +4473,6 @@ async function openInstanceFolder() {
     successRing($('edit-open-folder'));
   } catch (error) {
     const message = error.message || String(error);
-    setStatus('Could not open instance folder: ' + message);
     toast('Could not open folder: ' + message, 'error', 6000);
   }
 }
@@ -3810,7 +4487,6 @@ async function copyInstancePath() {
     toast('Instance path copied', 'success');
   } catch (error) {
     const message = error.message || String(error);
-    setStatus('Could not copy path: ' + message);
     toast('Could not copy path: ' + message, 'error', 6000);
   }
 }
@@ -3880,6 +4556,7 @@ function buildLoaderSegmented() {
   seg.querySelectorAll('button').forEach((b) => {
     b.addEventListener('click', () => {
       state.selectedLoader = b.dataset.loader;
+      clearCreateValidationField($('modal-loader-version'));
       seg.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
       moveIndicator(b, false);
@@ -3897,6 +4574,11 @@ function bindModal() {
   $('modal-cancel-btn')?.addEventListener('click', closeModal);
   $('modal-overlay')?.addEventListener('click', (e) => { if (e.target === $('modal-overlay')) closeModal(); });
   $('modal-create-btn')?.addEventListener('click', createInstance);
+  ['modal-name', 'modal-version', 'modal-loader-version'].forEach(id => {
+    const control = $(id);
+    const eventName = control?.tagName === 'SELECT' ? 'change' : 'input';
+    control?.addEventListener(eventName, () => clearCreateValidationField(control));
+  });
   $('modal-location-browse')?.addEventListener('click', async () => {
     try {
       const selected = await api.chooseInstanceLocation();
@@ -3919,23 +4601,24 @@ function bindModal() {
     c.addEventListener('click', () => selectProfile(c.dataset.profile));
   });
   $('modal-version')?.addEventListener('change', () => {
+    clearCreateValidationField($('modal-loader-version'));
     loadLoaderVersions();
-    refreshPerformanceCompatibility();
+    refreshPresetCompatibility();
   });
   $('modal-loader-version')?.addEventListener('pointerdown', () => {
     if ($('modal-loader-version')?.dataset.loadState === 'failed') {
       loadLoaderVersions();
     }
   });
-  $('perf-mods-list')?.addEventListener('click', (e) => {
+  $('preset-mods-list')?.addEventListener('click', (e) => {
     const row = e.target.closest('.perf-mod-row');
     if (!row) return;
     const modId = row.dataset.mod;
     if (e.target.closest('.trash-icon')) {
-      state.removedPerfMods.add(modId);
+      state.removedPresetMods.add(modId);
       row.classList.add('removed');
     } else if (e.target.closest('.restore-icon')) {
-      state.removedPerfMods.delete(modId);
+      state.removedPresetMods.delete(modId);
       row.classList.remove('removed');
     }
   });
@@ -3980,7 +4663,7 @@ function bindModal() {
     const filtered = filterVersions();
     populateVersionSelect($('modal-version'), filtered);
     loadLoaderVersions();
-    refreshPerformanceCompatibility();
+    refreshPresetCompatibility();
   });
 }
 
@@ -3997,21 +4680,28 @@ function setCollapsible(el, show) {
   el.classList.toggle('visible', show);
 }
 
+const MOD_PRESET_PROFILES = new Set(['performance', 'beginner', 'builder', 'pvp']);
+
+function isModPresetProfile(profile = state.chosenProfile) {
+  return MOD_PRESET_PROFILES.has(profile);
+}
+
 function selectProfile(profile) {
   state.chosenProfile = profile;
   document.querySelectorAll('.profile-card').forEach((c) => c.classList.toggle('selected', c.dataset.profile === profile));
   pulseOnce(document.querySelector(`.profile-card[data-profile="${profile}"]`));
-  const wrap = $('perf-mods-wrap');
+  const wrap = $('preset-mods-wrap');
   if (profile === 'vanilla') {
     state.selectedLoader = 'vanilla';
     buildLoaderSegmented();
     setSegmentedLocked(true);
     setCollapsible(wrap, false);
-  } else if (profile === 'performance') {
+  } else if (isModPresetProfile(profile)) {
     state.selectedLoader = 'fabric';
     buildLoaderSegmented();
     setSegmentedLocked(true);
-    refreshPerformanceCompatibility();
+    state.removedPresetMods = new Set();
+    refreshPresetCompatibility();
     setCollapsible(wrap, true);
   } else {
     setSegmentedLocked(false);
@@ -4029,24 +4719,28 @@ function setSegmentedLocked(locked) {
   });
 }
 
-function renderPerformanceCompatibility() {
-  const container = $('perf-mods-list');
-  const label = $('perf-mods-label');
-  if (!container || !label) return;
-  if (state.performanceChecking) {
+function renderPresetCompatibility() {
+  const container = $('preset-mods-list');
+  const label = $('preset-mods-label');
+  const note = $('preset-mods-note');
+  if (!container || !label || !note) return;
+  if (state.presetChecking) {
     label.textContent = 'Checking every mod and required dependency…';
+    note.textContent = '';
     container.innerHTML = '<div class="perf-mod-checking"><span class="spinner"></span> Compatibility check in progress</div>';
     return;
   }
-  const preview = state.performanceCompatibility;
+  const preview = state.presetCompatibility;
   if (!preview) {
-    label.textContent = 'Choose a Minecraft version to check optimization mods';
+    label.textContent = 'Choose a Minecraft version to check preset mods';
+    note.textContent = '';
     container.innerHTML = '';
     return;
   }
-  label.textContent = `${preview.included.length} will be installed · ${preview.excluded.length} will be skipped`;
+  label.textContent = `${preview.presetLabel || 'Preset'} · ${preview.included.length} will be installed · ${preview.excluded.length} will be skipped`;
+  note.textContent = preview.presetNote || '';
   const included = preview.included.map(item => {
-    const removed = state.removedPerfMods?.has(item.projectId) ?? false;
+    const removed = state.removedPresetMods?.has(item.projectId) ?? false;
     return `<div class="perf-mod-row${removed ? ' removed' : ''}" data-mod="${escHtml(item.projectId)}">
         <span class="mod-name">${escHtml(item.title || item.projectId)}</span>
         <span class="perf-mod-status compatible">Compatible</span>
@@ -4072,31 +4766,33 @@ function renderPerformanceCompatibility() {
   container.innerHTML = included + excluded;
 }
 
-async function refreshPerformanceCompatibility() {
-  const requestId = ++state.performanceCheckRequestId;
+async function refreshPresetCompatibility() {
+  const requestId = ++state.presetCheckRequestId;
   const version = $('modal-version')?.value || '';
-  state.performanceCompatibility = null;
-  state.performanceMods = [];
-  if (state.chosenProfile !== 'performance' || !version) {
-    state.performanceChecking = false;
-    renderPerformanceCompatibility();
+  const preset = state.chosenProfile;
+  state.presetCompatibility = null;
+  state.presetMods = [];
+  if (!isModPresetProfile(preset) || !version) {
+    state.presetChecking = false;
+    renderPresetCompatibility();
     return;
   }
-  state.performanceChecking = true;
-  renderPerformanceCompatibility();
+  state.presetChecking = true;
+  renderPresetCompatibility();
   try {
-    const preview = await api.checkPerformancePreset(version);
-    if (requestId !== state.performanceCheckRequestId || state.chosenProfile !== 'performance' || $('modal-version')?.value !== version) return;
-    state.performanceCompatibility = preview;
-    state.performanceMods = preview.included.map(item => item.projectId);
-    state.removedPerfMods = new Set([...state.removedPerfMods].filter(id => state.performanceMods.includes(id)));
+    const preview = await api.checkInstancePreset(preset, version);
+    if (requestId !== state.presetCheckRequestId || state.chosenProfile !== preset || $('modal-version')?.value !== version) return;
+    state.presetCompatibility = preview;
+    state.presetMods = preview.included.map(item => item.projectId);
+    state.removedPresetMods = new Set([...state.removedPresetMods].filter(id => state.presetMods.includes(id)));
   } catch (error) {
-    if (requestId !== state.performanceCheckRequestId) return;
-    state.performanceCompatibility = { included: [], excluded: [{ projectId: 'preset', title: 'Performance preset', reason: error.message || String(error) }] };
+    if (requestId !== state.presetCheckRequestId) return;
+    const presetLabel = preset === 'pvp' ? 'PvP' : `${preset.charAt(0).toUpperCase()}${preset.slice(1)}`;
+    state.presetCompatibility = { included: [], excluded: [{ projectId: 'preset', title: `${presetLabel} preset`, reason: error.message || String(error) }] };
   } finally {
-    if (requestId === state.performanceCheckRequestId) {
-      state.performanceChecking = false;
-      renderPerformanceCompatibility();
+    if (requestId === state.presetCheckRequestId) {
+      state.presetChecking = false;
+      renderPresetCompatibility();
     }
   }
 }
@@ -4111,11 +4807,16 @@ async function createInstance() {
   const name = $('modal-name').value.trim();
   const version = $('modal-version').value;
   const loaderVer = $('modal-loader-version').value;
-  if (!name) return showModalError('Please enter an instance name');
-  if (!version) return showModalError('Please select a game version');
-  if (state.selectedLoader !== 'vanilla' && !loaderVer) return showModalError('Please select a loader version');
-  if (state.chosenProfile === 'performance' && state.performanceChecking) return showModalError('Wait for the performance mod compatibility check to finish');
-  if (state.chosenProfile === 'performance' && !state.performanceCompatibility) return showModalError('Performance mod compatibility has not been checked yet');
+  const missing = [];
+  if (!name) missing.push({ control: $('modal-name'), message: 'Enter an instance name' });
+  if (!version) missing.push({ control: $('modal-version'), message: 'Select a Minecraft version' });
+  if (state.selectedLoader !== 'vanilla' && !loaderVer) {
+    const loaderName = state.selectedLoader.charAt(0).toUpperCase() + state.selectedLoader.slice(1);
+    missing.push({ control: $('modal-loader-version'), message: `Select a ${loaderName} loader version` });
+  }
+  if (missing.length) return showCreateValidation(missing);
+  if (isModPresetProfile() && state.presetChecking) return showModalError('Wait for the preset mod compatibility check to finish');
+  if (isModPresetProfile() && !state.presetCompatibility) return showModalError('Preset mod compatibility has not been checked yet');
 
   const btn = $('modal-create-btn');
   btn.disabled = true;
@@ -4129,14 +4830,14 @@ async function createInstance() {
     createdThisAttempt = true;
     setProgress($('modal-progress-fill'), $('modal-progress-text'), 40, 'Instance created');
 
-    if (state.chosenProfile === 'performance' && state.performanceMods.length) {
-      const selectedMods = state.performanceMods.filter((id) => !state.removedPerfMods.has(id));
+    if (isModPresetProfile() && state.presetMods.length) {
+      const selectedMods = state.presetMods.filter((id) => !state.removedPresetMods.has(id));
       if (!selectedMods.length) { setProgress($('modal-progress-fill'), $('modal-progress-text'), 95, 'Skipping — no mods selected'); }
       const versionIds = [];
       const versionSizes = {};
       for (let i = 0; i < selectedMods.length; i++) {
         const modId = selectedMods[i];
-        const checked = state.performanceCompatibility.included.find(item => item.projectId === modId);
+        const checked = state.presetCompatibility.included.find(item => item.projectId === modId);
         if (!checked) continue;
         versionIds.push(checked.versionId, ...(checked.requiredDepVersionIds || []));
         versionSizes[checked.versionId] = checked.fileSize || 0;
@@ -4173,6 +4874,32 @@ function setProgress(fillEl, textEl, pct, text) {
 }
 
 let modalErrorTimeout = null;
+let createValidationTimeout = null;
+function clearCreateValidationField(control) {
+  if (!control) return;
+  control.classList.remove('create-field-invalid');
+  control.removeAttribute('aria-invalid');
+}
+
+function clearCreateValidation() {
+  if (createValidationTimeout) clearTimeout(createValidationTimeout);
+  createValidationTimeout = null;
+  document.querySelectorAll('.create-field-invalid').forEach(clearCreateValidationField);
+}
+
+function showCreateValidation(missing) {
+  clearCreateValidation();
+  missing.forEach(({ control }) => {
+    control?.classList.add('create-field-invalid');
+    control?.setAttribute('aria-invalid', 'true');
+  });
+  showModalError(`Please complete these fields: ${missing.map(item => item.message).join('; ')}.`);
+  const first = missing.find(item => item.control)?.control;
+  first?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => first?.focus({ preventScroll: true }), 280);
+  createValidationTimeout = setTimeout(clearCreateValidation, 5000);
+}
+
 function showModalError(msg) {
   const existing = document.querySelector('.modal-error');
   if (existing) existing.remove();
@@ -4187,9 +4914,9 @@ function showModalError(msg) {
 
 // ── Logs ────────────────────────────────────────────────────
 function appendLog(line) {
-  if (typeof line !== 'string') line = String(line);
-  state.logLines.push(line);
-  if (state.logLines.length > 800) state.logLines.shift();
+  const lines = (Array.isArray(line) ? line : [line]).flatMap(item => String(item).split(/\r?\n/));
+  state.logLines.push(...lines);
+  if (state.logLines.length > 800) state.logLines.splice(0, state.logLines.length - 800);
   const viewer = $('logs-viewer');
   if (!viewer) return;
   viewer.textContent = state.logLines.join('\n');
@@ -4246,7 +4973,8 @@ function bindLaunchEvents() {
   api.onLaunchData((d) => {
     appendLog(d);
     $('dp-stop-game')?.removeAttribute('hidden');
-    setStatus(typeof d === 'string' ? d.split('\n')[0].slice(0, 80) : '');
+    const latest = Array.isArray(d) ? d[d.length - 1] : d;
+    setStatus(typeof latest === 'string' ? latest.split('\n')[0].slice(0, 80) : '');
   });
   api.onLaunchError((e) => {
     const instanceName = state.launchingName;
@@ -4548,7 +5276,10 @@ async function searchMods(append = false) {
           <div class="mod-card-desc">${escHtml(mod.description || '')}</div>
           <div class="mod-card-footer">
             <span class="mod-card-dls">${fmtNum(mod.downloads)} downloads</span>
-            <button class="btn btn-primary btn-sm" data-act="install">Install</button>
+            <span class="mod-card-actions">
+              ${state.discoverCategory === 'mod' ? '<button class="btn btn-secondary btn-sm" data-act="versions" type="button">Versions</button>' : ''}
+              <button class="btn btn-primary btn-sm" data-act="install" type="button">Install</button>
+            </span>
           </div>
         </div>
       </div>
@@ -4576,6 +5307,10 @@ async function searchMods(append = false) {
         e.stopPropagation();
         installModFromSearch(pid);
       });
+      card.querySelector('[data-act="versions"]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openModVersionBrowser(pid);
+      });
     });
     if (state.searchOffset < total && hits.length >= SEARCH_LIMIT) loadMoreBtn?.removeAttribute('hidden');
     else loadMoreBtn?.setAttribute('hidden', '');
@@ -4583,7 +5318,7 @@ async function searchMods(append = false) {
   } catch (e) {
     if (requestId !== state.searchRequestId) return;
     count.textContent = 'Error';
-    grid.innerHTML = `<div class="text-muted" style="text-align:center;padding:24px">Search failed: ${escHtml(e.message || e)}</div>`;
+    grid.innerHTML = emptyStateMarkup('Search failed', e.message || String(e), 'i-alert');
   } finally {
     if (requestId === state.searchRequestId) state.searchLoading = false;
   }
@@ -4613,8 +5348,6 @@ async function installModFromSearch(projectId) {
     return;
   }
   if (!state.instances.length) {
-    setStatus('Create an instance first, then select the mod again');
-    toast('Create an instance first, then return to Discover and select the mod you want to install.', 'error', 6500);
     showInstallNeedsInstanceWarning();
     return;
   }
@@ -4637,16 +5370,16 @@ async function installModFromSearch(projectId) {
   overlay.className = 'modal-root visible';
   overlay.style.zIndex = '300';
   overlay.innerHTML = `
-    <div class="modal" style="max-width:420px">
+    <div class="modal modal-sm">
       <div class="modal-header">
         <div><h2 class="modal-title">Install into…</h2><p class="modal-sub">Pick an instance to install this mod</p></div>
         <button class="modal-close" data-close><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
-      <div class="modal-body" style="padding:0 0 var(--s-2);display:flex;flex-direction:column">
+      <div class="modal-body modal-body-list">
         ${sorted.map((i) => {
           const has = instHasMod[i.name];
           return `<button class="pick-instance${has ? ' has-mod' : ''}" data-name="${escHtml(i.name)}"${has ? ' disabled' : ''}>
-          <span class="pick-instance-icon">${(i.name || 'G')[0].toUpperCase()}</span>
+          <span class="pick-instance-icon">${i.iconData ? `<img src="${escHtml(i.iconData)}" alt="">` : escHtml((i.name || 'G')[0].toUpperCase())}</span>
           <span class="pick-instance-body">
             <span class="pick-instance-name">${escHtml(i.name)}${has ? ' <svg width="14" height="14" class="installed-warn" aria-label="Already installed"><use href="#i-alert-triangle"/></svg>' : ''}</span>
             <span class="pick-instance-desc">${escHtml(i.loader)} ${escHtml(i.gameVersion)}${has ? ' · Already installed' : ''}</span>
@@ -4675,13 +5408,13 @@ function showInstallNeedsInstanceWarning() {
   overlay.className = 'modal-root visible';
   overlay.style.zIndex = '320';
   overlay.innerHTML = `
-    <div class="modal" style="max-width:430px">
+    <div class="modal modal-sm">
       <div class="modal-header">
         <div><h2 class="modal-title">Create an instance first</h2><p class="modal-sub">Mods need a Minecraft instance to install into.</p></div>
         <button class="modal-close" data-close type="button"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
       <div class="modal-body">
-        <p class="text-muted" style="line-height:1.6">Go create an instance, then return to Discover and select the mod again.</p>
+        <p class="modal-copy">Go create an instance, then return to Discover and select the mod again.</p>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-close type="button">Not now</button>
@@ -4698,7 +5431,7 @@ function showInstallNeedsInstanceWarning() {
   });
 }
 
-async function doInstallMod(inst, projectId, backupOptions = {}) {
+async function doInstallMod(inst, projectId, backupOptions = {}, requestedVersion = null) {
   let project;
   try { project = await api.getProject(projectId); } catch (e) {
     setStatus('Could not load project details: ' + (e.message || e));
@@ -4709,19 +5442,25 @@ async function doInstallMod(inst, projectId, backupOptions = {}) {
   // filtering by the instance's loader would exclude them all.
   const noLoaderFilter = ptype === 'resourcepack' || ptype === 'shader' || ptype === 'datapack';
   const loaders = (inst.loader === 'vanilla' || noLoaderFilter) ? [] : [inst.loader];
-  let versions;
-  try {
-    versions = await findCompatibleVersion(projectId, loaders, inst.gameVersion);
-  } catch (e) {
-    setStatus('Version check failed: ' + (e.message || e));
+  let version = requestedVersion;
+  if (version && String(version.project_id) !== String(projectId)) {
+    toast('That version does not belong to this mod', 'error', 5000);
     return;
   }
-  if (!versions || !versions.length) {
-    setStatus(`No compatible ${inst.gameVersion}${loaders.length ? ` ${loaders[0]}` : ''} version exists for this project`);
-    toast('No compatible version found', 'error', 5000);
-    return;
+  if (!version) {
+    let versions;
+    try {
+      versions = await findCompatibleVersion(projectId, loaders, inst.gameVersion);
+    } catch (e) {
+      setStatus('Version check failed: ' + (e.message || e));
+      return;
+    }
+    if (!versions || !versions.length) {
+      toast(`No compatible ${inst.gameVersion}${loaders.length ? ` ${loaders[0]}` : ''} version exists for this project`, 'error', 5000);
+      return;
+    }
+    version = versions[0];
   }
-  const version = versions[0];
 
   // ── Phase 1: Pre-flight check ────────────────────────────
   setStatus('Running compatibility checks…');
@@ -4739,7 +5478,6 @@ async function doInstallMod(inst, projectId, backupOptions = {}) {
       showManualInstallDialog(err);
     } else if (err?.code === 'DISK_SPACE') {
       toast(err.message + ' — ' + err.detail, 'error', 5000);
-      setStatus('Install aborted: ' + err.message);
     } else {
       setStatus('Install aborted: ' + (err?.message || 'Unknown error'));
     }
@@ -4803,16 +5541,183 @@ async function doInstallMod(inst, projectId, backupOptions = {}) {
 
   try {
     const result = await api.installMod(inst.name, { versionIds: allVersionIds, versionSizes, disableFiles, ...backupOptions });
-    const primary = result.primary || result.installed?.[0];
     const restartNote = result.restartRequired ? ' · will apply on the next launch from Pine' : '';
     const installVerb = result.queued ? 'Downloaded' : 'Installed';
     toast(`${installVerb} ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}${restartNote}`, 'success', result.restartRequired ? 6500 : 3000);
-    setStatus(primary ? `${installVerb} ${primary.filename}${restartNote}` : `${installVerb}${restartNote}`);
     if (state.currentInstance?.name === inst.name) loadContentList();
   } catch (e) {
     toast('Install failed: ' + (e.message || e), 'error', 5000);
-    setStatus('Install failed');
   }
+}
+
+async function openModVersionBrowser(projectId) {
+  if (!projectId) return;
+  if (!state.instances.length) {
+    showInstallNeedsInstanceWarning();
+    return;
+  }
+  const instances = sortByRecency(state.instances);
+  const preferred = state.currentInstance && instances.some(instance => instance.name === state.currentInstance.name)
+    ? state.currentInstance : instances[0];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  overlay.style.zIndex = '330';
+  overlay.innerHTML = `
+    <div class="modal version-browser-modal">
+      <div class="modal-header">
+        <div><h2 class="modal-title" data-version-title>Mod versions</h2><p class="modal-sub">Choose an older compatible release for an instance.</p></div>
+        <button class="modal-close" data-close type="button"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="modal-body version-browser-body">
+        <div class="version-instance-field">
+          <span>Instance</span>
+          <div class="version-instance-picker">
+            <button class="version-instance-trigger" data-version-instance-trigger type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span class="pick-instance-icon" data-version-instance-icon>${preferred.iconData ? `<img src="${escHtml(preferred.iconData)}" alt="">` : escHtml((preferred.name || 'P')[0].toUpperCase())}</span>
+              <span data-version-instance-label><strong>${escHtml(preferred.name)}</strong><small>${escHtml(preferred.loader)} · Minecraft ${escHtml(preferred.gameVersion)}</small></span>
+              <svg width="16" height="16" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+            </button>
+            <div class="version-instance-menu" data-version-instance-menu role="listbox" aria-label="Choose an instance" hidden>
+              ${instances.map(instance => `<button class="version-instance-option${instance.name === preferred.name ? ' selected' : ''}" data-instance-name="${escHtml(instance.name)}" type="button" role="option" aria-selected="${instance.name === preferred.name}">
+                <span class="pick-instance-icon">${instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml((instance.name || 'P')[0].toUpperCase())}</span>
+                <span><strong>${escHtml(instance.name)}</strong><small>${escHtml(instance.loader)} · Minecraft ${escHtml(instance.gameVersion)}</small></span>
+                ${instance.name === preferred.name ? '<svg class="version-instance-check" width="16" height="16" aria-hidden="true"><use href="#i-check"/></svg>' : ''}
+              </button>`).join('')}
+            </div>
+          </div>
+        </div>
+        <div class="version-browser-summary" data-version-summary>Loading compatible versions…</div>
+        <div class="version-browser-list" data-version-list><div class="version-browser-loading"><span class="spinner"></span> Loading releases…</div></div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-secondary" data-close type="button">Close</button></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', close));
+  overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+
+  const title = overlay.querySelector('[data-version-title]');
+  const instanceTrigger = overlay.querySelector('[data-version-instance-trigger]');
+  const instanceIcon = overlay.querySelector('[data-version-instance-icon]');
+  const instanceLabel = overlay.querySelector('[data-version-instance-label]');
+  const instanceMenu = overlay.querySelector('[data-version-instance-menu]');
+  const summary = overlay.querySelector('[data-version-summary]');
+  const list = overlay.querySelector('[data-version-list]');
+  let selectedInstanceName = preferred.name;
+  let project = null;
+  let requestId = 0;
+  let displayedVersions = new Map();
+
+  try {
+    project = await api.getProject(projectId);
+    if (!overlay.isConnected) return;
+    title.textContent = `${project.title || 'Mod'} versions`;
+  } catch (error) {
+    if (!overlay.isConnected) return;
+    summary.textContent = 'Could not load this mod.';
+    list.innerHTML = emptyStateMarkup('Versions unavailable', error.message || String(error), 'i-alert');
+    return;
+  }
+
+  const loadVersions = async () => {
+    const activeRequest = ++requestId;
+    const instance = state.instances.find(item => item.name === selectedInstanceName);
+    displayedVersions = new Map();
+    if (!instance) return;
+    if (instance.loader === 'vanilla') {
+      summary.textContent = `${instance.name} is a vanilla instance.`;
+      list.innerHTML = emptyStateMarkup('A mod loader is required', 'Choose a Fabric, Quilt, Forge, or NeoForge instance.', 'i-alert');
+      return;
+    }
+    summary.textContent = `Checking ${instance.loader} releases for Minecraft ${instance.gameVersion}…`;
+    list.innerHTML = '<div class="version-browser-loading"><span class="spinner"></span> Loading releases…</div>';
+    try {
+      const [versions, installedMods] = await Promise.all([
+        api.getProjectVersions(projectId, [instance.loader], [instance.gameVersion]),
+        api.getInstanceMods(instance.name).catch(() => []),
+      ]);
+      if (!overlay.isConnected || activeRequest !== requestId) return;
+      const releases = (versions || [])
+        .filter(version => (version.files || []).some(file => file.url))
+        .sort((a, b) => new Date(b.date_published || 0) - new Date(a.date_published || 0));
+      const installed = installedMods.find(mod => String(mod.projectId) === String(projectId));
+      summary.textContent = releases.length
+        ? `${releases.length} compatible release${releases.length === 1 ? '' : 's'} · ${instance.loader} · Minecraft ${instance.gameVersion}`
+        : `No ${instance.loader} release supports Minecraft ${instance.gameVersion}.`;
+      if (!releases.length) {
+        list.innerHTML = emptyStateMarkup('No compatible versions', 'Try another instance or Minecraft version.', 'i-info');
+        return;
+      }
+      displayedVersions = new Map(releases.map(version => [String(version.id), version]));
+      list.innerHTML = releases.map((version, index) => {
+        const current = String(installed?.installedVersion || '') === String(version.id);
+        const published = version.date_published ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(version.date_published)) : 'Unknown date';
+        const releaseType = version.version_type === 'release' ? 'Release' : version.version_type === 'beta' ? 'Beta' : 'Alpha';
+        return `<article class="version-browser-row${current ? ' current' : ''}">
+          <div class="version-browser-row-main">
+            <div class="version-browser-name">${escHtml(version.name || version.version_number || version.id)}</div>
+            <div class="version-browser-meta">${escHtml(version.version_number || '')} · ${escHtml(published)}</div>
+            <div class="version-browser-tags">
+              ${index === 0 ? '<span class="version-tag latest">Newest</span>' : '<span class="version-tag">Older</span>'}
+              <span class="version-tag ${escHtml(version.version_type || 'release')}">${releaseType}</span>
+              ${(version.loaders || []).slice(0, 3).map(loader => `<span class="version-tag">${escHtml(loader)}</span>`).join('')}
+            </div>
+          </div>
+          <button class="btn ${current ? 'btn-secondary' : 'btn-primary'} btn-sm" data-use-version="${escHtml(version.id)}" type="button"${current ? ' disabled' : ''}>${current ? 'Installed' : installed ? 'Switch' : 'Install'}</button>
+        </article>`;
+      }).join('');
+    } catch (error) {
+      if (!overlay.isConnected || activeRequest !== requestId) return;
+      summary.textContent = 'Could not load compatible releases.';
+      list.innerHTML = emptyStateMarkup('Version check failed', error.message || String(error), 'i-alert');
+    }
+  };
+
+  const setInstanceMenuOpen = open => {
+    instanceMenu.hidden = !open;
+    instanceTrigger.setAttribute('aria-expanded', String(open));
+    instanceTrigger.classList.toggle('open', open);
+    if (open) instanceMenu.querySelector('[aria-selected="true"]')?.focus();
+  };
+  instanceTrigger.addEventListener('click', () => setInstanceMenuOpen(instanceMenu.hidden));
+  instanceTrigger.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      setInstanceMenuOpen(true);
+    } else if (event.key === 'Escape') setInstanceMenuOpen(false);
+  });
+  instanceMenu.addEventListener('click', event => {
+    const option = event.target.closest('[data-instance-name]');
+    if (!option) return;
+    const instance = state.instances.find(item => item.name === option.dataset.instanceName);
+    if (!instance) return;
+    selectedInstanceName = instance.name;
+    instanceIcon.innerHTML = instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml((instance.name || 'P')[0].toUpperCase());
+    instanceLabel.innerHTML = `<strong>${escHtml(instance.name)}</strong><small>${escHtml(instance.loader)} · Minecraft ${escHtml(instance.gameVersion)}</small>`;
+    instanceMenu.querySelectorAll('[data-instance-name]').forEach(item => {
+      const selected = item.dataset.instanceName === instance.name;
+      item.classList.toggle('selected', selected);
+      item.setAttribute('aria-selected', String(selected));
+      item.querySelector('.version-instance-check')?.remove();
+      if (selected) item.insertAdjacentHTML('beforeend', '<svg class="version-instance-check" width="16" height="16" aria-hidden="true"><use href="#i-check"/></svg>');
+    });
+    setInstanceMenuOpen(false);
+    instanceTrigger.focus();
+    loadVersions();
+  });
+  overlay.addEventListener('click', event => {
+    if (!event.target.closest('.version-instance-picker')) setInstanceMenuOpen(false);
+  });
+  list.addEventListener('click', event => {
+    const button = event.target.closest('[data-use-version]');
+    if (!button || button.disabled) return;
+    const instance = state.instances.find(item => item.name === selectedInstanceName);
+    const version = displayedVersions.get(button.dataset.useVersion);
+    if (!instance || !version) return;
+    close();
+    doInstallMod(instance, projectId, {}, version);
+  });
+  await loadVersions();
 }
 
 function confirmInstallAnyway(project, inst) {
@@ -4821,14 +5726,14 @@ function confirmInstallAnyway(project, inst) {
     overlay.className = 'modal-root visible';
     overlay.style.zIndex = '300';
     overlay.innerHTML = `
-      <div class="modal" style="max-width:440px">
+      <div class="modal modal-sm">
         <div class="modal-header">
           <div><h2 class="modal-title">No compatible version found</h2>
             <p class="modal-sub">This content isn't marked for the instance's version</p></div>
           <button class="modal-close" data-close><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
         <div class="modal-body">
-          <p style="color:var(--text-md);line-height:1.6;margin-bottom:12px">
+          <p class="modal-copy modal-copy-spaced">
             <strong>${escHtml(project?.title || 'This item')}</strong> has no version marked compatible with
             <strong>${escHtml(inst.name)}</strong> (${escHtml(inst.loader || 'vanilla')} · MC ${escHtml(inst.gameVersion || '?')}).
             It may not work correctly. Install it anyway?
@@ -4857,17 +5762,16 @@ function showManualInstallDialog(err) {
   overlay.className = 'modal-root visible';
   overlay.style.zIndex = '300';
   overlay.innerHTML = `
-    <div class="modal" style="max-width:460px">
+    <div class="modal modal-md">
       <div class="modal-header">
         <div><h2 class="modal-title">Manual install required</h2></div>
         <button class="modal-close" data-close><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
-      <div class="modal-body" style="text-align:center;padding:var(--s-6)">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" style="margin-bottom:var(--s-3)"><path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
-        <p style="color:var(--text-hi);font-weight:600;margin-bottom:var(--s-2)">${escHtml(err.message)}</p>
-        <p style="color:var(--text-md);font-size:var(--text-caption);margin-bottom:var(--s-4)">${escHtml(err.detail)}</p>
-        <a class="btn btn-primary" href="${escHtml(err.url)}" target="_blank" rel="noopener">Open in browser</a>
-        <button class="btn btn-secondary" data-close style="margin-left:8px">Cancel</button>
+      <div class="modal-body modal-message-body">
+        <svg class="modal-message-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2"><path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
+        <p class="modal-message-title">${escHtml(err.message)}</p>
+        <p class="modal-message-detail">${escHtml(err.detail)}</p>
+        <div class="modal-message-actions"><a class="btn btn-primary" href="${escHtml(err.url)}" target="_blank" rel="noopener">Open in browser</a><button class="btn btn-secondary" data-close>Cancel</button></div>
       </div>
     </div>
   `;
@@ -4889,12 +5793,12 @@ function showOptionalDepsDialog(deps) {
       </label>
     `).join('');
     overlay.innerHTML = `
-      <div class="modal" style="max-width:400px">
+      <div class="modal modal-sm">
         <div class="modal-header">
           <div><h2 class="modal-title">Optional dependencies</h2><p class="modal-sub">Select extra mods to install</p></div>
           <button class="modal-close" data-close><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
-        <div class="modal-body" style="display:flex;flex-direction:column;gap:4px">
+        <div class="modal-body modal-option-list">
           ${items}
         </div>
         <div class="modal-footer">
@@ -4926,7 +5830,7 @@ async function openModrinthPackInstall(project) {
     <div class="modal-header"><div><h2 class="modal-title">Install ${escHtml(project.title || 'Modrinth pack')}</h2><p class="modal-sub">Create a managed instance with updates, repair, and rollback.</p></div><button class="modal-close" data-close><svg width="20" height="20"><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
       <div class="form-row"><label for="mr-pack-name">Instance name</label><input id="mr-pack-name" class="input" maxlength="64" value="${escHtml(project.title || 'Modrinth Pack')}"></div>
-      <div class="form-row" style="margin-top:var(--s-3)"><label for="mr-pack-version">Pack version</label><select id="mr-pack-version" class="input"><option value="">Loading versions…</option></select></div>
+      <div class="form-row form-row-spaced"><label for="mr-pack-version">Pack version</label><select id="mr-pack-version" class="input"><option value="">Loading versions…</option></select></div>
       <div class="modal-error text-muted" data-pack-install-error hidden></div>
     </div>
     <div class="modal-footer"><button class="btn btn-secondary" data-close>Cancel</button><button class="btn btn-primary" data-install-pack disabled>Install managed pack</button></div>
@@ -4978,29 +5882,29 @@ async function showModDetails(projectId) {
     overlay.className = 'modal-root visible';
     overlay.style.zIndex = '300';
     overlay.innerHTML = `
-      <div class="modal" style="max-width:520px">
+      <div class="modal">
         <div class="modal-header">
-          <div style="display:flex;gap:12px;align-items:center;min-width:0">
-            <div class="instance-icon" style="width:48px;height:48px;flex-shrink:0">
-              ${p.icon_url ? `<img src="${escHtml(p.icon_url)}" alt="" style="width:100%;height:100%;object-fit:cover" onerror="this.replaceWith(document.createTextNode('${(p.title || '?')[0]}'))">` : (p.title || '?')[0].toUpperCase()}
+          <div class="project-modal-heading">
+            <div class="instance-icon project-modal-icon">
+              ${p.icon_url ? `<img src="${escHtml(p.icon_url)}" alt="" onerror="this.replaceWith(document.createTextNode('${(p.title || '?')[0]}'))">` : (p.title || '?')[0].toUpperCase()}
             </div>
-            <div style="min-width:0">
-              <h2 class="modal-title" style="font-size:18px">${escHtml(p.title || '')}</h2>
+            <div class="project-modal-copy">
+              <h2 class="modal-title">${escHtml(p.title || '')}</h2>
               <p class="modal-sub">${fmtNum(p.downloads || 0)} downloads · ${fmtNum(p.followers || 0)} followers</p>
             </div>
           </div>
           <button class="modal-close" data-close><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
         <div class="modal-body">
-          <p style="color:var(--text-md);line-height:1.6;margin-bottom:12px;white-space:pre-wrap">${escHtml(p.description || 'No description')}</p>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+          <p class="modal-copy project-modal-description">${escHtml(p.description || 'No description')}</p>
+          <div class="project-modal-chips">
             ${(p.categories || []).slice(0, 8).map((c) => `<span class="chip">${escHtml(c)}</span>`).join('')}
           </div>
-          ${(p.game_versions || []).length ? `<div style="margin-bottom:14px;font-size:12px;color:var(--text-lo)"><strong>Versions:</strong> ${escHtml(p.game_versions.slice(-6).join(', '))}</div>` : ''}
+          ${(p.game_versions || []).length ? `<div class="project-modal-versions"><strong>Versions:</strong> ${escHtml(p.game_versions.slice(-6).join(', '))}</div>` : ''}
         </div>
         <div class="modal-footer">
           ${p.client_side || p.server_side ? `<span class="text-muted">Client: ${escHtml(p.client_side || '?')} · Server: ${escHtml(p.server_side || '?')}</span>` : '<span></span>'}
-          <div style="display:flex;gap:8px">
+          <div class="modal-footer-actions">
             <button class="btn btn-secondary" data-close>Close</button>
             ${p.project_type === 'modpack' ? '<button class="btn btn-primary" type="button" data-install-modrinth-pack>Install pack</button>' : ''}
             ${p.slug ? `<a class="btn btn-primary" href="https://modrinth.com/project/${escHtml(p.slug)}" target="_blank" rel="noopener">View on Modrinth</a>` : ''}
@@ -5014,7 +5918,7 @@ async function showModDetails(projectId) {
       if (e.target === overlay || e.target.closest('[data-close]')) overlay.remove();
     });
   } catch (e) {
-    setStatus('Failed to load mod: ' + (e.message || e));
+    toast('Failed to load project: ' + (e.message || e), 'error', 6000);
   }
 }
 
@@ -5023,14 +5927,15 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-root visible';
   overlay.style.zIndex = '320';
-  overlay.innerHTML = `<div class="modal-backdrop"></div><div class="modal-card modal-card-wide">
-    <div class="modal-head"><div><h2 class="modal-title">Loading CurseForge project…</h2><p class="modal-sub">Checking compatible files</p></div><button class="icon-btn" data-close type="button"><svg width="16" height="16"><use href="#i-x"/></svg></button></div>
+  overlay.innerHTML = `<div class="modal modal-md">
+    <div class="modal-header"><div><h2 class="modal-title">Loading CurseForge project…</h2><p class="modal-sub">Checking compatible files</p></div><button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button></div>
     <div class="modal-body"><div class="skeleton skeleton-block"></div></div>
+    <div class="modal-footer"><button class="btn btn-secondary" data-close-action type="button">Cancel</button><button class="btn btn-primary" id="cf-install" type="button" disabled>${type === 'modpack' ? 'Import modpack' : 'Install'}</button></div>
   </div>`;
   document.body.appendChild(overlay);
   const close = () => overlay.remove();
   overlay.querySelector('[data-close]').addEventListener('click', close);
-  overlay.querySelector('.modal-backdrop').addEventListener('click', close);
+  overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
   try {
     const project = await api.getCurseForgeProject(projectId);
     const defaultInstance = state.currentInstance || sortByRecency(state.instances)[0] || null;
@@ -5045,9 +5950,8 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
       `}
       <label>Compatible file</label><select id="cf-file" class="input"><option>Loading…</option></select>
       <div id="cf-world-wrap" hidden><label>World</label><select id="cf-world" class="input"></select></div>
-      <div id="cf-error" class="modal-error text-muted" hidden></div>
-      <div class="modal-actions"><button class="btn btn-ghost" data-close-action type="button">Cancel</button><button class="btn btn-primary" id="cf-install" type="button" ${type !== 'modpack' && !state.instances.length ? 'disabled' : ''}>${type === 'modpack' ? 'Import modpack' : 'Install'}</button></div>`;
-    body.querySelector('[data-close-action]').addEventListener('click', close);
+      <div id="cf-error" class="modal-error text-muted" hidden></div>`;
+    overlay.querySelector('[data-close-action]').addEventListener('click', close);
     const instanceSelect = body.querySelector('#cf-instance');
     const fileSelect = body.querySelector('#cf-file');
     const worldWrap = body.querySelector('#cf-world-wrap');
@@ -5083,7 +5987,8 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
     };
     instanceSelect?.addEventListener('change', loadOptions);
     await loadOptions();
-    const installButton = body.querySelector('#cf-install');
+    const installButton = overlay.querySelector('#cf-install');
+    installButton.disabled = type !== 'modpack' && !state.instances.length;
     installButton.addEventListener('click', async () => {
       if (!fileSelect.value || fileSelect.disabled) return;
       installButton.disabled = true;

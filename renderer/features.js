@@ -5,7 +5,7 @@ let ctx;
 function dialog(title, content) {
   const el = document.createElement('dialog');
   el.className = 'feature-dialog';
-  el.innerHTML = `<header><h2>${esc(title)}</h2><button class="btn btn-ghost" data-close aria-label="Close"><svg width="18" height="18" aria-hidden="true"><use href="#i-x"/></svg></button></header><div class="feature-body">${content}</div>`;
+  el.innerHTML = `<header><h2>${esc(title)}</h2><button class="modal-close" type="button" data-close aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button></header><div class="feature-body">${content}</div>`;
   document.body.append(el);
   const closed = new Promise(resolve => el.addEventListener('close', () => { resolve(el.returnValue); el.remove(); }, { once: true }));
   el.querySelector('[data-close]').onclick = () => el.close();
@@ -30,7 +30,7 @@ function actions(host, entries) {
   const row = document.createElement('div');
   row.className = 'feature-actions';
   entries.forEach(entry => row.append(button(...entry)));
-  host.append(row);
+  (host.closest('.feature-dialog') || host).append(row);
 }
 
 export async function initFeatures(context) {
@@ -89,8 +89,71 @@ async function openRecipe() {
   try {
     const recipe = await ctx.api.getRecipePreview(name);
     if (!view.el.isConnected) return;
-    view.body.innerHTML = `<p><strong>${esc(recipe.name)}</strong> · Minecraft ${esc(recipe.gameVersion)} · ${esc(recipe.loader)}</p><p>Memory: ${esc(recipe.memory.min)}–${esc(recipe.memory.max)}. ${recipe.files.length} downloadable files.</p><p>A small Pine manifest lets another user recreate this setup. Worlds, accounts, and local file contents are not bundled. Use a full export to include local content.</p><details><summary>Included downloads</summary><ul>${recipe.files.map(file => `<li>${esc(file)}</li>`).join('')}</ul></details><details><summary>Unavailable for download (${recipe.omitted.length})</summary><pre>${esc(JSON.stringify(recipe.omitted, null, 2))}</pre></details>`;
-    actions(view.body, [['Import recipe', () => { view.el.close(); ctx.openImportHub(); }], ['Save recipe', () => ctx.api.exportInstance(name, { mode: 'manifest' }), true]]);
+    const suggestions = new Map((recipe.suggestions || []).map(item => [item.path, item]));
+    const selectedMatches = new Map();
+    const fileRow = file => {
+      const parts = String(file).split('/');
+      const filename = parts.pop() || file;
+      return `<div class="recipe-file"><span class="recipe-file-icon"><svg aria-hidden="true"><use href="#i-check"/></svg></span><span><strong>${esc(filename)}</strong><small>${esc(parts.join('/') || 'instance')}</small></span></div>`;
+    };
+    const unavailableRow = item => {
+      const suggestion = suggestions.get(item.path);
+      const parts = String(item.path).split('/');
+      const filename = parts.pop() || item.path;
+      const candidates = suggestion?.candidates?.length ? `<div class="recipe-match-box">
+        <p>Is this the resource pack you want the recipe to download?</p>
+        <div class="recipe-candidates">${suggestion.candidates.map(candidate => `<button class="recipe-candidate" type="button" data-recipe-path="${esc(item.path)}" data-recipe-project="${esc(candidate.projectId)}">
+          <span class="recipe-candidate-icon">${candidate.iconUrl ? `<img src="${esc(candidate.iconUrl)}" alt="">` : esc(String(candidate.title || 'R').slice(0, 1).toUpperCase())}</span>
+          <span><strong>${esc(candidate.title)}</strong><small>${esc(candidate.author ? `by ${candidate.author}` : candidate.description || 'Modrinth resource pack')}</small></span>
+          <span class="recipe-candidate-action">Use this</span>
+        </button>`).join('')}</div>
+        <button class="recipe-no-match" type="button" data-recipe-no-match="${esc(item.path)}">None of these</button>
+      </div>` : '';
+      return `<article class="recipe-unavailable" data-recipe-item="${esc(item.path)}">
+        <span class="recipe-unavailable-icon"><svg aria-hidden="true"><use href="#i-alert-triangle"/></svg></span>
+        <div class="recipe-unavailable-copy"><strong>${esc(filename)}</strong><small>${esc(parts.join('/') || item.type || 'local content')}</small><p>${esc(item.reason)}</p>${candidates}</div>
+      </article>`;
+    };
+    view.body.innerHTML = `<section class="recipe-overview">
+      <span class="recipe-overview-icon"><svg aria-hidden="true"><use href="#i-copy"/></svg></span>
+      <div><strong>${esc(recipe.name)}</strong><span>Minecraft ${esc(recipe.gameVersion)} · ${esc(recipe.loader)}</span></div>
+      <div class="recipe-stats"><span><b>${recipe.files.length}</b> downloads</span><span><b>${recipe.omitted.length}</b> need review</span><span><b>${esc(recipe.memory.min)}–${esc(recipe.memory.max)}</b> memory</span></div>
+    </section>
+    <p class="recipe-note">This compact recipe recreates provider content and game settings. Use Complete instance export when you want to bundle worlds and every local file. Account and authentication data are never exported.</p>
+    <details class="recipe-section" open>
+      <summary><span><svg aria-hidden="true"><use href="#i-check"/></svg></span><span><strong>Included downloads</strong><small>Verified files Pine can download automatically</small></span><b>${recipe.files.length}</b></summary>
+      <div class="recipe-file-list">${recipe.files.length ? recipe.files.map(fileRow).join('') : '<p class="recipe-empty">No provider downloads were found.</p>'}</div>
+    </details>
+    <details class="recipe-section recipe-section-warning" ${recipe.omitted.length ? 'open' : ''}>
+      <summary><span><svg aria-hidden="true"><use href="#i-alert-triangle"/></svg></span><span><strong>Unavailable downloads</strong><small>${recipe.omitted.length ? 'Review local files and confirm suggested resource-pack matches' : 'Every content file has a verified download'}</small></span><b>${recipe.omitted.length}</b></summary>
+      <div class="recipe-unavailable-list">${recipe.omitted.length ? recipe.omitted.map(unavailableRow).join('') : '<div class="recipe-all-ready"><svg aria-hidden="true"><use href="#i-check"/></svg><span><strong>Everything is ready</strong><small>No local content needs review.</small></span></div>'}</div>
+    </details>`;
+
+    view.body.querySelectorAll('[data-recipe-project]').forEach(candidate => candidate.addEventListener('click', () => {
+      const itemPath = candidate.dataset.recipePath;
+      selectedMatches.set(itemPath, candidate.dataset.recipeProject);
+      const item = candidate.closest('[data-recipe-item]');
+      item?.classList.add('has-match');
+      item?.querySelectorAll('[data-recipe-project]').forEach(option => {
+        const active = option === candidate;
+        option.classList.toggle('selected', active);
+        option.querySelector('.recipe-candidate-action').textContent = active ? 'Selected' : 'Use this';
+      });
+    }));
+    view.body.querySelectorAll('[data-recipe-no-match]').forEach(skip => skip.addEventListener('click', () => {
+      const itemPath = skip.dataset.recipeNoMatch;
+      selectedMatches.delete(itemPath);
+      const item = skip.closest('[data-recipe-item]');
+      item?.classList.remove('has-match');
+      item?.querySelectorAll('[data-recipe-project]').forEach(option => {
+        option.classList.remove('selected');
+        option.querySelector('.recipe-candidate-action').textContent = 'Use this';
+      });
+    }));
+    actions(view.body, [['Import recipe', () => { view.el.close(); ctx.openImportHub(); }], ['Save recipe', async () => {
+      const result = await ctx.api.exportInstance(name, { mode: 'manifest', resourcepackMatches: Object.fromEntries(selectedMatches) });
+      if (result) { toast('Recipe saved', 'success'); view.el.close(); }
+    }, true]]);
   } catch (error) { view.body.textContent = errorText(error); }
 }
 

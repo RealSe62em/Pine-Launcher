@@ -26,6 +26,7 @@
       <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-chevron-right" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-chevron-left" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
       <symbol id="i-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></symbol>
       <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="7" r="4" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
@@ -69,7 +70,7 @@
           <div class="avatar avatar-logged-out" id="account-avatar">G</div>
           <div class="account-info">
             <div class="account-name" id="account-name">Sign in</div>
-            <div class="account-caret" aria-hidden="true">▾</div>
+            <span class="account-caret" aria-hidden="true"><svg><use href="#i-chevron-down"/></svg></span>
           </div>
         </button>
       </div>
@@ -131,7 +132,7 @@
           <p class="hero-copy">Minimal interface, premium polish, and clear launch feedback for every session.</p>
           <div class="hero-actions">
             <button class="btn btn-primary" id="hero-launch-button" type="button">Continue playing</button>
-            <button class="btn" type="button" id="hero-create-btn">New instance</button>
+            <button class="btn btn-secondary" type="button" id="hero-create-btn"><svg width="16" height="16" aria-hidden="true"><use href="#i-plus"/></svg>New instance</button>
             <button class="btn btn-ghost" type="button" data-view="discover">Discover mods</button>
           </div>
         </div>
@@ -235,7 +236,7 @@
             <button class="btn btn-secondary" type="button" id="library-select-btn"><svg width="15" height="15"><use href="#i-check"/></svg>Select</button>
             <button class="btn btn-secondary" type="button" id="library-import-btn"><svg width="15" height="15"><use href="#i-download"/></svg>Import</button>
             <button class="btn btn-secondary" type="button" id="library-make-group-btn"><svg width="15" height="15"><use href="#i-folder"/></svg>Make a group</button>
-            <button class="btn" type="button" id="library-create-btn">New instance</button>
+            <button class="btn btn-primary" type="button" id="library-create-btn"><svg width="16" height="16" aria-hidden="true"><use href="#i-plus"/></svg>New instance</button>
           </div>
         </div>
         <div id="library-bulk-bar" class="library-bulk-bar" hidden>
@@ -283,22 +284,25 @@
           </div>
         </div>
 
-        <div id="instance-tabs" class="tab-list">
-          <button class="tab active" data-tab="content" type="button">Content</button>
-          <button class="tab" data-tab="worlds" type="button">Worlds</button>
-          <button class="tab" data-tab="logs" type="button">Logs</button>
-          <button class="tab" data-tab="settings" type="button">Settings</button>
+        <div id="instance-tabs" class="tab-list" role="tablist" aria-label="Instance sections">
+          <button class="tab active" data-tab="content" type="button" role="tab" aria-selected="true">Content</button>
+          <button class="tab" data-tab="worlds" type="button" role="tab" aria-selected="false">Worlds</button>
+          <button class="tab" data-tab="screenshots" type="button" role="tab" aria-selected="false">Screenshots</button>
+          <button class="tab" data-tab="logs" type="button" role="tab" aria-selected="false">Logs</button>
+          <button class="tab" data-tab="settings" type="button" role="tab" aria-selected="false">Settings</button>
         </div>
 
         <div id="instance-tab-content" class="tab-content">
           <div class="tab-pane active" data-tab="content">
             <div id="content-categories" class="content-categories" role="tablist" aria-label="Installed content type">
-              <button class="content-category active" data-content-type="mod" type="button">Mods <span data-count="mod">0</span></button>
-              <button class="content-category" data-content-type="resourcepack" type="button">Resource Packs <span data-count="resourcepack">0</span></button>
-              <button class="content-category" data-content-type="shader" type="button">Shaders <span data-count="shader">0</span></button>
-              <button class="content-category" data-content-type="datapack" type="button">Data Packs <span data-count="datapack">0</span></button>
+              <button class="content-category active" data-content-type="mod" type="button" role="tab" aria-selected="true">Mods <span data-count="mod">0</span></button>
+              <button class="content-category" data-content-type="resourcepack" type="button" role="tab" aria-selected="false">Resource Packs <span data-count="resourcepack">0</span></button>
+              <button class="content-category" data-content-type="shader" type="button" role="tab" aria-selected="false">Shaders <span data-count="shader">0</span></button>
+              <button class="content-category" data-content-type="datapack" type="button" role="tab" aria-selected="false">Data Packs <span data-count="datapack">0</span></button>
             </div>
             <div class="tab-toolbar">
+              <button class="btn btn-secondary" type="button" id="check-mod-compatibility"><svg width="15" height="15" aria-hidden="true"><use href="#i-check"/></svg>Check compatibility</button>
+              <button class="btn btn-secondary" type="button" id="update-all-content" hidden><svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>Update all</button>
               <button class="btn btn-secondary" type="button" id="instance-add-content">Add content</button>
               <input id="content-search" class="input" placeholder="Filter installed mods..." autocomplete="off">
             </div>
@@ -310,17 +314,27 @@
               <div><strong>World library</strong><small>Back up, rename, share, and manage every save.</small></div>
               <span class="toolbar-spacer"></span>
               <button class="btn btn-secondary" type="button" id="worlds-backup-btn"><svg width="15" height="15"><use href="#i-backup"/></svg>Back up worlds</button>
-              <button class="btn btn-secondary" type="button" id="worlds-screenshots-btn">Open screenshots</button>
+              <button class="btn btn-secondary" type="button" id="worlds-screenshots-btn"><svg width="15" height="15" aria-hidden="true"><use href="#i-folder"/></svg>Open screenshots</button>
             </div>
             <div id="worlds-grid" class="card-grid"></div>
+          </div>
+          <div class="tab-pane" data-tab="screenshots">
+            <div class="tab-toolbar screenshots-toolbar">
+              <div><strong>Screenshot library</strong><small>Review, select, export, and remove images from this instance.</small></div>
+              <span class="toolbar-spacer"></span>
+              <span id="screenshot-selection-count" class="text-muted">0 selected</span>
+              <button class="btn btn-secondary" type="button" id="screenshots-export" disabled><svg width="15" height="15"><use href="#i-download"/></svg>Export ZIP</button>
+              <button class="btn btn-ghost" type="button" id="screenshots-folder"><svg width="15" height="15"><use href="#i-folder"/></svg>Open folder</button>
+            </div>
+            <div id="screenshots-grid" class="screenshot-grid"></div>
           </div>
           <div class="tab-pane" data-tab="logs">
             <div class="log-toolbar">
               <button class="btn btn-secondary" type="button" id="health-button"><svg width="15" height="15" aria-hidden="true"><use href="#i-heart"/></svg>Instance health</button>
-              <button class="btn btn-secondary" type="button" id="support-report-button">Support report</button>
-              <button class="btn btn-secondary" type="button" id="copy-log-btn">Copy log</button>
-              <button class="btn btn-secondary" type="button" id="analyze-log-btn">Explain crash</button>
-              <button class="btn btn-secondary" type="button" id="clear-log-btn">Clear</button>
+              <button class="btn btn-secondary" type="button" id="support-report-button"><svg width="15" height="15" aria-hidden="true"><use href="#i-info"/></svg>Support report</button>
+              <button class="btn btn-secondary" type="button" id="copy-log-btn"><svg width="15" height="15" aria-hidden="true"><use href="#i-copy"/></svg>Copy log</button>
+              <button class="btn btn-secondary" type="button" id="analyze-log-btn"><svg width="15" height="15" aria-hidden="true"><use href="#i-search"/></svg>Explain crash</button>
+              <button class="btn btn-secondary" type="button" id="clear-log-btn"><svg width="15" height="15" aria-hidden="true"><use href="#i-trash"/></svg>Clear</button>
               <span id="log-status" class="text-muted"></span>
             </div>
             <pre id="logs-viewer" class="log-viewer">          /\
@@ -385,7 +399,7 @@
 
   <!-- ── Modal (overlay + dialog) ──────────────────────────── -->
   <div id="modal-overlay" class="modal-root" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal create-instance-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div id="modal-header" class="modal-header">
         <div>
           <h2 id="modal-title" class="modal-title">Create Instance</h2>
@@ -398,17 +412,32 @@
       <div id="modal-body" class="modal-body">
         <div class="profile-grid">
           <button class="profile-card selected" type="button" data-profile="vanilla">
-            <div class="profile-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/></svg></div>
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4.3 7.7 7.7 4.4 7.7-4.4M12 12.1V21"/></svg></div>
             <div class="profile-card-name">Vanilla</div>
             <div class="profile-card-desc">Launch clean Minecraft with default loader.</div>
           </button>
           <button class="profile-card" type="button" data-profile="performance">
-            <div class="profile-card-icon"><svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/></svg></div>
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.9 19a9 9 0 1 1 14.2 0"/><path d="m12 13 4-4"/><circle cx="12" cy="13" r="1.5"/></svg></div>
             <div class="profile-card-name">Performance</div>
             <div class="profile-card-desc">Fabric with optimization mods for better FPS.</div>
           </button>
+          <button class="profile-card" type="button" data-profile="beginner">
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v17H6.5A2.5 2.5 0 0 0 4 22z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v17h4.5A2.5 2.5 0 0 1 20 22z"/></svg></div>
+            <div class="profile-card-name">Beginner</div>
+            <div class="profile-card-desc">Helpful recipes, tooltips and simpler controls.</div>
+          </button>
+          <button class="profile-card" type="button" data-profile="builder">
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M3 16h18M8 4v6M16 4v6M8 16v4M16 16v4M12 10v6"/></svg></div>
+            <div class="profile-card-name">Builder</div>
+            <div class="profile-card-desc">Schematics, overlays and creative building tools.</div>
+          </button>
+          <button class="profile-card" type="button" data-profile="pvp">
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5.5 4-2-2 4-9 9-3 1 1-3z"/><path d="m5 14-2 2 5 5 2-2M14 14l7 7M17 17l2-2"/><path d="m10 5-4-2 2 4 3 3"/></svg></div>
+            <div class="profile-card-name">PvP</div>
+            <div class="profile-card-desc">Combat HUD, ping, armor status and smooth FPS.</div>
+          </button>
           <button class="profile-card" type="button" data-profile="custom">
-            <div class="profile-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83" fill="none" stroke="currentColor" stroke-width="2"/></svg></div>
+            <div class="profile-card-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6M14 6h6M4 12h10M18 12h2M4 18h2M10 18h10"/><circle cx="12" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg></div>
             <div class="profile-card-name">Custom</div>
             <div class="profile-card-desc">Select your own loader and version.</div>
           </button>
@@ -483,11 +512,12 @@
               </div>
             </div>
           </div>
-          <div id="perf-mods-wrap" class="collapsible">
+          <div id="preset-mods-wrap" class="collapsible">
             <div>
-              <div id="perf-mods-container" class="perf-mods">
-                <div class="perf-mods-label" id="perf-mods-label">Choose a Minecraft version to check optimization mods</div>
-                <div id="perf-mods-list" class="perf-mods-list"></div>
+              <div id="preset-mods-container" class="perf-mods">
+                <div class="perf-mods-label" id="preset-mods-label">Choose a Minecraft version to check preset mods</div>
+                <div class="preset-mods-note" id="preset-mods-note"></div>
+                <div id="preset-mods-list" class="perf-mods-list"></div>
               </div>
             </div>
           </div>
@@ -584,7 +614,7 @@
                 <path d="M3 18V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M14 15h7m-3-3 3 3-3 3"/><path d="M3 18h11"/>
               </svg>
             </button>
-            <button class="btn-icon" id="edit-copy-path" type="button" title="Copy path">
+            <button class="btn-icon" id="edit-copy-path" type="button" title="Copy path" aria-label="Copy instance folder path">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
           </div>
@@ -614,6 +644,7 @@
   </div>
 
   <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+  <script src="vendor/skinview3d/skinview3d.bundle.js"></script>
   <script type="module" src="script.js"></script>
 </body>
 </html>
