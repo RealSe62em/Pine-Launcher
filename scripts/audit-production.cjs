@@ -25,12 +25,13 @@ delete manifest.overrides?.request;
 let result;
 try {
   fs.writeFileSync(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
-  result = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
+  result = spawnSync('npm', [
     'audit',
     '--omit=dev',
     '--audit-level=high',
   ], {
     cwd: root,
+    shell: process.platform === 'win32',
     stdio: 'inherit',
   });
 } finally {
