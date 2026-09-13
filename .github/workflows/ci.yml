@@ -30,7 +30,7 @@ jobs:
       - name: Renderer and IPC smoke test (Windows)
         if: runner.os == 'Windows'
         run: npm run test:smoke
-      - run: npm audit --omit=dev --audit-level=high
+      - run: node scripts/audit-production.cjs
       - name: Validate Electron Builder configuration
         if: runner.os == 'Linux'
         run: npx electron-builder --config electron-builder.yml --dir --linux

@@ -55,7 +55,7 @@ jobs:
         run: npm test
 
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/audit-production.cjs
 
       - name: Build x64 installer
         run: npm run build:installer:x64 -- --config.forceCodeSigning=${{ startsWith(github.ref, 'refs/tags/') }}
