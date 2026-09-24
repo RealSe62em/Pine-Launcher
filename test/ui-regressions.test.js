@@ -437,6 +437,8 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-amd64\.deb/);
   assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-arm64\.deb/);
   assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-archlinux-x64\.pacman/);
+  assert.match(website, /data-hash="9437104F80FA048CB4638E214CB091ECC4172F41F36746BA40CCA5D1B5A12377"/);
+  assert.match(website, /virustotal\.com\/gui\/file\/9437104f80fa048cb4638e214cb091ecc4172f41f36746ba40cca5d1b5a12377/);
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
