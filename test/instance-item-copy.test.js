@@ -58,6 +58,6 @@ test('rejects traversal and filesystem links', t => {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'source'), { recursive: true });
   fs.mkdirSync(path.join(root, 'destination'), { recursive: true });
-  fs.symlinkSync('/tmp', path.join(root, 'source', 'linked'));
+  fs.symlinkSync(root, path.join(root, 'source', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => copyInstanceItems({ sourceRoot: path.join(root, 'source'), destinationRoot: path.join(root, 'destination'), items: [{ kind: 'world', relative: 'linked' }] }), /links/);
 });

@@ -55,7 +55,7 @@ test('uses the standard games icon until Minecraft assets are available', t => {
   assert.match(fs.readFileSync(result.desktopFile, 'utf8'), /^Icon=applications-games$/m);
 });
 
-test('resolves XDG data home and reads the preferred Minecraft asset index', t => {
+test('resolves XDG data home and reads the preferred Minecraft asset index', { skip: process.platform !== 'linux' }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pine-linux-game-read-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const assets = fixture(root, 'preferred');
