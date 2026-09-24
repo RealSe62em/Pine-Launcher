@@ -55,3 +55,5 @@ Pine 1.2.8 is the biggest Pine update so far, with more than 50 improvements foc
 - Improved loader checks, mod compatibility warnings, shared-file handling, Linux integration, and launcher progress reporting.
 
 Thank you to everyone who tested Pine and reported problems during development. Your reports shaped a large part of this release.
+
+> **Windows installation:** The 1.2.8 Windows installers are built directly by Pine's public GitHub Actions workflow. They are currently unsigned, so Windows SmartScreen may ask you to confirm before running them.

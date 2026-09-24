@@ -21,6 +21,7 @@ jobs:
     env:
       CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      ALLOW_UNSIGNED_WINDOWS_RELEASES: ${{ vars.ALLOW_UNSIGNED_WINDOWS_RELEASES }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
@@ -40,12 +41,18 @@ jobs:
             throw "Tag ${{ github.ref_name }} does not match package version v$packageVersion"
           }
 
-      - name: Require signing credentials for published Windows releases
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve Windows signing policy
+        id: windows-signing
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
-            throw 'Configure WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD before publishing a Windows release. Unsigned verification builds remain available through workflow_dispatch.'
+            if ("$env:ALLOW_UNSIGNED_WINDOWS_RELEASES" -ne 'true') {
+              throw 'Configure WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD, or explicitly set ALLOW_UNSIGNED_WINDOWS_RELEASES=true for an approved unsigned release.'
+            }
+            "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Warning 'Publishing explicitly approved unsigned Windows installers. Windows SmartScreen may show a warning.'
+          } else {
+            "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
 
       - name: Install locked dependencies
@@ -58,14 +65,14 @@ jobs:
         run: node scripts/audit-production.cjs
 
       - name: Build x64 installer
-        run: npm run build:installer:x64 -- --config.forceCodeSigning=${{ startsWith(github.ref, 'refs/tags/') }}
+        run: npm run build:installer:x64 -- --config.forceCodeSigning=${{ steps.windows-signing.outputs.enabled == 'true' }}
 
       - name: Preserve x64 updater metadata
         shell: pwsh
         run: Move-Item -LiteralPath dist-native/latest.yml -Destination dist-native/latest-x64.yml -Force
 
       - name: Build ARM64 installer
-        run: npm run build:installer:arm64 -- --config.forceCodeSigning=${{ startsWith(github.ref, 'refs/tags/') }}
+        run: npm run build:installer:arm64 -- --config.forceCodeSigning=${{ steps.windows-signing.outputs.enabled == 'true' }}
 
       - name: Preserve architecture-specific updater metadata
         shell: pwsh
@@ -74,7 +81,7 @@ jobs:
           Copy-Item -LiteralPath dist-native/latest-x64.yml -Destination dist-native/latest.yml -Force
 
       - name: Verify Windows release signatures
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.windows-signing.outputs.enabled == 'true'
         shell: pwsh
         run: |
           $files = @(

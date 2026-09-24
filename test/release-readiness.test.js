@@ -32,6 +32,9 @@ test('Windows builds publish GitHub updater metadata and differential packages',
   assert.match(workflow, /PineLauncherSetup-arm64\.exe\.blockmap/);
   assert.match(workflow, /latest\.yml' -Pattern '\^path: PineLauncherSetup-x64\\\.exe\$'/);
   assert.match(workflow, /latest-arm64\.yml' -Pattern '\^path: PineLauncherSetup-arm64\\\.exe\$'/);
+  assert.match(workflow, /ALLOW_UNSIGNED_WINDOWS_RELEASES/);
+  assert.match(workflow, /steps\.windows-signing\.outputs\.enabled == 'true'/);
+  assert.match(workflow, /Publishing explicitly approved unsigned Windows installers/);
 });
 
 test('Linux release builders install every native compression prerequisite', () => {
