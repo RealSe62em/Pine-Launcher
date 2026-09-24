@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { copyInstanceTransactional, createDuplicationFilter, inspectTree } = require('../lib/instance-transfer');
+const { copyInstanceTransactional, createDuplicationFilter, createMigrationFilter, inspectTree } = require('../lib/instance-transfer');
 
 function temporaryRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pine-transfer-'));
@@ -54,6 +54,19 @@ test('selective duplication keeps requested content and starts with fresh activi
   assert.equal(include('servers.dat'), false);
   assert.equal(include(path.join('resourcepacks', 'pretty.zip')), true);
   assert.equal(include('.pine-activity.json'), false);
+  assert.equal(include(path.join('logs', 'latest.log')), false);
+});
+
+test('version migration keeps user content and rebuilds version-specific files', () => {
+  const include = createMigrationFilter();
+  assert.equal(include(path.join('saves', 'World One', 'level.dat')), true);
+  assert.equal(include(path.join('mods', 'example.jar')), true);
+  assert.equal(include(path.join('config', 'example.toml')), true);
+  assert.equal(include('servers.dat'), true);
+  assert.equal(include(path.join('resourcepacks', 'pretty.zip')), true);
+  assert.equal(include(path.join('versions', '1.21.1', '1.21.1.jar')), false);
+  assert.equal(include(path.join('libraries', 'net', 'fabricmc', 'loader.jar')), false);
+  assert.equal(include(path.join('.fabric', 'processedMods', 'cached.jar')), false);
   assert.equal(include(path.join('logs', 'latest.log')), false);
 });
 

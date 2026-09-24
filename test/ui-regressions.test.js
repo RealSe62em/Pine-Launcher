@@ -21,6 +21,90 @@ test('custom install location keeps browse controls visually separate from the p
   assert.match(styles, /\.instance-location-row\s*\{[^}]*gap:\s*14px/s);
 });
 
+test('Home library heading navigates to the full Library view', () => {
+  assert.match(html, /id="home-library-link"[^>]*data-view="library"[^>]*type="button"/);
+  assert.match(html, /id="home-library-link"[\s\S]*?<h2>Your library<\/h2>[\s\S]*?View all/);
+  assert.match(renderer, /document\.querySelectorAll\('\[data-view\]'\)[\s\S]*?switchView\(el\.dataset\.view\)/);
+  assert.match(components, /\.home-library-link\s*\{[\s\S]*?width:\s*100%/);
+});
+
+test('Library split workspace persists four independent panes and copies instance items safely', () => {
+  assert.match(html, /id="library-create-btn"[\s\S]*?id="library-split-btn"/);
+  assert.match(html, /id="split-workspace"[^>]*hidden/);
+  assert.match(renderer, /const SPLIT_WORKSPACE_STORAGE_KEY = 'pine\.split-workspace\.v1'/);
+  assert.match(renderer, /state\.splitPanes\.length < 4/);
+  assert.match(renderer, /state\.splitPanes = \[newSplitPane\(\), newSplitPane\(\)\]/);
+  assert.match(renderer, /state\.splitWorkspaceActive && view === state\.splitWorkspaceDock\) renderSplitWorkspace\(\);\s*else hideSplitWorkspace\(\)/);
+  assert.match(renderer, /state\.splitWorkspaceDock = 'instance';\s*state\.splitPanes = \[newSplitPane\(\), newSplitPane\(\)\]/);
+  assert.match(renderer, /saveSplitWorkspace\(\);\s*switchView\('instance'\);\s*renderSplitWorkspace\(\)/);
+  assert.doesNotMatch(renderer, /stored\.dock !== 'instance'/);
+  assert.match(renderer, /data-split-sort=/);
+  assert.match(renderer, /data-split-group=/);
+  assert.match(renderer, /application\/x-pine-instance-item/);
+  assert.match(renderer, /application\/x-pine-split-pane/);
+  assert.match(renderer, /data-split-reorder=/);
+  assert.match(renderer, /function swapSplitPanes\(sourceId, targetId\)/);
+  assert.match(renderer, /data-split-item-query=/);
+  assert.match(renderer, /function beginSplitResize\(event, axis\)/);
+  assert.match(renderer, /data-split-resize=/);
+  assert.match(renderer, /api\.copyInstanceItems\(payload\.sourceInstance, target\.instanceName/);
+  assert.match(preload, /copyInstanceItems:[\s\S]*?ipcRenderer\.invoke\('copy-instance-items'/);
+  assert.match(main, /ipcMain\.handle\('copy-instance-items'/);
+  assert.match(main, /String\(item\.key \|\| item\.filename \|\| ''\) === requestedKey/);
+  assert.match(main, /assertManagedMutationAllowed\(destinationRecord/);
+  assert.match(features, /\.split-grid\s*\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(features, /\.split-workspace\s*\{[^}]*height:clamp\(440px,calc\(100dvh - 230px\),820px\)/);
+  assert.match(features, /\.split-library-list,\.split-item-list\s*\{[^}]*overflow:auto/);
+  assert.match(features, /\.split-item-search\s*\{/);
+  assert.match(features, /\.split-resize-column\s*\{/);
+  assert.match(features, /\.split-resize-row\s*\{/);
+  assert.match(features, /\.split-pane\.split-drop-target::after/);
+  assert.ok(fs.existsSync(path.join(root, 'lib', 'instance-item-copy.js')));
+});
+
+test('top navigation hover uses the transparent Pine tree mark', () => {
+  assert.match(read('renderer/styles/shell.css'), /\.brand-mark\s*\{[\s\S]*?background-image:\s*url\('\.\.\/pine-tree-logo\.png'\)/);
+  assert.match(read('renderer/styles/shell.css'), /\.brand-mark\s*\{[\s\S]*?background-size:\s*contain/);
+  assert.ok(fs.existsSync(path.join(root, 'renderer', 'pine-tree-logo.png')));
+  assert.match(fs.readFileSync(path.join(root, 'renderer', 'pine-tree-logo.png')).subarray(1, 4).toString(), /PNG/);
+});
+
+test('launcher uses integrated cross-platform window controls', () => {
+  assert.match(main, /frame:\s*false/);
+  assert.match(main, /ipcMain\.handle\('window-control'/);
+  assert.match(preload, /windowControl:\s*\(action\)/);
+  assert.match(preload, /onWindowMaximizedChanged/);
+  assert.match(html, /class="window-drag-region"/);
+  assert.match(html, /id="notifications-button"[\s\S]*?aria-label="Notifications"/);
+  assert.match(html, /id="discord-button"[\s\S]*?<svg width="24" height="24" viewBox="1 3\.5 22 16"/);
+  assert.match(preload, /openDiscordServer:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('open-discord-server'\)/);
+  assert.match(main, /ipcMain\.handle\('open-discord-server'[\s\S]*?shell\.openExternal\(DISCORD_SERVER_URL\)/);
+  assert.match(renderer, /\$\('discord-button'\)[\s\S]*?api\.openDiscordServer\(\)/);
+  for (const action of ['minimize', 'maximize', 'close']) {
+    assert.match(html, new RegExp(`data-window-action="${action}"`));
+  }
+  assert.match(renderer, /function bindWindowChrome\(\)/);
+  assert.match(read('renderer/styles/shell.css'), /\.window-drag-region\s*\{[\s\S]*?-webkit-app-region:\s*drag/);
+  assert.match(read('renderer/styles/shell.css'), /\.window-controls\s*\{[\s\S]*?-webkit-app-region:\s*no-drag/);
+  assert.match(read('renderer/styles/shell.css'), /\.window-control\s*\{[\s\S]*?width:\s*var\(--topbar-h\);[\s\S]*?height:\s*var\(--topbar-h\)/);
+  assert.match(read('renderer/styles/shell.css'), /\.topbar\s*\{[\s\S]*?min-width:\s*min\(900px, calc\(100% - 530px\)\)[\s\S]*?width:\s*max-content[\s\S]*?max-width:\s*min\(1180px, calc\(100% - 180px\)\)/);
+  assert.match(read('renderer/styles/shell.css'), /#playing-pill-name\s*\{[\s\S]*?max-width:\s*clamp\(140px, 22vw, 380px\)[\s\S]*?text-overflow:\s*ellipsis/);
+  assert.doesNotMatch(read('renderer/styles/shell.css'), /\.app \.topbar\s*\{[\s\S]*?left:\s*16px/);
+  assert.match(read('renderer/styles/shell.css'), /\.topbar-discord\s*\{/);
+  assert.match(read('renderer/styles/shell.css'), /\.topbar-discord svg\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*fill:\s*currentColor/);
+  assert.match(html, /id="discord-button"[\s\S]*?<svg width="24" height="24" viewBox="1 3\.5 22 16"[\s\S]*?<path/);
+  assert.match(html, /id="activity-center"[\s\S]*?id="activity-list"[\s\S]*?id="activity-empty"/);
+  assert.match(renderer, /const ACTIVITY_STORAGE_KEY/);
+  assert.match(renderer, /api\.onDownloadJobs\?\.\(syncDownloadActivities\)/);
+  assert.match(renderer, /api\.onInstallProgress\?\.\(handleInstallActivity\)/);
+  assert.match(renderer, /title:\s*`Creating \$\{name\}`[\s\S]*?status:\s*'done'/);
+  assert.match(renderer, /data-toggle-activity/);
+  assert.match(renderer, /function activityItemType\(item\)/);
+  assert.match(read('renderer/styles/shell.css'), /\.activity-expand\s*\{/);
+  assert.match(main, /sendInstallProgress\(instance\.name,[\s\S]*?\{ items: installed \}\)/);
+  assert.match(main, /role:\s*requestedRole/);
+});
+
 test('instance creation reports every missing required field together', () => {
   assert.match(renderer, /const missing = \[\]/);
   assert.match(renderer, /if \(!name\) missing\.push/);
@@ -139,6 +223,54 @@ test('settings use one working header save action without sticky pane buttons', 
   assert.match(renderer, /headerSave\.hidden = false/);
   assert.doesNotMatch(settingsSource, /set-save-btn/);
   assert.equal((html.match(/>Save settings</g) || []).length, 1);
+});
+
+test('global and per-instance memory use the same dual-handle range control', () => {
+  assert.match(preload, /getSystemMemoryGb:\s*\(\) => ipcRenderer\.invoke\('get-system-memory-gb'\)/);
+  assert.match(main, /ipcMain\.handle\('get-system-memory-gb'/);
+  assert.match(renderer, /function memoryRangeMarkup\(prefix, minValue, maxValue\)/);
+  assert.match(renderer, /memoryRangeMarkup\('set'/);
+  assert.match(renderer, /memoryRangeMarkup\('inst'/);
+  assert.match(renderer, /function bindMemoryRange\(prefix\)/);
+  assert.match(renderer, /<b>Min<\/b>/);
+  assert.match(renderer, /<b>Max<\/b>/);
+  assert.match(renderer, /class="memory-range-input memory-range-input-min"/);
+  assert.match(renderer, /class="memory-range-input memory-range-input-max"/);
+  assert.match(components, /\.memory-range-input-max/);
+  assert.match(components, /\.memory-handle-label[\s\S]*?left:\s*calc\(var\(--memory-min\) \* 1%\)/);
+  assert.match(components, /\.memory-max-label\s*\{\s*left:\s*calc\(var\(--memory-max\) \* 1%\)/);
+});
+
+test('instance Mods accepts verified local JARs through a themed copy drop zone', () => {
+  assert.match(preload, /webUtils\.getPathForFile\(file\)/);
+  assert.match(preload, /copyModFiles:\s*\(instanceName, filePaths\) => ipcRenderer\.invoke\('copy-mod-files'/);
+  assert.match(main, /ipcMain\.handle\('copy-mod-files'/);
+  assert.match(main, /copyDroppedMods\(\{/);
+  assert.match(html, /id="mod-drop-zone"[\s\S]*?Drop mods to copy them/);
+  assert.match(renderer, /function bindModDropZone\(\)/);
+  assert.match(renderer, /event\.dataTransfer\.dropEffect = 'copy'/);
+  assert.match(renderer, /await api\.copyModFiles\(instanceName, filePaths\)/);
+  assert.match(components, /\.mod-drop-zone\s*\{[\s\S]*?border:\s*2px dashed/);
+});
+
+test('Discover includes legacy releases and provider-aware classic mod results', () => {
+  assert.match(renderer, /for \(const version of releases\) filterVer\.add/);
+  assert.doesNotMatch(renderer, /releases\.slice\(0, 30\)/);
+  assert.match(renderer, /versionSel\.value = gameVersion/);
+  assert.match(renderer, /Promise\.allSettled\(\[\s*api\.searchMods[\s\S]*?api\.searchCurseForge/);
+  assert.match(renderer, /function officialDiscoverResults\(query, version, loader, category/);
+  assert.match(renderer, /project_id: 'official:optifine'/);
+  assert.match(preload, /getOptiFineBuilds:\s*\(gameVersion\) => ipcRenderer\.invoke\('get-optifine-builds'/);
+  assert.match(preload, /installOptiFine:\s*\(instanceName, filename\) => ipcRenderer\.invoke\('install-optifine'/);
+  assert.match(main, /ipcMain\.handle\('get-optifine-builds'/);
+  assert.match(main, /ipcMain\.handle\('install-optifine'/);
+  assert.match(main, /getOptiFineDownloadUrl\(filename\)/);
+  assert.match(renderer, /await api\.installOptiFine\(instanceName, buildSelect\.value\)/);
+  assert.match(renderer, /Downloaded directly from OptiFine/);
+  assert.match(main, /if \(!curseForgeApiKey\(\)\) return \{ hits: \[\], total_hits: 0, configured: false \}/);
+  assert.match(main, /'optifine\.net', 'www\.optifine\.net'/);
+  assert.match(components, /\.official-mod-card/);
+  assert.match(components, /\.official-mod-notice/);
 });
 
 test('the import hub remains scrollable in short launcher windows', () => {
@@ -300,11 +432,11 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /Creative\s*<i>Forge<\/i>/);
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncher-1\.2\.7-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncher-1\.2\.7-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncher-1\.2\.7-archlinux-x64\.pacman/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-archlinux-x64\.pacman/);
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
@@ -529,6 +661,7 @@ test('managed modpacks expose complete lifecycle controls and preserve user file
   assert.match(renderer, /Roll back to/);
   assert.match(renderer, /previewPackUpdate\(instance.name, versionId\)/);
   assert.match(renderer, /changeManagedPackVersion\(instance.name, versionId, fingerprint\)/);
+  assert.match(renderer, /const installRequest = api\.installModrinthModpack[\s\S]*?close\(\);[\s\S]*?await installRequest/);
   assert.match(components, /\.managed-pack-card/);
   assert.match(components, /\.pack-health-grid/);
 });
@@ -572,6 +705,96 @@ test('step five adds selective copies, bulk organization, and complete playtime 
   assert.match(renderer, /lastSessionSeconds/);
   assert.match(components, /\.instance-card\.selected/);
   assert.match(components, /\.duplicate-component-grid/);
+});
+
+test('instance settings offer safe beta version migration into a separate copy', () => {
+  assert.match(preload, /migrateInstanceVersion/);
+  assert.match(preload, /onMigrationProgress/);
+  assert.match(main, /ipcMain\.handle\('migrate-instance-version'/);
+  assert.match(main, /include: createMigrationFilter\(\)/);
+  assert.match(main, /migratedFrom:/);
+  assert.match(renderer, /id="migrate-instance-version"/);
+  assert.match(renderer, /Beta testing/);
+  assert.match(renderer, /function openVersionMigrationDialog/);
+  assert.match(read('renderer\/styles\/features.css'), /\.migration-beta-warning/);
+});
+
+test('play statistics have a dedicated navigation view backed by recorded sessions', () => {
+  assert.match(html, /data-view="stats"[\s\S]*?<span>Stats<\/span>/);
+  assert.match(html, /id="view-stats"[\s\S]*?id="stats-dashboard"/);
+  assert.match(preload, /getPlayStats:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('get-play-stats'\)/);
+  assert.match(main, /ipcMain\.handle\('get-play-stats'/);
+  assert.match(main, /addPlaySession\(readJSON\(PLAY_STATS_FILE\)/);
+  assert.match(renderer, /function renderPlayStats\(\)/);
+  assert.match(renderer, /function statsRanking\(/);
+  assert.match(read('renderer/styles/features.css'), /\.stats-daily-chart/);
+  assert.match(read('renderer/styles/features.css'), /\.stats-donut/);
+  assert.match(renderer, /STATS_HISTORY_DISMISSED_KEY/);
+  assert.match(renderer, /data-dismiss-stats-history/);
+});
+
+test('Discover keeps Minecraft content and adds public, skin, and saved server libraries', () => {
+  for (const mode of ['minecraft', 'servers', 'skins', 'saved']) assert.match(html, new RegExp(`data-discover-mode="${mode}"`));
+  assert.match(html, /id="discover-minecraft-panel"[\s\S]*?id="discover-categories"/);
+  assert.match(html, /id="discover-servers-panel"[\s\S]*?id="server-results-grid"/);
+  assert.match(html, /id="server-provider-filter"[\s\S]*?Minecraft Java Servers[\s\S]*?GSM[\s\S]*?CraftSerwery\.pl[\s\S]*?Craftdex[\s\S]*?Pine Partner/);
+  assert.match(html, /<select id="server-version-filter"[\s\S]*?All versions[\s\S]*?<\/select>/);
+  assert.match(html, /id="discover-saved-panel"[\s\S]*?id="saved-server-grid"/);
+  assert.match(html, /id="discover-skins-panel"[\s\S]*?id="skin-library-grid"/);
+  assert.match(preload, /searchServerDirectory/);
+  assert.match(preload, /addInstanceServer/);
+  assert.match(preload, /getPublicServerStatus/);
+  assert.match(preload, /browseSkinLibrary/);
+  assert.match(preload, /lookupPlayerSkin/);
+  assert.match(preload, /saveLibrarySkin/);
+  assert.match(main, /ipcMain\.handle\('search-server-directory'/);
+  assert.match(main, /https:\/\/minecraft-java-servers\.com\/api\/v1\/servers/);
+  assert.match(main, /https:\/\/craftserwery\.pl\/api\/v1\/servers/);
+  assert.match(main, /https:\/\/craftdex\.net\/servers\/servers\.json/);
+  assert.match(main, /https:\/\/gsm\.kuryzhev\.cloud\/api\/minecraft\/servers/);
+  assert.match(main, /name: 'Limitless Network', address: 'limitlessnet\.work'/);
+  assert.match(main, /partner\.statusAddress = '185\.207\.164\.216:21336'/);
+  assert.match(main, /source: 'Pine Partner', partner: true/);
+  assert.match(main, /ipcMain\.handle\('add-instance-server'/);
+  assert.match(main, /Close Minecraft before changing this instance server list/);
+  assert.match(main, /ipcMain\.handle\('browse-skin-library'/);
+  assert.match(main, /ipcMain\.handle\('lookup-player-skin'/);
+  assert.match(main, /sessionserver\.mojang\.com\/session\/minecraft\/profile/);
+  assert.match(main, /https:\/\/api\.mineskin\.org\/v2\/skins/);
+  assert.match(main, /ipcMain\.handle\('save-library-skin'/);
+  assert.match(renderer, /function setDiscoverMode\(mode\)/);
+  assert.match(renderer, /const livePlayerSkinLookup = debounce\(username =>/);
+  assert.match(renderer, /lookupPlayerSkin\(\{ username, silent: true \}\)/);
+  assert.match(renderer, /const requestId = \+\+state\.skinPlayerRequestId/);
+  assert.match(renderer, /Number\(Boolean\(b\.player\)\) - Number\(Boolean\(a\.player\)\)/);
+  assert.match(renderer, /function renderServerDirectory\(\)/);
+  assert.match(renderer, /function generatedServerBannerMarkup\(server\)/);
+  assert.match(renderer, /const SERVER_BATCH_SIZE = 20/);
+  assert.match(renderer, /function loadNextServerBatch\(\)/);
+  assert.match(renderer, /function scheduleServerDirectoryRetry\(\)/);
+  assert.match(renderer, /server-provider-filter/);
+  assert.match(renderer, /for \(const version of releases\) serverVersionFilter\.add/);
+  assert.match(renderer, /SERVER_METADATA_STORAGE_KEY/);
+  assert.match(main, /failedSources/);
+  assert.match(main, /failedSources\.length \? 5_000 : 5 \* 60_000/);
+  assert.doesNotMatch(renderer, /mcapi\.tr\/api\/v1\/banner/);
+  assert.match(renderer, /Add to server list/);
+  assert.match(renderer, /server-partner-badge/);
+  assert.match(renderer, /function renderSavedServers\(\)/);
+  assert.match(renderer, /function renderSkinLibrary\(\)/);
+  assert.match(renderer, /async function lookupPlayerSkin\(\{ username: requestedUsername = '', silent = false \} = \{\}\)/);
+  assert.match(renderer, /function openLibrarySkinPreview\(skin\)/);
+  assert.match(read('renderer/styles/features.css'), /\.discover-mode-tabs/);
+  assert.match(read('renderer/styles/features.css'), /\.server-discovery-card/);
+});
+
+test('Instance is a permanent navigation destination with an unselected landing view', () => {
+  assert.match(html, /data-view="instance" type="button" aria-label="Instance">/);
+  assert.match(html, /id="instance-landing"/);
+  assert.match(renderer, /function renderInstanceLanding\(\)/);
+  assert.match(renderer, /Choose an instance/);
+  assert.doesNotMatch(renderer, /instanceTab\.setAttribute\('hidden'/);
+  assert.match(read('renderer/styles/shell.css'), /max-width:\s*590px/);
 });
 
 test('step six manages worlds with guarded renames, data packs, screenshots, and downgrades', () => {

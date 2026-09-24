@@ -1,6 +1,6 @@
 appId: com.pine.launcher
 productName: Pine Launcher
-electronVersion: 39.8.10
+electronVersion: 42.11.6
 electronUpdaterCompatibility: ">=2.16"
 publish:
   provider: github
@@ -63,7 +63,7 @@ linux:
       arch:
         - x64
   category: Game
-  icon: icon.png
+  icon: build/icons
   executableName: pine-launcher
   artifactName: PineLauncher-${version}-linux-${arch}.${ext}
   desktop:
@@ -71,6 +71,7 @@ linux:
       Name: Pine Launcher
       Comment: Multi-instance Minecraft launcher
       Categories: Game;
+      StartupWMClass: pine-launcher
 deb:
   packageName: pine-launcher
   packageCategory: games

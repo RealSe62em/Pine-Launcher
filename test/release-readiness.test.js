@@ -13,8 +13,10 @@ const website = fs.readFileSync(path.join(root, 'website', 'index.html'), 'utf8'
 const websiteScript = fs.readFileSync(path.join(root, 'website', 'script.js'), 'utf8');
 
 test('release uses the planned updater-visible version', () => {
-  assert.equal(pkg.version, '1.2.7');
+  assert.equal(pkg.version, '1.2.8');
   assert.equal(pkg.dependencies['electron-updater'], '6.8.9');
+  assert.equal(pkg.devDependencies.electron, '42.11.6');
+  assert.match(builder, /electronVersion:\s*42\.11\.6/);
 });
 
 test('Windows builds publish GitHub updater metadata and differential packages', () => {
@@ -36,15 +38,32 @@ test('Linux release builders install every native compression prerequisite', () 
   assert.match(workflow, /apt-get install --yes libarchive-tools zstd/);
 });
 
-test('website fallbacks point at every 1.2.7 native installer', () => {
-  assert.match(website, /data-release-version>1\.2\.7</);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncher-1\.2\.7-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncher-1\.2\.7-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.7\/PineLauncher-1\.2\.7-archlinux-x64\.pacman/);
-  assert.match(website, /02201853307A23414E5177AB1A17530B8D828091F589572118521A3709C92280/);
-  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.7'/);
+test('Linux windows and packages share the Pine taskbar identity and icon', () => {
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+  assert.equal(pkg.desktopName, 'pine-launcher');
+  assert.match(builder, /linux:[\s\S]*?syncDesktopName:\s*true/);
+  assert.match(builder, /linux:[\s\S]*?icon:\s*build\/icons/);
+  assert.match(builder, /StartupWMClass:\s*pine-launcher/);
+  assert.match(main, /const LINUX_DESKTOP_ID = 'pine-launcher'/);
+  assert.match(main, /app\.commandLine\.appendSwitch\('class', LINUX_DESKTOP_ID\)/);
+  assert.match(main, /app\.setDesktopName\(`\$\{LINUX_DESKTOP_ID\}\.desktop`\)/);
+  assert.match(main, /icon:\s*path\.join\(__dirname, 'icon\.png'\)/);
+  for (const size of [16, 22, 24, 32, 36, 48, 64, 72, 96, 128, 192, 256, 512, 1024]) {
+    const icon = fs.readFileSync(path.join(root, 'build', 'icons', `${size}x${size}.png`));
+    assert.equal(icon.subarray(1, 4).toString(), 'PNG');
+    assert.equal(icon.readUInt32BE(16), size);
+    assert.equal(icon.readUInt32BE(20), size);
+  }
+});
+
+test('website fallbacks point at every 1.2.8 native installer', () => {
+  assert.match(website, /data-release-version>1\.2\.8</);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-archlinux-x64\.pacman/);
+  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.8'/);
   assert.match(websiteScript, /Object\.values\(names\)\.some\(name => !assets\.get\(name\)\?\.browser_download_url\)/);
   assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.3/);
 });

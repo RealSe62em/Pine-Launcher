@@ -23,7 +23,7 @@ const { DiscordPresence, isPrivateServerAddress, normalizeServerIcon, parseGameP
 const { accountKey, deleteAccount, normalizeAuthStore, publicAccounts, selectAccount, selectedAccount, upsertAccount } = require('./lib/account-store');
 const { destinationKey, listWorlds, newestWorld, rankDestinations, readActivity, recordDestination, removeDestination, sanitizeDestination } = require('./lib/activity-store');
 const { createBackup, listBackups, recoverInterruptedRestores, restoreBackup } = require('./lib/instance-backups');
-const { copyInstanceTransactional, createDuplicationFilter, inspectTree } = require('./lib/instance-transfer');
+const { copyInstanceTransactional, createDuplicationFilter, createMigrationFilter, inspectTree } = require('./lib/instance-transfer');
 const { replaceLevelName, validateDatapackArchive } = require('./lib/world-management');
 const { createTransferInclude } = require('./lib/transfer-plan');
 const { inspectLauncherMetadata, resolveGameRoot, resolveMetadataRoot } = require('./lib/import-adapters');
@@ -48,8 +48,24 @@ const { listScreenshots, normalizeHooks, parseMinecraftOptions, serializeMinecra
 const { buildSupportReport } = require('./lib/support-report');
 const { previewPackChanges } = require('./lib/pack-preview');
 const { parseAddress, pingServer } = require('./lib/server-dashboard');
+const { addServerToInstance } = require('./lib/server-list');
+const { addPlaySession, buildPlayStatsDashboard } = require('./lib/play-stats');
+const { copyDroppedMods } = require('./lib/mod-drop');
+const { parseOptiFineCatalog, resolveOptiFineDownloadUrl } = require('./lib/optifine');
+const { MINECRAFT_DESKTOP_ID, ensureLinuxGameIntegration } = require('./lib/linux-game-integration');
+const { copyInstanceItems } = require('./lib/instance-item-copy');
 const downloadManager = new DownloadManager(jobs => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('download-jobs', jobs); });
 let pendingDesktopShortcut = shortcutArgument(process.argv);
+
+// GNOME and other Linux shells resolve a running window's taskbar icon through
+// its desktop identity. Keep the Wayland app_id / X11 WM_CLASS aligned with the
+// installed pine-launcher.desktop entry instead of inheriting Electron's generic
+// identity (which is rendered as a stock gear icon).
+const LINUX_DESKTOP_ID = 'pine-launcher';
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('class', LINUX_DESKTOP_ID);
+  app.setDesktopName(`${LINUX_DESKTOP_ID}.desktop`);
+}
 
 // This must run before Electron becomes ready. Custom Linux desktops are not
 // always recognized by Chromium and otherwise receive its insecure basic_text
@@ -111,6 +127,7 @@ const LEGACY_LAUNCH_VALIDATION_CACHE_FILE = path.join(app.getPath('userData'), '
 const LAUNCH_VALIDATION_CACHE_FILE = path.join(GLOBAL_DIR, '.pine', 'launch-validation.json');
 const VERSION_MANIFEST_CACHE_FILE = path.join(app.getPath('userData'), 'cache', 'minecraft-versions.json');
 const PENDING_DELETIONS_FILE = path.join(app.getPath('userData'), 'pending-deletions.json');
+const PLAY_STATS_FILE = path.join(app.getPath('userData'), 'play-stats.json');
 try {
   if (!fs.existsSync(LAUNCH_VALIDATION_CACHE_FILE) && fs.existsSync(LEGACY_LAUNCH_VALIDATION_CACHE_FILE)) {
     fs.mkdirSync(path.dirname(LAUNCH_VALIDATION_CACHE_FILE), { recursive: true });
@@ -121,16 +138,19 @@ const launchValidationCache = new ValidationCache(LAUNCH_VALIDATION_CACHE_FILE);
 const managedPackValidationCache = new ValidationCache(path.join(app.getPath('userData'), 'cache', 'managed-pack-validation.json'));
 const activeNeoForgeOperations = new Set();
 const activeTransfers = new Map();
+const publicServerDirectoryCache = new Map();
+const publicSkinDirectoryCache = new Map();
+const playerSkinLookupCache = new Map();
 let registryMutationTail = Promise.resolve();
 let pendingDeletionMutationTail = Promise.resolve();
 const nativeIpcHandle = ipcMain.handle.bind(ipcMain);
 
 const REGISTRY_MUTATION_CHANNELS = new Set([
   'install-mod', 'install-curseforge-content', 'launch-instance', 'discard-content-install',
-  'preview-managed-pack-version', 'save-server', 'delete-server',
-  'disable-mod', 'remove-mod', 'toggle-instance-content', 'remove-instance-content',
+  'preview-managed-pack-version', 'save-server', 'delete-server', 'add-instance-server',
+  'disable-mod', 'remove-mod', 'toggle-instance-content', 'remove-instance-content', 'copy-mod-files', 'copy-instance-items', 'install-optifine',
   'change-neoforge-version', 'repair-neoforge', 'rollback-neoforge',
-  'create-instance', 'duplicate-instance', 'bulk-update-instances', 'bulk-delete-instances',
+  'create-instance', 'duplicate-instance', 'migrate-instance-version', 'bulk-update-instances', 'bulk-delete-instances',
   'import-pine-manifest', 'import-existing-instance-folder', 'import-pine-archive',
   'import-modrinth-archive', 'install-modrinth-modpack', 'import-curseforge-modpack',
   'create-group', 'delete-group', 'set-instance-backup-retention',
@@ -1687,7 +1707,9 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     show: false,
+    frame: false,
     title: 'Pine Launcher',
+    backgroundColor: '#000000',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1698,10 +1720,19 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const sendMaximizedState = () => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+    mainWindow.webContents.send('window-maximized-changed', mainWindow.isMaximized() || mainWindow.isFullScreen());
+  };
+  mainWindow.on('maximize', sendMaximizedState);
+  mainWindow.on('unmaximize', sendMaximizedState);
+  mainWindow.on('enter-full-screen', sendMaximizedState);
+  mainWindow.on('leave-full-screen', sendMaximizedState);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url);
-      if (parsed.protocol === 'https:' && (parsed.hostname === 'modrinth.com' || parsed.hostname.endsWith('.modrinth.com'))) shell.openExternal(url);
+      const allowedHosts = new Set(['modrinth.com', 'www.modrinth.com', 'optifine.net', 'www.optifine.net', 'curseforge.com', 'www.curseforge.com']);
+      if (parsed.protocol === 'https:' && allowedHosts.has(parsed.hostname)) shell.openExternal(url);
     } catch {}
     return { action: 'deny' };
   });
@@ -2004,6 +2035,8 @@ const CURSEFORGE_CLASS_IDS = Object.freeze({ mod: 6, resourcepack: 12, modpack: 
 const CURSEFORGE_LOADER_TYPES = Object.freeze({ forge: 1, fabric: 4, quilt: 5, neoforge: 6 });
 const curseForgeResponseCache = new Map();
 const serverMetadataCache = new Map();
+const OPTIFINE_DOWNLOADS_URL = 'https://www.optifine.net/downloads';
+let optiFineCatalogCache = null;
 
 function curseForgeApiKey() {
   return String(process.env.PINE_CURSEFORGE_API_KEY || '').trim();
@@ -2040,6 +2073,33 @@ async function curseForgeFetch(apiPath) {
   while (curseForgeResponseCache.size > 500) curseForgeResponseCache.delete(curseForgeResponseCache.keys().next().value);
   try { return await promise; }
   catch (error) { curseForgeResponseCache.delete(apiPath); throw error; }
+}
+
+async function fetchOptiFinePage(url) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'https:' || !['optifine.net', 'www.optifine.net'].includes(parsed.hostname)) throw new Error('Refusing an unofficial OptiFine source');
+  const response = await portableFetch(parsed.toString(), {
+    headers: { Accept: 'text/html', 'User-Agent': `PineLauncher/${app.getVersion()}` },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!response.ok) throw new Error(`OptiFine returned HTTP ${response.status}`);
+  const html = await response.text();
+  if (!html || html.length > 4 * 1024 * 1024) throw new Error('OptiFine returned an invalid download page');
+  return html;
+}
+
+async function getOptiFineCatalog() {
+  if (optiFineCatalogCache?.expires > Date.now()) return optiFineCatalogCache.value;
+  const value = parseOptiFineCatalog(await fetchOptiFinePage(OPTIFINE_DOWNLOADS_URL));
+  if (!value.length) throw new Error('OptiFine did not publish any downloadable builds');
+  optiFineCatalogCache = { expires: Date.now() + 10 * 60 * 1000, value };
+  return value;
+}
+
+async function getOptiFineDownloadUrl(filename) {
+  const page = new URL('/adloadx', 'https://optifine.net');
+  page.searchParams.set('f', filename);
+  return resolveOptiFineDownloadUrl(await fetchOptiFinePage(page.toString()), filename);
 }
 
 function secureDownloadUrl(values) {
@@ -2511,6 +2571,19 @@ function getLoaderProviders() {
 // ── IPC Handlers ────────────────────────────────────────────────────
 function setupIPC() {
   const onboardingFile = path.join(app.getPath('userData'), 'onboarding.json');
+  ipcMain.handle('open-discord-server', async () => {
+    await shell.openExternal(DISCORD_SERVER_URL);
+    return true;
+  });
+  ipcMain.handle('window-control', (event, action) => {
+    const target = BrowserWindow.fromWebContents(event.sender);
+    if (!target || target.isDestroyed()) throw new Error('Launcher window is unavailable');
+    if (action === 'minimize') target.minimize();
+    else if (action === 'maximize') target.isMaximized() ? target.unmaximize() : target.maximize();
+    else if (action === 'close') target.close();
+    else throw new Error('Invalid window control');
+    return { maximized: !target.isDestroyed() && (target.isMaximized() || target.isFullScreen()) };
+  });
   ipcMain.handle('claim-onboarding', async () => {
     const hasHistory = (readJSON(INSTANCES_FILE) || []).length > 0 || Boolean(readAuth()?.profile);
     const show = claimOnboarding(onboardingFile, hasHistory);
@@ -2586,6 +2659,13 @@ function setupIPC() {
     if (previous) Object.assign(previous, entry); else { if (servers.length >= 200) throw new Error('Server limit reached'); servers.push(entry); }
     writeJSON(serverFile, servers); return entry;
   });
+  ipcMain.handle('add-instance-server', async (_, input) => {
+    const { instance } = getRegisteredInstance(input?.instanceName);
+    if (activeInstanceName === instance.name) throw new Error('Close Minecraft before changing this instance server list');
+    const address = parseAddress(input?.address).address;
+    const name = String(input?.name || address).replace(/[\r\n\0]/g, ' ').trim().slice(0, 100);
+    return addServerToInstance(getInstanceDir(instance), { name, ip: address });
+  });
   ipcMain.handle('delete-server', async (_, id) => { writeJSON(serverFile, savedServerList().filter(item => item.id !== id)); return true; });
   const serverStatusCache = new Map();
   ipcMain.handle('get-server-status', async (_, id) => {
@@ -2597,6 +2677,177 @@ function setupIPC() {
     serverStatusCache.set(server.address, { time: Date.now(), promise });
     while (serverStatusCache.size > 200) serverStatusCache.delete(serverStatusCache.keys().next().value);
     return promise;
+  });
+  ipcMain.handle('get-public-server-status', async (_, address) => {
+    const clean = parseAddress(address).address;
+    return pingServer(clean);
+  });
+
+  ipcMain.handle('search-server-directory', async (_, options = {}) => {
+    const page = Math.min(1000, Math.max(1, Number.parseInt(options.page, 10) || 1));
+    const type = String(options.type || '').replace(/[^a-z0-9 _-]/gi, '').trim().slice(0, 40);
+    const version = String(options.version || '').replace(/[^a-z0-9._-]/gi, '').trim().slice(0, 30);
+    const requiresMods = options.requiresMods === true ? 'true' : options.requiresMods === false ? 'false' : '';
+    const supportedProviders = new Set(['Minecraft Java Servers', 'GSM', 'CraftSerwery.pl', 'Craftdex', 'Pine Partner']);
+    const provider = supportedProviders.has(options.provider) ? options.provider : '';
+    const params = new URLSearchParams({ page: String(page), per_page: '100' });
+    if (type) params.set('type', type);
+    if (version) params.set('version', version);
+    if (requiresMods) params.set('requires_mods', requiresMods);
+    if (options.online !== false) params.set('online', 'true');
+    const key = `aggregate:${provider || 'all'}:${params}`;
+    const cached = publicServerDirectoryCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    const headers = { Accept: 'application/json', 'User-Agent': `PineLauncher/${app.getVersion()}` };
+    const fetchJson = async url => {
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const response = await portableFetch(url, { headers, signal: AbortSignal.timeout(15000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return await response.json();
+        } catch (error) {
+          lastError = error;
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt)));
+        }
+      }
+      throw lastError;
+    };
+    const safeUrl = value => {
+      try { const url = new URL(String(value || '')); return url.protocol === 'https:' ? url.toString() : null; } catch { return null; }
+    };
+    const cleanText = (value, limit) => String(value || '').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
+    const normalize = (item, source) => {
+      let address = String(item?.address || item?.host || item?.ip || item?.server || '').trim().replace(/^minecraft:\/\//i, '');
+      let host = address;
+      let port = Number(item?.port || item?.game_port) || 25565;
+      try {
+        const parsed = parseAddress(address || item?.host);
+        host = parsed.host;
+        if (parsed.explicitPort) port = parsed.port;
+      } catch { return null; }
+      if (!host || /[\r\n\0\s/@]/.test(host)) return null;
+      const players = item?.players && typeof item.players === 'object' ? item.players : {};
+      const types = item?.types || item?.modes || item?.categories || item?.tags || [];
+      const versions = item?.versions || [];
+      const normalizedAddress = serverDisplayAddress(host, port);
+      return {
+        id: crypto.createHash('sha256').update(normalizedAddress.toLowerCase()).digest('hex'),
+        name: cleanText(item?.name || item?.display_name || item?.server_name || item?.title || host, 120), host, port, address: normalizedAddress,
+        status: item?.status === 'offline' || item?.online === false ? 'offline' : 'online',
+        playersOnline: Math.max(0, Number(item?.players_online ?? item?.playersOnline ?? (typeof item?.players === 'number' ? item.players : players.online)) || 0),
+        playersMax: Math.max(0, Number(item?.players_total ?? item?.playersMax ?? item?.max_players ?? players.max) || 0),
+        votes: Math.max(0, Number(item?.votes) || 0),
+        uptime: Math.max(0, Math.min(100, Number(item?.uptime ?? item?.health?.score) || 0)),
+        version: cleanText(item?.version || (Array.isArray(versions) ? versions.join(', ') : versions), 100),
+        versionMin: cleanText(item?.version_min, 30), versionMax: cleanText(item?.version_max, 30),
+        types: (Array.isArray(types) ? types : [types]).map(value => cleanText(value, 40)).filter(Boolean).slice(0, 8),
+        description: cleanText(item?.short_description || item?.description || item?.motd || item?.map_name || '', 400),
+        requiresMods: typeof item?.requires_mods === 'boolean' ? item.requires_mods : null,
+        bedrock: item?.bedrock === true, software: cleanText(item?.software, 60),
+        iconUrl: safeUrl(item?.icon_url || item?.iconUrl || item?.favicon || item?.icon),
+        bannerUrl: safeUrl(item?.banner_url || item?.bannerUrl || item?.banner),
+        source, partner: item?.partner === true,
+      };
+    };
+    const sourceNames = [];
+    const jobs = [];
+    if (!provider || provider === 'Minecraft Java Servers') {
+      sourceNames.push('Minecraft Java Servers');
+      jobs.push(fetchJson(`https://minecraft-java-servers.com/api/v1/servers?${params}`).then(body => ({
+        source: 'Minecraft Java Servers', body,
+        items: (Array.isArray(body?.data) ? body.data : []).slice(0, 100),
+        total: Number(body?.meta?.total) || 0, pages: Number(body?.meta?.total_pages) || page,
+      })));
+    }
+    if (!provider || provider === 'GSM') {
+      sourceNames.push('GSM');
+      jobs.push(fetchJson(`https://gsm.kuryzhev.cloud/api/minecraft/servers?online=true&sort=players&order=desc&page=${page}&page_size=100`).then(body => ({
+        source: 'GSM', body, items: Array.isArray(body?.items) ? body.items : [], total: Number(body?.total) || 0, pages: Number(body?.total_pages) || page,
+      })));
+    }
+    const includePartner = !provider || provider === 'Pine Partner';
+    const partnerStatusPromise = page === 1 && includePartner
+      ? pingServer('185.207.164.216:21336', { timeout: 7000 })
+      : Promise.resolve(null);
+    if (page === 1) {
+      const craftParams = new URLSearchParams({ limit: '100' });
+      if (options.online !== false) craftParams.set('online', 'true');
+      if (!provider || provider === 'CraftSerwery.pl') {
+        sourceNames.push('CraftSerwery.pl');
+        jobs.push(fetchJson(`https://craftserwery.pl/api/v1/servers?${craftParams}`).then(body => ({
+          source: 'CraftSerwery.pl', body, items: Array.isArray(body?.data) ? body.data : [], total: Number(body?.meta?.total || body?.meta?.count) || 0, pages: 1,
+        })));
+      }
+      if (!provider || provider === 'Craftdex') {
+        sourceNames.push('Craftdex');
+        jobs.push(fetchJson('https://craftdex.net/servers/servers.json').then(body => ({
+          source: 'Craftdex', body, items: Array.isArray(body) ? body : Array.isArray(body?.servers) ? body.servers : Array.isArray(body?.data) ? body.data : [], total: Number(body?.total) || 0, pages: 1,
+        })));
+      }
+    }
+    const settled = await Promise.allSettled(jobs);
+    const successful = settled.filter(result => result.status === 'fulfilled').map(result => result.value);
+    const failedSources = settled.flatMap((result, index) => result.status === 'rejected' ? [sourceNames[index] || `Directory ${index + 1}`] : []);
+    if (!successful.length && !includePartner) throw new Error('The selected public server directory is temporarily unavailable. Pine will retry automatically.');
+    const merged = new Map();
+    for (const result of successful) {
+      for (const raw of result.items) {
+        const item = normalize(raw, result.source);
+        if (!item) continue;
+        const haystack = [item.name, item.description, item.version, ...item.types].join(' ').toLowerCase();
+        if (type && !haystack.includes(type.toLowerCase())) continue;
+        if (version && !haystack.includes(version.toLowerCase())) continue;
+        if (requiresMods && item.requiresMods !== null && String(item.requiresMods) !== requiresMods) continue;
+        const previous = merged.get(item.address.toLowerCase());
+        merged.set(item.address.toLowerCase(), previous ? {
+          ...item, ...previous,
+          iconUrl: previous.iconUrl || item.iconUrl,
+          bannerUrl: previous.bannerUrl || item.bannerUrl,
+          types: [...new Set([...(previous.types || []), ...(item.types || [])])].slice(0, 8),
+          source: [...new Set(`${previous.source},${item.source}`.split(','))].join(','),
+        } : item);
+      }
+    }
+    if (page === 1 && includePartner) {
+      const partnerStatus = await partnerStatusPromise;
+      const partner = normalize({
+        name: 'Limitless Network', address: 'limitlessnet.work', online: true,
+        version: partnerStatus?.online ? partnerStatus.version : '1.13–26.2', types: ['Economy', 'PvP', 'Survival', 'SMP', 'KitPvP'],
+        description: 'Official Pine partner · Survival, PvP, practice, SkyWars, voice chat, and Java + Bedrock support.',
+        bedrock: true, requires_mods: false, partner: true,
+      }, 'Pine Partner');
+      partner.statusAddress = '185.207.164.216:21336';
+      if (partnerStatus?.online) {
+        partner.playersOnline = partnerStatus.players;
+        partner.playersMax = partnerStatus.maxPlayers;
+        partner.liveDescription = partnerStatus.description;
+        partner.iconData = normalizeServerIcon(partnerStatus.iconData);
+        partner.latencyMs = partnerStatus.latencyMs;
+      }
+      const partnerHaystack = [partner.name, partner.description, partner.version, ...partner.types].join(' ').toLowerCase();
+      if ((!type || partnerHaystack.includes(type.toLowerCase())) && (!version || partnerHaystack.includes(version.toLowerCase())) && (!requiresMods || String(partner.requiresMods) === requiresMods)) {
+        const previous = merged.get(partner.address.toLowerCase());
+        merged.set(partner.address.toLowerCase(), {
+          ...previous, ...partner,
+          playersOnline: partner.playersOnline || previous?.playersOnline || 0,
+          playersMax: partner.playersMax || previous?.playersMax || 0,
+          uptime: previous?.uptime || 100, iconData: partner.iconData || previous?.iconData || null,
+          iconUrl: previous?.iconUrl || null, bannerUrl: previous?.bannerUrl || null,
+          types: [...new Set([...(partner.types || []), ...(previous?.types || [])])].slice(0, 8),
+          source: 'Pine Partner', partner: true,
+        });
+      }
+    }
+    const servers = [...merged.values()].sort((a, b) => Number(b.partner) - Number(a.partner) || b.playersOnline - a.playersOnline || b.votes - a.votes);
+    const primaryPages = successful.filter(result => result.pages > 1).map(result => result.pages);
+    const value = { servers, meta: {
+      page, loaded: servers.length, total: Math.max(servers.length, successful.reduce((sum, result) => sum + result.total, 0)),
+      totalPages: Math.max(page, ...primaryPages), sources: successful.map(result => result.source), failedSources,
+    } };
+    publicServerDirectoryCache.set(key, { expires: Date.now() + (failedSources.length ? 5_000 : 5 * 60_000), value });
+    while (publicServerDirectoryCache.size > 40) publicServerDirectoryCache.delete(publicServerDirectoryCache.keys().next().value);
+    return value;
   });
 
   ipcMain.handle('preview-managed-pack-version', async (_, name, versionId) => {
@@ -2935,6 +3186,126 @@ function setupIPC() {
     return true;
   });
 
+  ipcMain.handle('lookup-player-skin', async (_, value) => {
+    const username = String(value || '').trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) throw new Error('Enter a valid Minecraft Java username');
+    const key = username.toLowerCase();
+    const cached = playerSkinLookupCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    const headers = { Accept: 'application/json', 'User-Agent': `PineLauncher/${app.getVersion()} (player skin lookup)` };
+    let identity = null;
+    for (const url of [
+      `https://api.minecraftservices.com/minecraft/profile/lookup/name/${encodeURIComponent(username)}`,
+      `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`,
+    ]) {
+      const response = await portableFetch(url, { headers, signal: AbortSignal.timeout(10000) });
+      if (response.status === 429) throw new Error('Minecraft is rate-limiting player searches. Try again shortly.');
+      if (!response.ok) continue;
+      const candidate = await response.json();
+      const id = String(candidate?.id || '').replace(/-/g, '');
+      if (/^[a-f0-9]{32}$/i.test(id)) { identity = { id, name: String(candidate?.name || username).slice(0, 16) }; break; }
+    }
+    if (!identity) throw new Error(`No Minecraft Java player named ${username} was found`);
+    const profileResponse = await portableFetch(`https://sessionserver.mojang.com/session/minecraft/profile/${identity.id}`, {
+      headers, signal: AbortSignal.timeout(10000),
+    });
+    if (profileResponse.status === 429) throw new Error('Minecraft is rate-limiting skin lookups. Try again shortly.');
+    if (!profileResponse.ok) throw new Error(`Could not load ${identity.name}'s Minecraft profile`);
+    const profile = await profileResponse.json();
+    const textureProperty = (Array.isArray(profile?.properties) ? profile.properties : []).find(property => property?.name === 'textures' && typeof property?.value === 'string');
+    if (!textureProperty || textureProperty.value.length > 100_000) throw new Error(`${identity.name} does not have a public skin texture`);
+    let payload;
+    try { payload = JSON.parse(Buffer.from(textureProperty.value, 'base64').toString('utf8')); }
+    catch { throw new Error(`Could not read ${identity.name}'s skin texture`); }
+    const rawUrl = String(payload?.textures?.SKIN?.url || '');
+    let textureUrl;
+    try {
+      const parsed = new URL(rawUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname !== 'textures.minecraft.net' || !/^\/texture\/[a-f0-9]{32,128}$/i.test(parsed.pathname)) throw new Error();
+      parsed.protocol = 'https:';
+      parsed.port = '';
+      parsed.search = '';
+      parsed.hash = '';
+      textureUrl = parsed.toString();
+    } catch { throw new Error(`${identity.name} does not have a usable Minecraft skin`); }
+    const result = {
+      id: `player-${identity.id}`, shortId: identity.id.slice(0, 8), name: String(profile?.name || identity.name).slice(0, 16),
+      textureUrl, variant: payload?.textures?.SKIN?.metadata?.model === 'slim' ? 'slim' : 'classic',
+      player: true, uuid: identity.id, source: 'Minecraft profile',
+    };
+    playerSkinLookupCache.set(key, { expires: Date.now() + 5 * 60_000, value: result });
+    while (playerSkinLookupCache.size > 100) playerSkinLookupCache.delete(playerSkinLookupCache.keys().next().value);
+    return result;
+  });
+
+  ipcMain.handle('browse-skin-library', async (_, options = {}) => {
+    const after = /^[a-f0-9]{32}$/i.test(String(options.after || '')) ? String(options.after) : '';
+    const size = Math.min(32, Math.max(8, Number.parseInt(options.size, 10) || 20));
+    const key = `${size}:${after}`;
+    const cached = publicSkinDirectoryCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    const params = new URLSearchParams({ size: String(size) });
+    if (after) params.set('after', after);
+    const response = await portableFetch(`https://api.mineskin.org/v2/skins?${params}`, {
+      headers: { Accept: 'application/json', 'User-Agent': `PineLauncher/${app.getVersion()} (skin browser)` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`MineSkin returned HTTP ${response.status}`);
+    const body = await response.json();
+    const skins = (Array.isArray(body?.skins) ? body.skins : []).flatMap(item => {
+      const uuid = String(item?.uuid || '').replace(/-/g, '');
+      const texture = String(item?.texture || '');
+      if (!/^[a-f0-9]{32}$/i.test(uuid) || !/^[a-f0-9]{32,128}$/i.test(texture)) return [];
+      const shortId = String(item?.shortId || uuid.slice(0, 8)).replace(/[^a-z0-9_-]/gi, '').slice(0, 24);
+      const suppliedName = String(item?.name || '').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+      return [{
+        id: uuid, shortId,
+        name: suppliedName || 'MineSkin skin',
+        textureUrl: `https://textures.minecraft.net/texture/${texture}`,
+        timestamp: Number(item?.timestamp) || 0,
+        source: 'MineSkin',
+      }];
+    });
+    const next = String(body?.pagination?.next?.after || '').replace(/-/g, '');
+    const value = { skins, next: /^[a-f0-9]{32}$/i.test(next) ? next : '' };
+    publicSkinDirectoryCache.set(key, { expires: Date.now() + 15 * 60_000, value });
+    while (publicSkinDirectoryCache.size > 80) publicSkinDirectoryCache.delete(publicSkinDirectoryCache.keys().next().value);
+    return value;
+  });
+
+  ipcMain.handle('save-library-skin', async (_, input, variant = 'classic', apply = false) => {
+    const parsed = new URL(String(input?.textureUrl || ''));
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'textures.minecraft.net' || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash || !/^\/texture\/[a-f0-9]{32,128}$/i.test(parsed.pathname)) throw new Error('Invalid community skin texture');
+    const response = await portableFetch(parsed.toString(), { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`Could not download skin (HTTP ${response.status})`);
+    const declaredSize = Number(response.headers.get('content-length')) || 0;
+    if (declaredSize > 1024 * 1024) throw new Error('Skin file is too large');
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > 1024 * 1024) throw new Error('Skin file is too large');
+    validateSkinPng(buffer);
+    const auth = readAuth();
+    const account = skinAccountKey(auth);
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 24);
+    const relative = path.join(account, `${hash}.png`);
+    const absolute = path.join(SKINS_DIR, relative);
+    fs.mkdirSync(path.dirname(absolute), { recursive: true });
+    fs.writeFileSync(absolute, buffer);
+    const library = readSkinLibrary();
+    const rows = library.accounts[account] || [];
+    const record = {
+      id: hash, file: relative,
+      name: String(input?.name || `Community skin ${hash.slice(0, 8)}`).replace(/[\r\n\0]+/g, ' ').trim().slice(0, 80),
+      variant: variant === 'slim' ? 'slim' : 'classic', addedAt: new Date().toISOString(), source: 'MineSkin',
+    };
+    library.accounts[account] = [record, ...rows.filter(item => item.id !== hash)].slice(0, 256);
+    writeJSON(SKINS_FILE, library);
+    if (apply) {
+      if (!auth || auth.meta?.type === 'offline') throw new Error('The skin was saved locally. Sign in with Microsoft to apply it to Minecraft.');
+      await uploadMinecraftSkin(auth, buffer, record.variant);
+    }
+    return publicSkinRecord(record);
+  });
+
   ipcMain.handle('get-skin-library', async () => {
     const auth = readAuth();
     const library = readSkinLibrary();
@@ -3195,6 +3566,95 @@ function setupIPC() {
       writeJSON(INSTANCES_FILE, latestRegistry);
       diagnosticLog('INFO', `Duplicated ${safeSourceName} as ${newName} (${result.files} files, ${result.bytes} bytes)`);
       return entry;
+    } catch (error) {
+      fs.rmSync(destinationDir, { recursive: true, force: true });
+      throw error;
+    }
+  });
+
+  ipcMain.handle('migrate-instance-version', async (_, sourceName, options = {}) => {
+    const safeSourceName = sanitizeName(sourceName);
+    const newName = sanitizeName(options.name);
+    if (newName === safeSourceName) throw new Error('Choose a different name for the migrated instance');
+    if (activeInstanceName === safeSourceName) throw new Error('Close Minecraft before migrating this instance');
+
+    const registry = readJSON(INSTANCES_FILE) || [];
+    const source = registry.find(item => item.name === safeSourceName);
+    if (!source) throw new Error('Source instance not found');
+    if (source.modpack && source.modpack.lockState !== 'unpaired') {
+      throw new Error('Unpair this managed modpack before migrating it to another Minecraft version');
+    }
+    if (registry.some(item => item.name.toLowerCase() === newName.toLowerCase())) {
+      throw new Error(`Instance "${newName}" already exists`);
+    }
+
+    const gameVersion = String(options.gameVersion || '').trim();
+    const loader = String(options.loader || 'vanilla').toLowerCase();
+    const loaderVersion = loader === 'vanilla' ? null : String(options.loaderVersion || '').trim();
+    const normalized = normalizeProfileLoader(loader === 'vanilla' ? 'vanilla' : 'custom', loader, loaderVersion);
+    if (normalized.loader !== loader) throw new Error('Select a supported mod loader');
+    const manifest = await fetchMinecraftVersions();
+    if (!manifest.versions?.some(version => version.id === gameVersion)) throw new Error('Select a valid Minecraft version');
+    if (gameVersion === source.gameVersion) throw new Error('Choose a different Minecraft version for the migrated instance');
+    if (loader !== 'vanilla') {
+      if (!loaderVersion) throw new Error(`Select a ${loader} loader version`);
+      const available = await fetchLoaderVersions(gameVersion, loader);
+      if (!available.some(version => version.version === loaderVersion)) {
+        throw new Error(`The selected ${loader} version is not compatible with Minecraft ${gameVersion}`);
+      }
+    }
+
+    const customRoot = source.customRoot || '';
+    const sourceDir = getInstanceDir(source);
+    const destinationDir = resolveSafePath(customRoot || INSTANCES_DIR, newName);
+    const operationId = typeof options.operationId === 'string' && /^[a-zA-Z0-9-]{8,80}$/.test(options.operationId) ? options.operationId : crypto.randomUUID();
+    const controller = new AbortController();
+    if (activeTransfers.has(operationId)) throw new Error('A transfer with this identifier is already running');
+    activeTransfers.set(operationId, controller);
+    let result;
+    try {
+      result = await copyInstanceTransactional({
+        source: sourceDir,
+        destination: destinationDir,
+        include: createMigrationFilter(),
+        signal: controller.signal,
+        onProgress: progress => {
+          if (!mainWindow?.isDestroyed()) mainWindow.webContents.send('migration-progress', { operationId, sourceName: safeSourceName, name: newName, ...progress });
+        },
+      });
+    } finally { activeTransfers.delete(operationId); }
+
+    const entry = {
+      ...source,
+      id: crypto.randomUUID(),
+      name: newName,
+      path: destinationDir,
+      customRoot,
+      gameVersion,
+      profile: loader === 'vanilla' ? 'vanilla' : 'custom',
+      loader,
+      loaderVersion,
+      javaPath: null,
+      created: new Date().toISOString(),
+      lastPlayed: null,
+      lastOpened: null,
+      lastSessionSeconds: 0,
+      totalPlaytimeSeconds: 0,
+      favorite: false,
+      neoForgeHistory: [],
+      modpack: null,
+      migratedFrom: { id: String(source.id || ''), name: source.name, gameVersion: source.gameVersion, loader: source.loader, loaderVersion: source.loaderVersion || null, migratedAt: new Date().toISOString() },
+    };
+    try {
+      const latestRegistry = readJSON(INSTANCES_FILE) || [];
+      if (latestRegistry.some(item => item.name.toLowerCase() === newName.toLowerCase())) throw new Error(`Instance "${newName}" was created while migration was running`);
+      latestRegistry.push(entry);
+      writeJSON(INSTANCES_FILE, latestRegistry);
+      void prepareJavaForInstance(gameVersion);
+      let compatibility = { knownBroken: [], incompatible: [], duplicates: [] };
+      try { compatibility = await inspectLaunchMods(path.join(destinationDir, 'mods'), loader, gameVersion); } catch {}
+      diagnosticLog('INFO', `Migrated ${safeSourceName} as ${newName} on Minecraft ${gameVersion} (${result.files} files, ${result.bytes} bytes)`);
+      return { ...entry, migrationCompatibility: compatibility };
     } catch (error) {
       fs.rmSync(destinationDir, { recursive: true, force: true });
       throw error;
@@ -4078,6 +4538,12 @@ function setupIPC() {
     return registry;
   });
 
+  ipcMain.handle('get-play-stats', async () => buildPlayStatsDashboard(
+    readJSON(PLAY_STATS_FILE) || {},
+    readJSON(INSTANCES_FILE) || [],
+    new Date(),
+  ));
+
   ipcMain.handle('list-instance-backups', async (_, instanceName) => {
     const { instance } = getRegisteredInstance(instanceName);
     return {
@@ -4577,6 +5043,20 @@ function setupIPC() {
         console.warn(`[Java] Configured runtime is incompatible; using Java ${selectedJava.major} at ${selectedJava.path}`);
       }
       await ensureSharedMinecraftVersion(instance.gameVersion, reportPreparation);
+      if (process.platform === 'linux') {
+        try {
+          const integration = ensureLinuxGameIntegration({
+            homeDir: app.getPath('home'),
+            assetRoot: GLOBAL_ASSETS_DIR,
+            gameVersion: instance.gameVersion,
+          });
+          if (integration.changed) {
+            execFile('update-desktop-database', [path.dirname(integration.desktopFile)], { windowsHide: true }, () => {});
+          }
+        } catch (error) {
+          diagnosticLog('WARN', `Could not register Minecraft's Linux taskbar icon: ${error.message}`);
+        }
+      }
       customLoader = await buildLoaderUrl(instance, instanceDir);
       if (instance.loader === 'neoforge') {
         customLoader = await getLoaderProviders().get('neoforge').prepare(instance, instanceDir, selectedJava.path, p => {
@@ -4652,10 +5132,40 @@ function setupIPC() {
       let runtimeMismatchMessage = '';
       let gameStartedAt = 0;
       let sessionRecorded = false;
+      let currentPlaySegment = null;
+      const playSegments = [];
+      const finishPlaySegment = (at = Date.now()) => {
+        if (!currentPlaySegment) return;
+        const seconds = Math.max(1, Math.round((at - currentPlaySegment.startedAt) / 1000));
+        const previous = playSegments.at(-1);
+        if (previous && previous.type === currentPlaySegment.type && previous.key === currentPlaySegment.key) previous.seconds += seconds;
+        else playSegments.push({ type: currentPlaySegment.type, key: currentPlaySegment.key, label: currentPlaySegment.label, seconds });
+        currentPlaySegment = null;
+      };
+      const beginPlaySegment = (type, key, label, at = Date.now()) => {
+        const normalizedKey = String(key || type).toLowerCase();
+        if (currentPlaySegment?.type === type && currentPlaySegment?.key === normalizedKey) return;
+        finishPlaySegment(at);
+        currentPlaySegment = { type, key: normalizedKey, label: String(label || type), startedAt: at };
+      };
+      const beginDestinationSegment = (destination, at = Date.now()) => {
+        if (destination?.type === 'multiplayer') {
+          const address = serverDisplayAddress(destination.address || destination.identifier);
+          const saved = readSavedServers(instanceDir).find(server => serverDisplayAddress(server.ip).toLowerCase() === address.toLowerCase());
+          const savedName = String(saved?.name || '').trim();
+          const label = savedName && !/^(?:minecraft|multiplayer) server$/i.test(savedName) ? savedName : (destination.label || address);
+          beginPlaySegment('multiplayer', address, label, at);
+        } else if (destination?.type === 'singleplayer') {
+          const world = listWorlds(path.join(instanceDir, 'saves')).find(item => item.identifier === destination.identifier);
+          beginPlaySegment('singleplayer', destination.identifier, world?.name || destination.label || destination.identifier, at);
+        } else beginPlaySegment('menu', 'menu', 'Main menu', at);
+      };
       const recordPlaySession = () => {
         if (sessionRecorded || !gameStartedAt) return;
         sessionRecorded = true;
-        const seconds = Math.max(1, Math.round((Date.now() - gameStartedAt) / 1000));
+        const endedAt = Date.now();
+        finishPlaySegment(endedAt);
+        const seconds = Math.max(1, Math.round((endedAt - gameStartedAt) / 1000));
         try {
           const currentRegistry = readJSON(INSTANCES_FILE) || [];
           const current = currentRegistry.find(item => item.id === instance.id || item.name === instance.name);
@@ -4663,6 +5173,16 @@ function setupIPC() {
           current.lastSessionSeconds = seconds;
           current.totalPlaytimeSeconds = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Number(current.totalPlaytimeSeconds) || 0) + seconds);
           writeJSON(INSTANCES_FILE, currentRegistry);
+          const stats = addPlaySession(readJSON(PLAY_STATS_FILE) || {}, {
+            id: crypto.randomUUID(),
+            instanceId: String(instance.id || instance.name),
+            instanceName: instance.name,
+            startedAt: new Date(gameStartedAt).toISOString(),
+            endedAt: new Date(endedAt).toISOString(),
+            durationSeconds: seconds,
+            segments: playSegments,
+          });
+          writeJSON(PLAY_STATS_FILE, stats);
         } catch (error) { diagnosticLog('WARN', `Could not save playtime for ${instance.name}: ${error.message}`); }
       };
       const recordedDestinations = new Set();
@@ -4844,7 +5364,10 @@ function setupIPC() {
       // ── data: Minecraft stdout/stderr (post-Java-launch) ───
       mcClient.on('data', (e) => {
         minecraftProcessStarted = true;
-        if (!gameStartedAt) gameStartedAt = Date.now();
+        if (!gameStartedAt) {
+          gameStartedAt = Date.now();
+          beginDestinationSegment(quickDestination, gameStartedAt);
+        }
         diagnosticLog('GAME', e);
         sendLaunchData(e);
         if (!presenceGameStarted) {
@@ -4856,9 +5379,15 @@ function setupIPC() {
           if (activity?.type === 'multiplayer') {
             const address = serverDisplayAddress(activity.address, activity.port);
             saveDestination({ type: 'multiplayer', identifier: address, address, label: address });
+            beginDestinationSegment({ type: 'multiplayer', identifier: address, address, label: address });
           } else if (activity?.type === 'singleplayer') {
             const world = quickDestination?.type === 'singleplayer' ? quickDestination : newestWorld(path.join(instanceDir, 'saves'));
-            if (world) saveDestination({ type: 'singleplayer', identifier: world.identifier, label: world.label });
+            if (world) {
+              saveDestination({ type: 'singleplayer', identifier: world.identifier, label: world.label });
+              beginDestinationSegment({ type: 'singleplayer', identifier: world.identifier, label: world.label });
+            }
+          } else if (activity?.type === 'menu') {
+            beginDestinationSegment(null);
           }
         }
         if (typeof e === 'string') {
@@ -4947,7 +5476,12 @@ function setupIPC() {
                    + cleanCorruptedJars(GLOBAL_VERSIONS_DIR)
                    + cleanCorruptedJars(getInstanceDir(instance, 'mods'));
       if (cleaned > 0) mainWindow?.webContents.send('launch-fixed', cleaned);
-      const launchEnvironment = instance.hooks?.environment || {};
+      const launchEnvironment = { ...(instance.hooks?.environment || {}) };
+      // GLFW uses RESOURCE_NAME as the X11/XWayland WM_CLASS instance when a
+      // game does not provide its own window hint. Match the hidden desktop
+      // entry above so GNOME resolves Minecraft's grass-block icon instead of
+      // treating the Java process as an unknown application.
+      if (process.platform === 'linux') launchEnvironment.RESOURCE_NAME = MINECRAFT_DESKTOP_ID;
       const previousEnvironment = Object.fromEntries(Object.keys(launchEnvironment).map(key => [key, process.env[key]]));
       for (const [key, value] of Object.entries(launchEnvironment)) process.env[key] = String(value);
       Promise.resolve(mcClient.launch(opts)).then((processHandle) => {
@@ -4985,7 +5519,54 @@ function setupIPC() {
     return modrinthFetch(`/search?query=${encodeURIComponent(query || '')}&offset=${Math.max(0, Number(offset) || 0)}&limit=${Math.min(100, Math.max(1, Number(limit) || 20))}&index=${index}${facetStr}`);
   });
 
+  ipcMain.handle('get-optifine-builds', async (_, requestedGameVersion) => {
+    const gameVersion = String(requestedGameVersion || '').trim();
+    if (!/^[0-9A-Za-z._-]{1,40}$/.test(gameVersion)) throw new Error('Choose a valid Minecraft version');
+    return (await getOptiFineCatalog())
+      .filter(build => build.gameVersion === gameVersion)
+      .sort((left, right) => Number(left.preview) - Number(right.preview));
+  });
+
+  ipcMain.handle('install-optifine', async (_, instanceName, requestedFilename) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    if (instance.loader !== 'forge') throw new Error('OptiFine must be installed into a Forge instance from the Mods folder');
+    const filename = safeRemoteFilename(String(requestedFilename || ''));
+    const build = (await getOptiFineCatalog()).find(item => item.gameVersion === instance.gameVersion && item.filename === filename);
+    if (!build) throw new Error(`This OptiFine build is not published for Minecraft ${instance.gameVersion}`);
+    const instanceDir = getInstanceDir(instance);
+    const relative = `mods/${filename}`;
+    assertManagedMutationAllowed(instance, relative);
+    const restartRequired = activeInstanceName === instance.name;
+    if (!restartRequired) applyContentInstalls(instanceDir, instance);
+    const staging = beginContentInstall(instanceDir);
+    const stagedFile = resolveSafePath(staging, 'mods', filename);
+    ensureDir(path.dirname(stagedFile));
+    try {
+      const downloadUrl = await getOptiFineDownloadUrl(filename);
+      sendInstallProgress(instance.name, 'downloading', `Downloading ${build.name}`, 0);
+      await fetchWithRetry(downloadUrl, stagedFile, progress => sendInstallProgress(instance.name, 'downloading', `Downloading ${build.name}`, progress.percent));
+      sendInstallProgress(instance.name, 'verifying', `Verifying ${build.name}`, 92);
+      if (!isValidJar(stagedFile)) throw new Error('The official OptiFine download is not a valid JAR');
+      const info = { projectId: 'official:optifine', title: 'OptiFine', iconUrl: null, installedVersion: filename, installedAt: new Date().toISOString(), source: 'official' };
+      queueContentInstall(instanceDir, staging, {
+        files: [relative],
+        metadata: { 'mods_meta.json': { [filename]: info } },
+        gameVersion: instance.gameVersion,
+        loader: instance.loader,
+      });
+      if (!restartRequired) applyContentInstalls(instanceDir, instance);
+      downloadManager.markUnder(staging, restartRequired ? 'queued' : 'installed');
+      sendInstallProgress(instance.name, restartRequired ? 'queued' : 'done', restartRequired ? `${build.name} will apply after Minecraft restarts` : `${build.name} installed`, 100,
+        { items: [{ title: 'OptiFine', filename, projectType: 'mod', role: 'requested' }] });
+      return { filename, name: build.name, restartRequired, queued: restartRequired };
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true });
+      throw error;
+    }
+  });
+
   ipcMain.handle('search-curseforge', async (_, query, options = {}) => {
+    if (!curseForgeApiKey()) return { hits: [], total_hits: 0, configured: false };
     const type = Object.prototype.hasOwnProperty.call(CURSEFORGE_CLASS_IDS, options.type) ? options.type : 'mod';
     const params = new URLSearchParams({
       gameId: '432',
@@ -5870,8 +6451,9 @@ function setupIPC() {
     const metadata = { 'mods_meta.json': {}, 'content_meta.json': {} };
     const files = [];
     const installed = [];
+    const versionRoles = options.versionRoles && typeof options.versionRoles === 'object' && !Array.isArray(options.versionRoles) ? options.versionRoles : {};
     try {
-      for (const vid of [...new Set(versionIds)]) {
+      for (const [versionIndex, vid] of [...new Set(versionIds)].entries()) {
         const result = await processSingleVersion(instance, vid, [], staging);
         const relative = path.relative(staging, result.filePath).split(path.sep).join('/');
         assertManagedMutationAllowed(instance, relative);
@@ -5885,14 +6467,15 @@ function setupIPC() {
         metadata['content_meta.json'][`${result.projectType}:${result.file.filename}`] = info;
         if (result.projectType === 'mod') metadata['mods_meta.json'][result.file.filename] = { ...info, depData: result.version.dependencies || [] };
         files.push(relative);
-        installed.push({ filename: result.file.filename, projectId: result.version.project_id });
+        const requestedRole = ['requested', 'required', 'optional', 'dependency'].includes(versionRoles[vid]) ? versionRoles[vid] : (versionIndex === 0 ? 'requested' : 'dependency');
+        installed.push({ filename: result.file.filename, projectId: result.version.project_id, title: info.title, projectType: result.projectType, role: requestedRole });
       }
       queueContentInstall(instanceDir, staging, { files: [...new Set(files)], disableFiles: disabled, metadata, gameVersion: instance.gameVersion, loader: instance.loader });
       if (!restartRequired) {
         if (options.createBackup === true) await createAutomaticInstanceBackup(instance, options.backupReason || 'Before updating instance content');
         applyContentInstalls(instanceDir, instance);
       }
-      sendInstallProgress(instance.name, 'done', restartRequired ? 'Downloaded · queued for the next launch' : `Installed ${installed.length} files`, 100);
+      sendInstallProgress(instance.name, 'done', restartRequired ? `Downloaded ${installed.length} files · queued for the next launch` : `Installed ${installed.length} files`, 100, { items: installed });
       downloadManager.markUnder(staging, restartRequired ? 'queued' : 'installed');
       return { installed, primary: installed[0], restartRequired, queued: restartRequired };
     } catch (error) {
@@ -6244,6 +6827,7 @@ function setupIPC() {
       const info = meta[f] || meta[metaKey] || {};
       const jarPath = path.join(modsDir, f);
       return ({
+      key: f,
       filename: f,
       path: jarPath,
       projectId: info.projectId || null,
@@ -6258,9 +6842,9 @@ function setupIPC() {
   }
 
   // ── Helper: send install progress to renderer ────────────────────
-  function sendInstallProgress(instanceName, phase, message, percent) {
+  function sendInstallProgress(instanceName, phase, message, percent, details = {}) {
     if (mainWindow) {
-      mainWindow.webContents.send('install-progress', { instanceName, phase, message, percent });
+      mainWindow.webContents.send('install-progress', { instanceName, phase, message, percent, ...details });
     }
   }
 
@@ -6324,6 +6908,57 @@ function setupIPC() {
   ipcMain.handle('get-instance-content', async (_, instanceName, type) => {
     const values = frozenContent(getRegisteredInstance(instanceName).instance);
     return (await getInstanceContentList(instanceName, validateContentType(type))).map(item => ({ ...item, frozen: item.projectId ? values.has(String(item.projectId)) : false }));
+  });
+  ipcMain.handle('copy-instance-items', async (_, sourceName, destinationName, requestedItems) => {
+    const sourceRecord = getRegisteredInstance(sourceName).instance;
+    const destinationRecord = getRegisteredInstance(destinationName).instance;
+    if (sourceRecord.name === destinationRecord.name) throw new Error('Choose another instance as the destination');
+    if (!Array.isArray(requestedItems) || !requestedItems.length || requestedItems.length > 100) throw new Error('Select between 1 and 100 items to copy');
+    const sourceRoot = getInstanceDir(sourceRecord);
+    const destinationRoot = getInstanceDir(destinationRecord);
+    const items = [];
+    for (const request of requestedItems) {
+      if (request?.kind === 'content') {
+        const type = validateContentType(request.type);
+        const requestedKey = String(request.key || request.filename || '');
+        const entry = (await getInstanceContentList(sourceRecord.name, type))
+          .find(item => String(item.key || item.filename || '') === requestedKey);
+        if (!entry) throw new Error('The selected content no longer exists');
+        const relative = path.relative(sourceRoot, entry.path);
+        assertManagedMutationAllowed(destinationRecord, relative.split(path.sep).join('/').replace(/\.disabled$/, ''));
+        items.push({ kind: 'content', type, key: entry.key, label: entry.title || entry.filename, relative });
+        continue;
+      }
+      if (request?.kind === 'screenshot') {
+        const filename = path.basename(String(request.filename || ''));
+        if (!filename || filename !== request.filename || !/\.(?:png|jpe?g)$/i.test(filename)) throw new Error('Invalid screenshot');
+        const relative = path.join('screenshots', filename);
+        assertManagedMutationAllowed(destinationRecord, relative.split(path.sep).join('/'));
+        items.push({ kind: 'screenshot', filename, label: filename, relative });
+        continue;
+      }
+      if (request?.kind === 'world') {
+        const identifier = path.basename(String(request.identifier || ''));
+        if (!identifier || identifier !== request.identifier) throw new Error('Invalid world');
+        const relative = path.join('saves', identifier);
+        assertManagedMutationAllowed(destinationRecord, relative.split(path.sep).join('/'));
+        items.push({ kind: 'world', identifier, label: String(request.label || identifier).slice(0, 120), relative });
+        continue;
+      }
+      throw new Error('Unsupported split-view item');
+    }
+    return copyInstanceItems({ sourceRoot, destinationRoot, items });
+  });
+  ipcMain.handle('copy-mod-files', async (_, instanceName, filePaths) => {
+    const { instance } = getRegisteredInstance(instanceName);
+    const result = copyDroppedMods({
+      instanceDir: getInstanceDir(instance),
+      filePaths,
+      loader: instance.loader,
+      isValidJar,
+      compatibilityIssue: jarLoaderCompatibilityIssue,
+    });
+    return { ...result, restartRequired: activeInstanceName === instance.name };
   });
   ipcMain.handle('toggle-instance-content', async (_, instanceName, type, key) => {
     validateContentType(type);
@@ -6423,6 +7058,8 @@ function setupIPC() {
     delete settings.curseForgeApiKey;
     return settings;
   });
+
+  ipcMain.handle('get-system-memory-gb', () => Math.max(1, Math.round(os.totalmem() / (1024 ** 3))));
 
   ipcMain.handle('get-storage-usage', async () => {
     const base = app.getPath('userData');

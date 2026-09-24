@@ -40,6 +40,7 @@ const state = {
   },
   updateNoticeVersion: null,
   settings: {},
+  systemMemoryGb: 16,
   launchingName: null,
   logLines: [],
   searchOffset: 0,
@@ -70,10 +71,52 @@ const state = {
   selectedInstances: new Set(),
   pendingDatapackWorld: null,
   javaAvailable: null,
+  activities: [],
+  creatingInstanceName: null,
+  playStats: null,
+  statsRangeDays: 7,
+  statsRequestId: 0,
+  discoverMode: 'minecraft',
+  serverDirectoryItems: [],
+  serverDirectoryMeta: null,
+  serverDirectoryPage: 0,
+  serverDirectoryLoading: false,
+  serverDirectoryRequestId: 0,
+  serverDirectoryVisibleCount: 20,
+  serverDirectoryRetryAttempt: 0,
+  skinLibraryItems: [],
+  skinLibraryAfter: '',
+  skinLibraryLoading: false,
+  skinLibraryRequestId: 0,
+  skinPlayerResult: null,
+  skinPlayerLoading: false,
+  skinPlayerRequestId: 0,
+  skinPlayerLookupQuery: '',
+  savedServers: [],
+  splitWorkspaceActive: false,
+  splitWorkspaceDock: 'library',
+  splitPanes: [],
+  splitNextPaneId: 1,
+  splitColumnPercent: 50,
+  splitRowPercent: 50,
 };
 const SEARCH_LIMIT = 20;
 const DISCOVER_DOM_LIMIT = 120;
 const ACCOUNT_PAGE_SIZE = 6;
+const ACTIVITY_STORAGE_KEY = 'pine.activity-center.v1';
+const STATS_HISTORY_DISMISSED_KEY = 'pine.stats-history-notice-dismissed.v1';
+const SERVER_METADATA_STORAGE_KEY = 'pine.server-directory-metadata.v1';
+const SERVER_BATCH_SIZE = 20;
+const SPLIT_WORKSPACE_STORAGE_KEY = 'pine.split-workspace.v1';
+const TERMINAL_ACTIVITY_STATUSES = new Set(['done', 'failed', 'cancelled']);
+const activityChannelIds = new Map();
+const downloadActivitySamples = new Map();
+const expandedActivityIds = new Set();
+let activitySaveTimer = null;
+let serverDirectoryRetryTimer = null;
+let serverMetadataSaveTimer = null;
+const serverStatusJobs = new Map();
+const serverMetadataCache = new Map(loadStoredServerMetadata());
 const ACCENT_PRESETS = [
   { color: '#ff5cb9', name: 'Pine pink' },
   { color: '#e879f9', name: 'Orchid' },
@@ -101,6 +144,8 @@ const TERMINAL_BANNER = String.raw`
 
 // ── Boot ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  bindWindowChrome();
+  initActivityCenter();
   bindTopbar();
   bindTabBar();
   bindViewLinks();
@@ -116,11 +161,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   await Promise.all([loadUpdateState(), checkJava(), refreshAccounts(), loadGroups()]);
   await loadInstances();
+  restoreSplitWorkspace();
   await loadRecentDestinations();
   switchView('home');
   renderSettingsLayout();
-  const instanceTab = document.querySelector('.tabbar-item[data-view="instance"]');
-  if (instanceTab) instanceTab.setAttribute('hidden', '');
   bindTopbarScroll();
   setStatus('Ready');
   void loadVersions();
@@ -128,6 +172,269 @@ document.addEventListener('DOMContentLoaded', async () => {
   api.onDesktopShortcutReady(consumeDesktopShortcut);
   await consumeDesktopShortcut();
 });
+
+function setWindowMaximized(maximized) {
+  const button = document.querySelector('[data-window-action="maximize"]');
+  if (!button) return;
+  button.dataset.maximized = String(Boolean(maximized));
+  button.setAttribute('aria-label', maximized ? 'Restore window' : 'Maximize');
+  button.title = maximized ? 'Restore window' : 'Maximize';
+}
+
+function bindWindowChrome() {
+  document.querySelectorAll('[data-window-action]').forEach(button => {
+    button.addEventListener('click', async () => {
+      try {
+        const result = await api.windowControl(button.dataset.windowAction);
+        if (button.dataset.windowAction === 'maximize') setWindowMaximized(result?.maximized);
+      } catch (error) {
+        console.error('Window control failed:', error);
+      }
+    });
+  });
+  api.onWindowMaximizedChanged?.(setWindowMaximized);
+}
+
+function loadStoredActivities() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ACTIVITY_STORAGE_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, 80).filter(item => item && typeof item.id === 'string' && typeof item.title === 'string').map(item => {
+      const interrupted = !TERMINAL_ACTIVITY_STATUSES.has(item.status);
+      return {
+        ...item,
+        status: interrupted ? 'failed' : item.status,
+        detail: interrupted ? 'Interrupted when Pine closed' : String(item.detail || ''),
+        progress: Number.isFinite(Number(item.progress)) ? Math.max(0, Math.min(100, Number(item.progress))) : null,
+        unread: false,
+      };
+    });
+  } catch { return []; }
+}
+
+function saveActivitiesSoon() {
+  clearTimeout(activitySaveTimer);
+  activitySaveTimer = setTimeout(() => {
+    try { localStorage.setItem(ACTIVITY_STORAGE_KEY, JSON.stringify(state.activities.slice(0, 80))); } catch {}
+  }, 180);
+}
+
+function activityIsOpen() {
+  return !$('activity-center')?.hidden;
+}
+
+function channelActivityId(channel, status) {
+  let id = activityChannelIds.get(channel);
+  const current = id && state.activities.find(item => item.id === id);
+  if (!id || (!TERMINAL_ACTIVITY_STATUSES.has(status) && current && TERMINAL_ACTIVITY_STATUSES.has(current.status))) {
+    id = `${channel}:${Date.now()}`;
+    activityChannelIds.set(channel, id);
+  }
+  return id;
+}
+
+function upsertActivity(input) {
+  if (!input?.id || !input?.title) return null;
+  const now = Date.now();
+  const index = state.activities.findIndex(item => item.id === input.id);
+  const previous = index >= 0 ? state.activities[index] : null;
+  const status = input.status || previous?.status || 'active';
+  let progress = input.progress == null ? previous?.progress ?? null : Math.max(0, Math.min(100, Number(input.progress) || 0));
+  if (status === 'done') progress = 100;
+  const createdAt = previous?.createdAt || input.createdAt || now;
+  let etaSeconds = input.etaSeconds;
+  if (etaSeconds == null && !TERMINAL_ACTIVITY_STATUSES.has(status) && progress > 1 && progress < 100) {
+    etaSeconds = Math.max(1, ((now - createdAt) / 1000) * ((100 - progress) / progress));
+  }
+  const becameTerminal = TERMINAL_ACTIVITY_STATUSES.has(status) && !TERMINAL_ACTIVITY_STATUSES.has(previous?.status);
+  const activity = {
+    ...previous,
+    ...input,
+    id: String(input.id),
+    title: String(input.title).slice(0, 180),
+    detail: String(input.detail || previous?.detail || '').slice(0, 260),
+    status,
+    progress,
+    etaSeconds: Number.isFinite(Number(etaSeconds)) ? Math.min(7 * 86400, Math.max(0, Number(etaSeconds))) : null,
+    createdAt,
+    updatedAt: now,
+    completedAt: TERMINAL_ACTIVITY_STATUSES.has(status) ? previous?.completedAt || now : null,
+    unread: becameTerminal && !activityIsOpen() ? true : Boolean(previous?.unread),
+    items: Array.isArray(input.items)
+      ? input.items.slice(0, 100).map(item => ({
+        name: String(item.title || item.filename || item.name || 'Installed file').slice(0, 180),
+        filename: String(item.filename || '').slice(0, 220),
+        projectType: String(item.projectType || item.type || 'file').slice(0, 60),
+        role: String(item.role || '').slice(0, 60),
+      }))
+      : previous?.items || [],
+  };
+  if (index >= 0) state.activities[index] = activity;
+  else state.activities.unshift(activity);
+  state.activities = state.activities.sort((a, b) => {
+    const activeDifference = Number(TERMINAL_ACTIVITY_STATUSES.has(a.status)) - Number(TERMINAL_ACTIVITY_STATUSES.has(b.status));
+    return activeDifference || (b.updatedAt || 0) - (a.updatedAt || 0);
+  }).slice(0, 80);
+  renderActivityCenter();
+  saveActivitiesSoon();
+  return activity;
+}
+
+function activityStatusLabel(activity) {
+  if (activity.status === 'done') return activity.doneLabel || 'Finished';
+  if (activity.status === 'failed') return 'Needs attention';
+  if (activity.status === 'cancelled') return 'Cancelled';
+  if (activity.status === 'paused') return 'Paused';
+  if (activity.status === 'queued') return 'Ready for next launch';
+  return activity.activeLabel || 'In progress';
+}
+
+function activityIcon(activity) {
+  if (activity.status === 'done') return '<path d="m5 12 4 4L19 6"/>';
+  if (activity.status === 'failed' || activity.status === 'cancelled') return '<path d="M12 8v5m0 3h.01"/><path d="M10.3 3.9 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>';
+  if (activity.kind === 'instance') return '<path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/>';
+  if (activity.kind === 'java') return '<path d="M8 18h8M9 14h6l1-8H8z"/><path d="M10 3c1 1 3 1 3 3"/>';
+  return '<path d="M12 3v12m-4-4 4 4 4-4"/><path d="M5 19h14"/>';
+}
+
+function activityAge(timestamp) {
+  const seconds = Math.max(0, Math.round((Date.now() - Number(timestamp || Date.now())) / 1000));
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function activityItemType(item) {
+  const role = item.role === 'requested' ? 'Requested content'
+    : item.role === 'required' ? 'Required dependency'
+      : item.role === 'optional' ? 'Optional dependency'
+        : item.role === 'dependency' ? 'Dependency' : '';
+  const type = item.projectType === 'mod' ? 'Mod'
+    : item.projectType === 'resourcepack' ? 'Resource pack'
+      : item.projectType === 'shader' ? 'Shader pack'
+        : item.projectType === 'library' ? 'Library'
+          : item.projectType === 'game' ? 'Game file'
+            : item.projectType === 'java' ? 'Java runtime' : 'File';
+  return [role, type].filter(Boolean).join(' · ');
+}
+
+function renderActivityCenter() {
+  const list = $('activity-list');
+  const empty = $('activity-empty');
+  const badge = $('notification-badge');
+  if (!list || !empty || !badge) return;
+  const activities = state.activities;
+  empty.hidden = activities.length > 0;
+  list.hidden = activities.length === 0;
+  list.innerHTML = activities.map(activity => {
+    const terminal = TERMINAL_ACTIVITY_STATUSES.has(activity.status);
+    const hasProgress = activity.progress != null;
+    const progress = hasProgress ? Math.max(0, Math.min(100, activity.progress)) : 0;
+    const progressClass = !hasProgress && !terminal ? ' activity-progress indeterminate' : 'activity-progress';
+    const size = activity.total ? `${formatBytes(activity.received || 0)} / ${formatBytes(activity.total)}` : '';
+    const speed = !terminal && activity.bytesPerSecond ? `${formatBytes(activity.bytesPerSecond)}/s` : '';
+    const eta = !terminal && activity.etaSeconds != null ? `~${formatDuration(activity.etaSeconds)} left` : '';
+    const meta = terminal
+      ? `${activityStatusLabel(activity)} · ${activityAge(activity.completedAt || activity.updatedAt)}`
+      : [hasProgress ? `${Math.round(progress)}%` : activityStatusLabel(activity), size, speed, eta].filter(Boolean).join(' · ');
+    const expandable = Array.isArray(activity.items) && activity.items.length > 0;
+    const expanded = expandable && expandedActivityIds.has(activity.id);
+    const itemList = expandable ? `<div class="activity-items" ${expanded ? '' : 'hidden'}>${activity.items.map(item => `<div class="activity-file"><span class="activity-file-icon"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4"/></svg></span><span><b>${escHtml(item.name)}</b><small>${escHtml(activityItemType(item))}${item.filename && item.filename !== item.name ? ` · ${escHtml(item.filename)}` : ''}</small></span></div>`).join('')}</div>` : '';
+    return `<article class="activity-item" data-status="${escHtml(activity.status)}" data-activity-id="${escHtml(activity.id)}">
+      <span class="activity-item-icon"><svg viewBox="0 0 24 24" aria-hidden="true">${activityIcon(activity)}</svg></span>
+      <div class="activity-item-main"><div class="activity-item-title">${escHtml(activity.title)}</div><div class="activity-item-detail-row"><div class="activity-item-detail">${escHtml(activity.detail || activityStatusLabel(activity))}</div>${expandable ? `<button class="activity-expand" type="button" data-toggle-activity aria-expanded="${expanded}" aria-label="${expanded ? 'Hide' : 'Show'} installed files"><span>${activity.items.length} item${activity.items.length === 1 ? '' : 's'}</span><svg viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg></button>` : ''}</div>
+        <div class="${progressClass.trim()}"><div class="activity-progress-fill" style="width:${terminal || hasProgress ? progress : 38}%"></div></div><div class="activity-item-meta">${escHtml(meta)}</div>${itemList}</div>
+      ${terminal ? '<button class="activity-dismiss" type="button" data-dismiss-activity aria-label="Dismiss"><svg viewBox="0 0 20 20"><path d="m5 5 10 10m0-10L5 15"/></svg></button>' : '<span></span>'}
+    </article>`;
+  }).join('');
+  const activeCount = activities.filter(item => !TERMINAL_ACTIVITY_STATUSES.has(item.status)).length;
+  const unreadCount = activities.filter(item => item.unread).length;
+  const badgeCount = activeCount + unreadCount;
+  badge.hidden = badgeCount === 0;
+  badge.textContent = badgeCount > 99 ? '99+' : String(badgeCount);
+  $('activity-clear').disabled = !activities.some(item => TERMINAL_ACTIVITY_STATUSES.has(item.status));
+}
+
+function syncDownloadActivities(jobs = []) {
+  const now = Date.now();
+  for (const job of jobs) {
+    const id = `download:${job.id}`;
+    const sample = downloadActivitySamples.get(job.id);
+    const seconds = sample ? Math.max(.1, (now - sample.at) / 1000) : 0;
+    const instantSpeed = sample && Number(job.received) >= sample.received ? (Number(job.received) - sample.received) / seconds : 0;
+    const bytesPerSecond = instantSpeed > 0 ? (sample?.speed ? sample.speed * .65 + instantSpeed * .35 : instantSpeed) : sample?.speed || 0;
+    downloadActivitySamples.set(job.id, { received: Number(job.received) || 0, at: now, speed: bytesPerSecond });
+    const terminal = ['downloaded', 'installed', 'queued'].includes(job.status);
+    const status = terminal ? 'done' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : job.status === 'paused' ? 'paused' : 'active';
+    const total = Number(job.total) || 0;
+    const received = Number(job.received) || 0;
+    const progress = total > 0 ? received / total * 100 : terminal ? 100 : null;
+    const etaSeconds = total > received && bytesPerSecond > 0 ? (total - received) / bytesPerSecond : null;
+    const detail = job.status === 'downloaded' ? 'Download finished'
+      : job.status === 'installed' ? 'Installed and ready'
+        : job.status === 'queued' ? 'Downloaded · applies on the next launch'
+          : job.status === 'failed' ? job.error || 'Download failed'
+            : `${job.kind || 'Download'} · ${job.status === 'paused' ? 'Paused' : 'Downloading'}`;
+    upsertActivity({ id, kind: 'download', title: job.label || job.kind || 'Download', detail, status, progress, received, total, bytesPerSecond, etaSeconds, doneLabel: job.status === 'installed' ? 'Installed' : 'Downloaded', createdAt: job.startedAt });
+  }
+}
+
+function handleInstallActivity(update = {}) {
+  const instanceName = String(update.instanceName || 'Instance');
+  const done = update.phase === 'done' || Number(update.percent) >= 100;
+  if (state.creatingInstanceName === instanceName) {
+    upsertActivity({ id: `instance-create:${instanceName}`, kind: 'instance', title: `Creating ${instanceName}`, detail: update.message || 'Installing instance content', status: 'active', progress: Math.max(40, Number(update.percent) || 40), items: update.items });
+    return;
+  }
+  const status = done ? 'done' : update.phase === 'failed' ? 'failed' : 'active';
+  const id = channelActivityId(`install:${instanceName}`, status);
+  upsertActivity({ id, kind: 'install', title: `Installing into ${instanceName}`, detail: update.message || 'Preparing content', status, progress: update.percent, doneLabel: 'Installed', items: update.items });
+}
+
+function initActivityCenter() {
+  state.activities = loadStoredActivities();
+  renderActivityCenter();
+  const button = $('notifications-button');
+  const panel = $('activity-center');
+  button?.addEventListener('click', event => {
+    event.stopPropagation();
+    panel.hidden = !panel.hidden;
+    button.setAttribute('aria-expanded', String(!panel.hidden));
+    if (!panel.hidden) {
+      state.activities.forEach(item => { item.unread = false; });
+      renderActivityCenter();
+      saveActivitiesSoon();
+    }
+  });
+  panel?.addEventListener('click', event => {
+    event.stopPropagation();
+    const toggle = event.target.closest('[data-toggle-activity]');
+    if (toggle) {
+      const id = toggle.closest('[data-activity-id]')?.dataset.activityId;
+      if (expandedActivityIds.has(id)) expandedActivityIds.delete(id); else expandedActivityIds.add(id);
+      renderActivityCenter();
+      return;
+    }
+    const dismiss = event.target.closest('[data-dismiss-activity]');
+    if (!dismiss) return;
+    const id = dismiss.closest('[data-activity-id]')?.dataset.activityId;
+    state.activities = state.activities.filter(item => item.id !== id);
+    renderActivityCenter(); saveActivitiesSoon();
+  });
+  $('activity-clear')?.addEventListener('click', () => {
+    state.activities = state.activities.filter(item => !TERMINAL_ACTIVITY_STATUSES.has(item.status));
+    renderActivityCenter(); saveActivitiesSoon();
+  });
+  document.addEventListener('click', () => {
+    if (!panel?.hidden) { panel.hidden = true; button?.setAttribute('aria-expanded', 'false'); }
+  });
+  api.listDownloads?.().then(syncDownloadActivities).catch(() => {});
+  api.onDownloadJobs?.(syncDownloadActivities);
+  api.onInstallProgress?.(handleInstallActivity);
+  setInterval(() => { if (activityIsOpen()) renderActivityCenter(); }, 15000);
+}
 
 async function consumeDesktopShortcut() {
   try {
@@ -258,12 +565,62 @@ function memoryToGigabytes(value, fallback) {
   const amount = Number.parseInt(match[1], 10);
   return (match[2] || 'G').toUpperCase() === 'M' ? Math.max(1, Math.round(amount / 1024)) : amount;
 }
+function memoryRangeMarkup(prefix, minValue, maxValue) {
+  const currentMin = Math.min(128, Math.max(1, Number(minValue) || 1));
+  const currentMax = Math.min(128, Math.max(currentMin, Number(maxValue) || currentMin));
+  const limit = Math.min(128, Math.max(8, Number(state.systemMemoryGb) || 16, currentMax));
+  const position = value => ((value - 1) / Math.max(1, limit - 1)) * 100;
+  return `<div class="settings-row settings-row-col memory-range-row"><label>Memory allocation</label><div class="memory-range-control" data-memory-range="${prefix}" style="--memory-min:${position(currentMin)};--memory-max:${position(currentMax)}">
+    <div class="memory-range-labels" aria-hidden="true"><output class="memory-handle-label memory-min-label" data-memory-min-label><b>Min</b><span>${currentMin} GB</span></output><output class="memory-handle-label memory-max-label" data-memory-max-label><b>Max</b><span>${currentMax} GB</span></output></div>
+    <div class="memory-range-track" aria-hidden="true"><i></i></div>
+    <input id="${prefix}-min-mem" class="memory-range-input memory-range-input-min" type="range" min="1" max="${limit}" step="1" value="${currentMin}" aria-label="Minimum Java memory in gigabytes">
+    <input id="${prefix}-max-mem" class="memory-range-input memory-range-input-max" type="range" min="1" max="${limit}" step="1" value="${currentMax}" aria-label="Maximum Java memory in gigabytes">
+    <div class="memory-range-scale" aria-hidden="true"><span>1 GB</span><span>${limit} GB${limit === state.systemMemoryGb ? ' installed' : ''}</span></div>
+  </div></div>`;
+}
+
+function bindMemoryRange(prefix) {
+  const control = document.querySelector(`[data-memory-range="${prefix}"]`);
+  const minInput = $(`${prefix}-min-mem`);
+  const maxInput = $(`${prefix}-max-mem`);
+  if (!control || !minInput || !maxInput) return;
+  const sync = changed => {
+    let min = Number(minInput.value);
+    let max = Number(maxInput.value);
+    if (min > max) {
+      if (changed === minInput) { max = min; maxInput.value = String(max); }
+      else { min = max; minInput.value = String(min); }
+    }
+    const limit = Number(minInput.max) || 128;
+    const position = value => ((value - 1) / Math.max(1, limit - 1)) * 100;
+    control.style.setProperty('--memory-min', String(position(min)));
+    control.style.setProperty('--memory-max', String(position(max)));
+    control.classList.toggle('handles-close', Math.abs(position(max) - position(min)) < 18);
+    const minLabel = control.querySelector('[data-memory-min-label] span');
+    const maxLabel = control.querySelector('[data-memory-max-label] span');
+    if (minLabel) minLabel.textContent = `${min} GB`;
+    if (maxLabel) maxLabel.textContent = `${max} GB`;
+  };
+  minInput.addEventListener('input', () => sync(minInput));
+  maxInput.addEventListener('input', () => sync(maxInput));
+  minInput.addEventListener('pointerdown', () => control.classList.add('dragging-min'));
+  maxInput.addEventListener('pointerdown', () => control.classList.add('dragging-max'));
+  for (const input of [minInput, maxInput]) input.addEventListener('pointerup', () => control.classList.remove('dragging-min', 'dragging-max'));
+  sync();
+}
 function staggerInto(els) { els.forEach((el, i) => el.style.setProperty('--i', i)); }
 
 // ── Top bar ─────────────────────────────────────────────────
 function bindTopbar() {
   $('brand-button')?.addEventListener('click', () => switchView('home'));
   $('cmdk-button')?.addEventListener('click', openCommandPalette);
+  $('discord-button')?.addEventListener('click', async () => {
+    try {
+      await api.openDiscordServer();
+    } catch (error) {
+      toast(`Could not open Discord: ${error.message || error}`, 'error');
+    }
+  });
   $('account-row')?.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleAccountMenu();
@@ -373,8 +730,9 @@ async function renderCmdKResults(query = '') {
   // Static actions
   const actions = [
     { id: 'go-home', label: 'Go to Home', action: () => { switchView('home'); closeCommandPalette(); } },
-    { id: 'go-discover', label: 'Discover mods', action: () => { switchView('discover'); closeCommandPalette(); } },
+    { id: 'go-discover', label: 'Discover mods', action: () => { setDiscoverMode('minecraft'); switchView('discover'); closeCommandPalette(); } },
     { id: 'go-library', label: 'Library', action: () => { switchView('library'); closeCommandPalette(); } },
+    { id: 'go-stats', label: 'View play stats', action: () => { switchView('stats'); closeCommandPalette(); } },
     { id: 'go-settings', label: 'Settings', action: () => { switchView('settings'); closeCommandPalette(); } },
     { id: 'new-instance', label: 'Create new instance', action: () => { openCreateModal(); closeCommandPalette(); } },
     { id: 'login', label: state.authData ? 'Re-authenticate Microsoft' : 'Sign in with Microsoft', action: () => { handleAuth(); closeCommandPalette(); } },
@@ -603,6 +961,7 @@ function buildAvatarEl(name) {
 function bindTabBar() {
   $('hero-create-btn')?.addEventListener('click', openCreateModal);
   $('library-create-btn')?.addEventListener('click', openCreateModal);
+  $('library-split-btn')?.addEventListener('click', startOrAddSplitPane);
   $('library-import-btn')?.addEventListener('click', openImportHub);
   $('library-make-group-btn')?.addEventListener('click', openCreateGroupModal);
   $('library-select-btn')?.addEventListener('click', () => setLibrarySelectionMode(!state.librarySelectionMode));
@@ -638,6 +997,8 @@ function bindTabBar() {
   });
 
   $('content-search')?.addEventListener('input', debounce(renderContentList, 80));
+  bindModDropZone();
+  bindSplitWorkspace();
   $('content-categories')?.addEventListener('click', (e) => {
     const button = e.target.closest('[data-content-type]');
     if (button) switchContentCategory(button.dataset.contentType);
@@ -687,6 +1048,61 @@ function bindTabBar() {
   $('discover-search-btn')?.addEventListener('click', () => searchMods(false));
   $('discover-search-btn-alt')?.addEventListener('click', () => searchMods(false));
   $('load-more-btn')?.addEventListener('click', () => searchMods(true));
+  $('discover-mode-tabs')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-discover-mode]');
+    if (button) setDiscoverMode(button.dataset.discoverMode);
+  });
+  const skinSearchInput = $('skin-library-search');
+  const livePlayerSkinLookup = debounce(username => {
+    if (skinSearchInput?.value.trim() !== username || !/^[A-Za-z0-9_]{3,16}$/.test(username)) return;
+    lookupPlayerSkin({ username, silent: true });
+  }, 420);
+  skinSearchInput?.addEventListener('input', () => {
+    const username = skinSearchInput.value.trim();
+    state.skinPlayerRequestId++;
+    state.skinPlayerLoading = false;
+    state.skinPlayerLookupQuery = '';
+    if (!state.skinPlayerResult || state.skinPlayerResult.name.toLowerCase() !== username.toLowerCase()) state.skinPlayerResult = null;
+    const button = $('skin-player-search-btn');
+    if (button) button.disabled = false;
+    renderSkinLibrary();
+    livePlayerSkinLookup(username);
+  });
+  skinSearchInput?.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); lookupPlayerSkin({ silent: false }); } });
+  $('skin-player-search-btn')?.addEventListener('click', () => lookupPlayerSkin({ silent: false }));
+  $('skin-library-more')?.addEventListener('click', () => loadSkinLibrary(true));
+  $('skin-library-grid')?.addEventListener('click', event => {
+    const card = event.target.closest('[data-library-skin]');
+    const skin = state.skinLibraryItems.find(item => item.id === card?.dataset.librarySkin);
+    if (skin) openLibrarySkinPreview(skin);
+  });
+  $('server-search-btn')?.addEventListener('click', () => { state.serverDirectoryVisibleCount = SERVER_BATCH_SIZE; renderServerDirectory(); });
+  $('server-search-input')?.addEventListener('input', debounce(() => { state.serverDirectoryVisibleCount = SERVER_BATCH_SIZE; renderServerDirectory(); }, 160));
+  $('server-filter-btn')?.addEventListener('click', () => loadServerDirectory(false));
+  $('server-load-more-btn')?.addEventListener('click', loadNextServerBatch);
+  ['server-type-filter', 'server-version-filter', 'server-mod-filter', 'server-provider-filter', 'server-online-filter'].forEach(id => $(id)?.addEventListener('change', () => loadServerDirectory(false)));
+  $('server-results-grid')?.addEventListener('click', event => {
+    const action = event.target.closest('[data-server-action]')?.dataset.serverAction;
+    const card = event.target.closest('[data-public-server]');
+    const server = state.serverDirectoryItems.find(item => String(item.id) === card?.dataset.publicServer);
+    if (!action || !server) return;
+    if (action === 'copy') api.copyText(publicServerAddress(server)).then(() => toast('Server address copied', 'success'));
+    else chooseServerInstance(server, action);
+  });
+  $('saved-server-search')?.addEventListener('input', debounce(renderSavedServers, 160));
+  $('saved-server-grid')?.addEventListener('click', async event => {
+    const action = event.target.closest('[data-saved-action]')?.dataset.savedAction;
+    const card = event.target.closest('[data-saved-server]');
+    const server = state.savedServers.find(item => String(item.id) === card?.dataset.savedServer);
+    if (!action || !server) return;
+    if (action === 'copy') { await api.copyText(server.address); toast('Server address copied', 'success'); }
+    else if (action === 'play' && server.instanceName) launchInstance(server.instanceName, { type: 'multiplayer', identifier: server.address, address: server.address, label: server.name || server.address });
+    else if (action === 'delete') {
+      await api.deleteServer(server.id);
+      await loadSavedServers();
+      toast('Server removed', 'success');
+    }
+  });
   const liveSearch = debounce(() => searchMods(false), 220);
   $('search-input')?.addEventListener('input', liveSearch);
   $('search-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchMods(false); });
@@ -702,6 +1118,22 @@ function bindTabBar() {
     }, { rootMargin: '400px' });
     io.observe(moreBtn);
     state._moreObserver = io;
+  }
+  const serverMoreBtn = $('server-load-more-btn');
+  if (serverMoreBtn) {
+    const serverIo = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && state.currentView === 'discover' && state.discoverMode === 'servers') loadNextServerBatch();
+    }, { root: $('content'), rootMargin: '700px 0px' });
+    serverIo.observe(serverMoreBtn);
+    state._serverMoreObserver = serverIo;
+  }
+  const skinMoreBtn = $('skin-library-more');
+  if (skinMoreBtn) {
+    const skinIo = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && state.currentView === 'discover' && state.discoverMode === 'skins' && !state.skinLibraryLoading) loadSkinLibrary(true);
+    }, { root: $('content'), rootMargin: '600px 0px' });
+    skinIo.observe(skinMoreBtn);
+    state._skinMoreObserver = skinIo;
   }
   $('discover-categories')?.addEventListener('click', (e) => {
     const chip = e.target.closest('.chip');
@@ -843,11 +1275,25 @@ function bindViewLinks() {
   bindTabKeys($('instance-tabs'), '[role="tab"]');
   bindTabKeys($('content-categories'), '[role="tab"]');
   bindTabKeys($('library-sort'), '[role="tab"]');
+  document.querySelectorAll('[data-stats-range]').forEach(button => button.addEventListener('click', () => {
+    state.statsRangeDays = Number(button.dataset.statsRange) === 14 ? 14 : 7;
+    document.querySelectorAll('[data-stats-range]').forEach(item => item.classList.toggle('active', item === button));
+    renderPlayStats();
+  }));
+  $('stats-dashboard')?.addEventListener('click', event => {
+    if (!event.target.closest('[data-dismiss-stats-history]')) return;
+    localStorage.setItem(STATS_HISTORY_DISMISSED_KEY, 'true');
+    renderPlayStats();
+  });
 }
 
 // ── View routing ────────────────────────────────────────────
 function switchView(view) {
   if (view !== 'library' && state.librarySelectionMode) setLibrarySelectionMode(false);
+  if (view !== 'discover' || state.discoverMode !== 'servers') {
+    clearTimeout(serverDirectoryRetryTimer);
+    clearServerStatusJobs();
+  }
   if (state.currentView === 'settings' && view !== 'settings' && state.settingsDirty) {
     saveAllSettings(null, { silent: true });
   }
@@ -862,17 +1308,24 @@ function switchView(view) {
   }
   document.querySelectorAll('.tabbar-item').forEach((n) => n.classList.toggle('active', n.dataset.view === view));
   moveTabIndicator(view);
-  if (view !== 'instance') {
-    const instanceTab = document.querySelector('.tabbar-item[data-view="instance"]');
-    if (instanceTab) instanceTab.setAttribute('hidden', '');
+  if (view === 'instance') {
+    if (state.currentInstance) setInstanceDetailVisible(true);
+    else renderInstanceLanding();
   }
   if (view === 'discover') {
-    searchMods(false);
-    requestAnimationFrame(() => moveDiscoverIndicator());
+    if (state.discoverMode === 'minecraft') {
+      searchMods(false);
+      requestAnimationFrame(() => moveDiscoverIndicator());
+    } else if (state.discoverMode === 'servers') loadServerDirectory(false);
+    else if (state.discoverMode === 'skins') loadSkinLibrary(false);
+    else loadSavedServers();
   }
   if (view === 'library') renderLibrary();
   if (view === 'home') renderHome();
+  if (view === 'stats') loadPlayStats();
   if (view === 'settings') renderSettingsLayout();
+  if (state.splitWorkspaceActive && view === state.splitWorkspaceDock) renderSplitWorkspace();
+  else hideSplitWorkspace();
 }
 
 function moveTabIndicator(view) {
@@ -932,7 +1385,12 @@ async function loadVersions() {
     const filterVer = $('filter-version');
     if (filterVer) {
       filterVer.replaceChildren(new Option('All versions', ''));
-      for (const version of releases.slice(0, 30)) filterVer.add(new Option(String(version.id || ''), String(version.id || '')));
+      for (const version of releases) filterVer.add(new Option(String(version.id || ''), String(version.id || '')));
+    }
+    const serverVersionFilter = $('server-version-filter');
+    if (serverVersionFilter) {
+      serverVersionFilter.replaceChildren(new Option('All versions', ''));
+      for (const version of releases) serverVersionFilter.add(new Option(String(version.id || ''), String(version.id || '')));
     }
     const filterLoader = $('filter-loader');
     if (filterLoader) {
@@ -1013,6 +1471,14 @@ async function loadInstances() {
   } catch { state.instances = []; }
   const available = new Set(state.instances.map(instance => instance.name));
   for (const name of state.selectedInstances) if (!available.has(name)) state.selectedInstances.delete(name);
+  for (const pane of state.splitPanes) {
+    if (pane.instanceName && !available.has(pane.instanceName)) {
+      pane.mode = 'library';
+      pane.instanceName = null;
+      pane.items = [];
+      pane.loadedKey = '';
+    }
+  }
   renderHome();
   renderLibrary();
   updateInstanceCount();
@@ -1021,6 +1487,8 @@ async function loadInstances() {
     if (refreshed) state.currentInstance = refreshed;
     else { state.currentInstance = null; switchView('home'); }
   }
+  if (state.currentView === 'instance' && !state.currentInstance) renderInstanceLanding();
+  if (state.splitWorkspaceActive && (state.currentView === 'library' || state.currentView === 'instance')) renderSplitWorkspace();
 }
 
 function updateInstanceCount() {
@@ -1036,8 +1504,6 @@ function selectInstance(name) {
   if (!inst) return;
   state.currentInstance = inst;
   api.updateInstance(name, { lastOpened: new Date().toISOString() }).catch(() => {});
-  const instanceTab = document.querySelector('.tabbar-item[data-view="instance"]');
-  if (instanceTab) instanceTab.removeAttribute('hidden');
   switchView('instance');
   openInstanceView();
 }
@@ -1098,6 +1564,111 @@ function renderHome() {
     } else {
       heroBtn.style.display = 'none';
     }
+  }
+}
+
+function statsTime(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (value < 60) return value ? '<1m' : '0m';
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor(value % 3600 / 60);
+  if (!hours) return `${minutes}m`;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function statsHour(hour) {
+  if (hour == null) return 'Not enough data';
+  const start = new Date(); start.setHours(hour, 0, 0, 0);
+  const end = new Date(start); end.setHours(hour + 1);
+  return `${start.toLocaleTimeString([], { hour: 'numeric' })}–${end.toLocaleTimeString([], { hour: 'numeric' })}`;
+}
+
+function statsRanking(items, emptyLabel, options = {}) {
+  if (!items?.length) return `<div class="stats-card-empty"><svg aria-hidden="true"><use href="#${options.icon || 'i-stats'}"/></svg><span>${escHtml(emptyLabel)}</span></div>`;
+  const max = Math.max(1, ...items.map(item => Number(item.seconds) || 0));
+  return `<div class="stats-ranking">${items.slice(0, options.limit || 6).map((item, index) => `<div class="stats-rank-row">
+    ${options.instances ? `<span class="stats-rank-art">${item.iconData ? `<img src="${escHtml(item.iconData)}" alt="">` : escHtml(String(item.label || '?')[0].toUpperCase())}</span>` : `<span class="stats-rank-number">${index + 1}</span>`}
+    <span class="stats-rank-info"><span><b title="${escHtml(item.label)}">${escHtml(item.label)}</b><strong>${statsTime(item.seconds)}</strong></span><span class="stats-rank-track"><i style="width:${Math.max(3, item.seconds / max * 100)}%"></i></span>${item.instanceName ? `<small>${escHtml(item.instanceName)}</small>` : item.gameVersion ? `<small>${escHtml(item.loader)} · ${escHtml(item.gameVersion)}</small>` : ''}</span>
+  </div>`).join('')}</div>`;
+}
+
+function renderPlayStats() {
+  const host = $('stats-dashboard');
+  const stats = state.playStats;
+  if (!host || !stats) return;
+  const days = (stats.daily || []).slice(-state.statsRangeDays);
+  const dailyMax = Math.max(1, ...days.map(day => Number(day.seconds) || 0));
+  const modes = stats.modes || [];
+  const modeTotal = Math.max(1, modes.reduce((sum, item) => sum + item.seconds, 0));
+  let cursor = 0;
+  const modeClasses = { multiplayer: 'multiplayer', singleplayer: 'singleplayer', menu: 'menu' };
+  const modeGradient = modes.length ? modes.map(item => {
+    const start = cursor;
+    cursor += item.seconds / modeTotal * 100;
+    return `var(--stats-${modeClasses[item.key] || 'menu'}) ${start}% ${cursor}%`;
+  }).join(', ') : 'var(--glass-surface-overlay) 0 100%';
+  const topInstance = stats.instances?.[0];
+  const tracked = Number(stats.trackedSeconds) > 0;
+  const showHistoryNotice = Number(stats.previousSeconds) > 0 && localStorage.getItem(STATS_HISTORY_DISMISSED_KEY) !== 'true';
+  const recent = stats.recentSessions || [];
+  const hourMax = Math.max(1, ...(stats.hours || []).map(item => item.seconds || 0));
+  host.innerHTML = `
+    <div class="stats-summary-grid">
+      <article class="stats-summary-card featured"><span class="stats-summary-icon"><svg><use href="#i-play"/></svg></span><span><small>Total playtime</small><strong>${statsTime(stats.totalSeconds)}</strong><em>${statsTime(stats.weekSeconds)} in the last 7 days</em></span></article>
+      <article class="stats-summary-card"><span class="stats-summary-icon"><svg><use href="#i-stats"/></svg></span><span><small>Sessions tracked</small><strong>${fmtNum(stats.sessionCount)}</strong><em>${statsTime(stats.averageSeconds)} average</em></span></article>
+      <article class="stats-summary-card"><span class="stats-summary-icon"><svg><use href="#i-star"/></svg></span><span><small>Most played</small><strong title="${escHtml(topInstance?.label || '')}">${escHtml(topInstance?.label || 'No favorite yet')}</strong><em>${topInstance ? statsTime(topInstance.seconds) : 'Play to get started'}</em></span></article>
+      <article class="stats-summary-card"><span class="stats-summary-icon"><svg><use href="#i-backup"/></svg></span><span><small>Current streak</small><strong>${stats.streakDays || 0} day${stats.streakDays === 1 ? '' : 's'}</strong><em>Peak time · ${statsHour(stats.peakHour)}</em></span></article>
+    </div>
+    ${showHistoryNotice ? `<div class="stats-history-note"><svg><use href="#i-info"/></svg><span><b>${statsTime(stats.previousSeconds)} of earlier playtime is included.</b></span><button type="button" data-dismiss-stats-history aria-label="Dismiss playtime notice" title="Dismiss"><svg><use href="#i-x"/></svg></button></div>` : ''}
+    <div class="stats-layout">
+      <article class="stats-card stats-card-wide">
+        <div class="stats-card-header"><span><h2>Playtime rhythm</h2><p>${state.statsRangeDays === 7 ? 'Your last seven days' : 'Your last two weeks'}</p></span><strong>${statsTime(days.reduce((sum, day) => sum + day.seconds, 0))}</strong></div>
+        <div class="stats-daily-chart" style="--stats-days:${days.length}">${days.map(day => `<div class="stats-day" title="${escHtml(new Date(day.date).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }))}: ${statsTime(day.seconds)}"><span class="stats-day-value">${day.seconds ? statsTime(day.seconds) : ''}</span><span class="stats-day-track"><i style="height:${day.seconds ? Math.max(5, day.seconds / dailyMax * 100) : 2}%"></i></span><small>${escHtml(day.label)}</small></div>`).join('')}</div>
+      </article>
+      <article class="stats-card">
+        <div class="stats-card-header"><span><h2>Where time goes</h2><p>Menu, worlds, and multiplayer</p></span></div>
+        <div class="stats-mode-wrap"><div class="stats-donut" style="background:conic-gradient(${modeGradient})"><span><b>${statsTime(stats.trackedSeconds)}</b><small>tracked</small></span></div><div class="stats-mode-legend">${modes.length ? modes.map(item => `<span><i class="${modeClasses[item.key] || 'menu'}"></i><b>${escHtml(item.label)}</b><small>${statsTime(item.seconds)}</small></span>`).join('') : '<p>Mode details will appear after your next session.</p>'}</div></div>
+      </article>
+      <article class="stats-card">
+        <div class="stats-card-header"><span><h2>Instances</h2><p>Lifetime playtime by installation</p></span></div>
+        ${statsRanking(stats.instances, 'Play an instance to fill this chart.', { instances: true, limit: 7, icon: 'i-library' })}
+      </article>
+      <article class="stats-card">
+        <div class="stats-card-header"><span><h2>Servers</h2><p>Time spent in multiplayer</p></span></div>
+        ${statsRanking(stats.servers, 'Server time will appear after Pine detects a multiplayer connection.', { icon: 'i-monitor' })}
+      </article>
+      <article class="stats-card">
+        <div class="stats-card-header"><span><h2>Worlds</h2><p>Your most played singleplayer worlds</p></span></div>
+        ${statsRanking(stats.worlds, 'World time will appear after your next singleplayer session.', { icon: 'i-home' })}
+      </article>
+      <article class="stats-card stats-card-wide">
+        <div class="stats-card-header"><span><h2>Time of day</h2><p>When you usually start playing</p></span><strong>${statsHour(stats.peakHour)}</strong></div>
+        <div class="stats-hour-chart">${(stats.hours || []).map(item => `<span title="${statsHour(item.hour)} · ${statsTime(item.seconds)}"><i style="height:${item.seconds ? Math.max(6, item.seconds / hourMax * 100) : 2}%"></i></span>`).join('')}</div>
+        <div class="stats-hour-labels"><span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>12 AM</span></div>
+      </article>
+      <article class="stats-card stats-card-wide">
+        <div class="stats-card-header"><span><h2>Recent sessions</h2><p>Your latest launches and destinations</p></span></div>
+        ${recent.length ? `<div class="stats-sessions">${recent.slice(0, 8).map(session => {
+          const destinations = session.segments?.filter(segment => segment.type !== 'menu').sort((a, b) => b.seconds - a.seconds) || [];
+          return `<div class="stats-session"><span class="stats-session-dot"></span><span><b>${escHtml(session.instanceName)}</b><small>${escHtml(destinations[0]?.label || 'Minecraft menus')} · ${new Date(session.startedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${new Date(session.startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</small></span><strong>${statsTime(session.durationSeconds)}</strong></div>`;
+        }).join('')}</div>` : `<div class="stats-card-empty"><svg><use href="#i-play"/></svg><span>${tracked ? 'No recent sessions found.' : 'Finish a Minecraft session and Pine will build your timeline here.'}</span></div>`}
+      </article>
+    </div>`;
+}
+
+async function loadPlayStats() {
+  const host = $('stats-dashboard');
+  if (!host) return;
+  const requestId = ++state.statsRequestId;
+  if (!state.playStats) host.innerHTML = '<div class="stats-loading"><span class="spinner"></span><span>Reading your play history…</span></div>';
+  try {
+    const stats = await api.getPlayStats();
+    if (requestId !== state.statsRequestId) return;
+    state.playStats = stats;
+    renderPlayStats();
+  } catch (error) {
+    if (requestId !== state.statsRequestId) return;
+    host.innerHTML = `<div class="empty-state"><div class="empty-state-icon"><svg><use href="#i-alert"/></svg></div><div class="empty-state-title">Could not load play stats</div><div class="empty-state-sub">${escHtml(error.message || error)}</div></div>`;
   }
 }
 
@@ -1535,6 +2106,460 @@ function renderLibrary() {
   bindLibraryInstanceCards(grid);
 }
 
+// ── Split workspace ────────────────────────────────────────
+function newSplitPane() {
+  return {
+    id: state.splitNextPaneId++,
+    mode: 'library',
+    instanceName: null,
+    sort: 'recent',
+    group: '',
+    query: '',
+    section: 'content',
+    contentType: 'mod',
+    itemQuery: '',
+    items: [],
+    loading: false,
+    loadedKey: '',
+    requestId: 0,
+  };
+}
+
+function saveSplitWorkspace() {
+  try {
+    localStorage.setItem(SPLIT_WORKSPACE_STORAGE_KEY, JSON.stringify({
+      active: state.splitWorkspaceActive,
+      dock: state.splitWorkspaceDock,
+      nextPaneId: state.splitNextPaneId,
+      columnPercent: state.splitColumnPercent,
+      rowPercent: state.splitRowPercent,
+      panes: state.splitPanes.map(({ id, mode, instanceName, sort, group, query, section, contentType, itemQuery }) => ({ id, mode, instanceName, sort, group, query, section, contentType, itemQuery })),
+    }));
+  } catch {}
+}
+
+function restoreSplitWorkspace() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SPLIT_WORKSPACE_STORAGE_KEY) || 'null');
+    if (!stored?.active || !Array.isArray(stored.panes) || !stored.panes.length) return;
+    const validSorts = new Set(['recent', 'name', 'created', 'version', 'loader', 'playtime']);
+    const validSections = new Set(['content', 'worlds', 'screenshots']);
+    const validContent = new Set(['mod', 'resourcepack', 'shader', 'datapack']);
+    state.splitPanes = stored.panes.slice(0, 4).map((pane, index) => {
+      const instance = state.instances.find(item => item.name === pane.instanceName);
+      return {
+        id: Number.isInteger(pane.id) ? pane.id : index + 1,
+        mode: pane.mode === 'instance' && instance ? 'instance' : 'library',
+        instanceName: pane.mode === 'instance' && instance ? instance.name : null,
+        sort: validSorts.has(pane.sort) ? pane.sort : 'recent',
+        group: typeof pane.group === 'string' ? pane.group : '',
+        query: typeof pane.query === 'string' ? pane.query.slice(0, 100) : '',
+        section: validSections.has(pane.section) ? pane.section : 'content',
+        contentType: validContent.has(pane.contentType) ? pane.contentType : 'mod',
+        itemQuery: typeof pane.itemQuery === 'string' ? pane.itemQuery.slice(0, 100) : '',
+        items: [], loading: false, loadedKey: '', requestId: 0,
+      };
+    });
+    state.splitNextPaneId = Math.max(Number(stored.nextPaneId) || 1, ...state.splitPanes.map(pane => pane.id + 1));
+    state.splitWorkspaceDock = 'instance';
+    state.splitColumnPercent = Math.max(25, Math.min(75, Number(stored.columnPercent) || 50));
+    state.splitRowPercent = Math.max(28, Math.min(72, Number(stored.rowPercent) || 50));
+    state.splitWorkspaceActive = true;
+  } catch {}
+}
+
+function startOrAddSplitPane() {
+  if (!state.splitWorkspaceActive) {
+    state.splitWorkspaceActive = true;
+    state.splitWorkspaceDock = 'instance';
+    state.splitPanes = [newSplitPane(), newSplitPane()];
+  } else if (state.splitPanes.length < 4) {
+    state.splitPanes.push(newSplitPane());
+  } else {
+    toast('Split view already has four panes', 'info');
+  }
+  saveSplitWorkspace();
+  switchView('instance');
+  renderSplitWorkspace();
+}
+
+function hideSplitWorkspace() {
+  $('split-workspace')?.setAttribute('hidden', '');
+  $('view-library')?.classList.remove('split-workspace-active');
+  $('view-instance')?.classList.remove('split-workspace-active');
+}
+
+function exitSplitWorkspace() {
+  state.splitWorkspaceActive = false;
+  state.splitWorkspaceDock = 'library';
+  state.splitPanes = [];
+  saveSplitWorkspace();
+  hideSplitWorkspace();
+  if (state.currentView === 'library') renderLibrary();
+  if (state.currentView === 'instance') {
+    if (state.currentInstance) openInstanceView();
+    else renderInstanceLanding();
+  }
+}
+
+function sortSplitInstances(pane) {
+  const query = String(pane.query || '').toLowerCase().trim();
+  const group = String(pane.group || '').toLowerCase();
+  const values = state.instances.filter(instance => {
+    if (group && String(instance.group || '').toLowerCase() !== group) return false;
+    if (!query) return true;
+    return [instance.name, instance.loader, instance.gameVersion, ...(instance.tags || [])].filter(Boolean).join(' ').toLowerCase().includes(query);
+  });
+  return values.sort((a, b) => {
+    if (Boolean(a.favorite) !== Boolean(b.favorite)) return a.favorite ? -1 : 1;
+    if (pane.sort === 'name') return a.name.localeCompare(b.name);
+    if (pane.sort === 'created') return new Date(b.created || 0) - new Date(a.created || 0);
+    if (pane.sort === 'version') return String(b.gameVersion || '').localeCompare(String(a.gameVersion || ''), undefined, { numeric: true });
+    if (pane.sort === 'loader') return String(a.loader || '').localeCompare(String(b.loader || '')) || a.name.localeCompare(b.name);
+    if (pane.sort === 'playtime') return (Number(b.totalPlaytimeSeconds) || 0) - (Number(a.totalPlaytimeSeconds) || 0) || a.name.localeCompare(b.name);
+    return new Date(b.lastPlayed || b.created || 0) - new Date(a.lastPlayed || a.created || 0);
+  });
+}
+
+function splitPaneFrame(pane, body) {
+  return `<article class="split-pane" data-split-pane="${pane.id}" data-mode="${pane.mode}">
+    <button class="split-pane-close" type="button" data-split-close="${pane.id}" aria-label="Close this split pane" title="Close pane"><svg><use href="#i-x"/></svg></button>
+    ${body}
+  </article>`;
+}
+
+function renderSplitLibraryPane(pane) {
+  const instances = sortSplitInstances(pane);
+  const groups = state.groups.map(group => `<option value="${escHtml(group.name)}"${pane.group.toLowerCase() === group.name.toLowerCase() ? ' selected' : ''}>${escHtml(group.name)}</option>`).join('');
+  const cards = instances.map(instance => {
+    const icon = instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml((instance.name || '?')[0].toUpperCase());
+    return `<article class="split-library-card" data-split-open="${escHtml(instance.name)}" data-pane-id="${pane.id}">
+      <span class="split-library-icon">${icon}</span>
+      <span class="split-library-copy"><b>${escHtml(instance.name)}</b><small>${escHtml(instance.loader || 'vanilla')} · ${escHtml(instance.gameVersion || 'Unknown')}</small>${instance.totalPlaytimeSeconds ? `<em>${formatDuration(instance.totalPlaytimeSeconds)} played</em>` : ''}</span>
+      <button type="button" data-split-play="${escHtml(instance.name)}" aria-label="Play ${escHtml(instance.name)}"><svg><use href="#i-play"/></svg></button>
+    </article>`;
+  }).join('');
+  return splitPaneFrame(pane, `<header class="split-pane-header" draggable="true" data-split-reorder="${pane.id}" title="Drag to swap this pane"><span class="split-pane-mark"><svg><use href="#i-library"/></svg></span><div><h2>Library</h2><p>${instances.length} instance${instances.length === 1 ? '' : 's'} in this pane</p></div></header>
+    <div class="split-library-tools">
+      <div class="split-search"><svg><use href="#i-search"/></svg><input data-split-query="${pane.id}" value="${escHtml(pane.query)}" placeholder="Search instances…" autocomplete="off"></div>
+      <select data-split-sort="${pane.id}" aria-label="Sort this library pane">
+        <option value="recent"${pane.sort === 'recent' ? ' selected' : ''}>Recently played</option><option value="name"${pane.sort === 'name' ? ' selected' : ''}>Name</option><option value="created"${pane.sort === 'created' ? ' selected' : ''}>Newest</option><option value="version"${pane.sort === 'version' ? ' selected' : ''}>Version</option><option value="loader"${pane.sort === 'loader' ? ' selected' : ''}>Loader</option><option value="playtime"${pane.sort === 'playtime' ? ' selected' : ''}>Playtime</option>
+      </select>
+      <select data-split-group="${pane.id}" aria-label="Filter by group"><option value="">All groups</option>${groups}</select>
+    </div>
+    <div class="split-library-list">${cards || `<div class="split-empty"><svg><use href="#i-library"/></svg><b>No matching instances</b><span>Change this pane's search or filters.</span></div>`}</div>`);
+}
+
+function splitItemMarkup(pane, item, index) {
+  if (pane.section === 'screenshots') return `<article class="split-item split-shot" draggable="true" data-split-item="${index}"><img src="${item.data}" alt="${escHtml(item.name)}"><span><b>${escHtml(item.name)}</b><small>${formatBytes(item.bytes || 0)}</small></span><svg class="split-drag-mark"><use href="#i-copy"/></svg></article>`;
+  if (pane.section === 'worlds') {
+    const icon = item.iconData ? `<img src="${item.iconData}" alt="">` : `<svg><use href="#i-globe"/></svg>`;
+    return `<article class="split-item" draggable="true" data-split-item="${index}"><span class="split-item-icon">${icon}</span><span><b>${escHtml(item.name || item.identifier)}</b><small>${escHtml(item.version || 'Minecraft world')} · ${formatBytes(item.size || 0)}</small></span><svg class="split-drag-mark"><use href="#i-copy"/></svg></article>`;
+  }
+  const icon = item.iconUrl ? `<img src="${escHtml(item.iconUrl)}" alt="">` : escHtml((item.title || item.filename || '?')[0].toUpperCase());
+  return `<article class="split-item" draggable="true" data-split-item="${index}"><span class="split-item-icon">${icon}</span><span><b>${escHtml(item.title || item.filename)}</b><small>${escHtml(item.world ? `${item.world} · ${item.filename}` : item.filename)}</small></span><svg class="split-drag-mark"><use href="#i-copy"/></svg></article>`;
+}
+
+function renderSplitInstancePane(pane) {
+  const instance = state.instances.find(item => item.name === pane.instanceName);
+  if (!instance) { pane.mode = 'library'; pane.instanceName = null; return renderSplitLibraryPane(pane); }
+  const icon = instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml((instance.name || '?')[0].toUpperCase());
+  const sectionTabs = [['content', 'Content'], ['worlds', 'Worlds'], ['screenshots', 'Screenshots']].map(([value, label]) => `<button class="${pane.section === value ? 'active' : ''}" type="button" data-split-section="${value}" data-pane-id="${pane.id}">${label}</button>`).join('');
+  const contentTabs = pane.section === 'content' ? `<div class="split-content-tabs">${[['mod', 'Mods'], ['resourcepack', 'Packs'], ['shader', 'Shaders'], ['datapack', 'Data packs']].map(([value, label]) => `<button class="${pane.contentType === value ? 'active' : ''}" type="button" data-split-content="${value}" data-pane-id="${pane.id}">${label}</button>`).join('')}</div>` : '';
+  const itemQuery = String(pane.itemQuery || '').trim().toLowerCase();
+  const visibleItems = pane.items.map((item, index) => ({ item, index })).filter(({ item }) => !itemQuery || [item.title, item.filename, item.name, item.identifier, item.world, item.version].filter(Boolean).join(' ').toLowerCase().includes(itemQuery));
+  const searchLabel = pane.section === 'worlds' ? 'worlds' : pane.section === 'screenshots' ? 'screenshots' : pane.contentType === 'resourcepack' ? 'resource packs' : pane.contentType === 'shader' ? 'shaders' : pane.contentType === 'datapack' ? 'data packs' : 'mods';
+  let items = `<div class="split-pane-loading"><span class="spinner"></span><span>Reading ${pane.section}…</span></div>`;
+  if (!pane.loading && pane.loadedKey) items = visibleItems.length
+    ? visibleItems.map(({ item, index }) => splitItemMarkup(pane, item, index)).join('')
+    : `<div class="split-empty"><svg><use href="#${pane.section === 'worlds' ? 'i-globe' : pane.section === 'screenshots' ? 'i-monitor' : 'i-library'}"/></svg><b>${itemQuery && pane.items.length ? 'No matching items' : 'Nothing here yet'}</b><span>${itemQuery && pane.items.length ? `Try another ${searchLabel} search.` : 'This pane will refresh after a copy.'}</span></div>`;
+  return splitPaneFrame(pane, `<header class="split-pane-header split-instance-header" draggable="true" data-split-reorder="${pane.id}" title="Drag to swap this pane"><button class="split-back" type="button" data-split-library="${pane.id}" aria-label="Return this pane to the library"><svg><use href="#i-chevron-left"/></svg></button><span class="split-pane-mark">${icon}</span><div><h2>${escHtml(instance.name)}</h2><p>${escHtml(instance.loader || 'vanilla')} · Minecraft ${escHtml(instance.gameVersion || 'Unknown')}</p></div><button class="split-play" type="button" data-split-play="${escHtml(instance.name)}"><svg><use href="#i-play"/></svg><span>Play</span></button></header>
+    <div class="split-instance-tabs">${sectionTabs}</div>${contentTabs}
+    <div class="split-item-search"><svg><use href="#i-search"/></svg><input data-split-item-query="${pane.id}" value="${escHtml(pane.itemQuery || '')}" placeholder="Search ${searchLabel}…" autocomplete="off"><span>${pane.loading ? '' : `${visibleItems.length}/${pane.items.length}`}</span></div>
+    <div class="split-drop-hint"><svg><use href="#i-copy"/></svg>Drag an item into another instance pane to copy it</div>
+    <div class="split-item-list">${items}</div>`);
+}
+
+function renderSplitWorkspace() {
+  const workspace = $('split-workspace');
+  if (!workspace || !state.splitWorkspaceActive || state.currentView !== state.splitWorkspaceDock) return;
+  const host = $(state.currentView === 'instance' ? 'view-instance' : 'view-library');
+  const other = $(state.currentView === 'instance' ? 'view-library' : 'view-instance');
+  other?.classList.remove('split-workspace-active');
+  host?.classList.add('split-workspace-active');
+  if (workspace.parentElement !== host) host.appendChild(workspace);
+  workspace.hidden = false;
+  const paneCount = state.splitPanes.length;
+  const column = Math.max(25, Math.min(75, Number(state.splitColumnPercent) || 50));
+  const row = Math.max(28, Math.min(72, Number(state.splitRowPercent) || 50));
+  const columns = paneCount === 1 ? 'minmax(0,1fr)' : `${column}fr ${100 - column}fr`;
+  const rows = paneCount <= 2 ? 'minmax(0,1fr)' : `${row}fr ${100 - row}fr`;
+  const resizeHandles = `${paneCount > 1 ? '<div class="split-resize-handle split-resize-column" data-split-resize="column" role="separator" aria-label="Resize split columns"></div>' : ''}${paneCount > 2 ? '<div class="split-resize-handle split-resize-row" data-split-resize="row" role="separator" aria-label="Resize split rows"></div>' : ''}`;
+  workspace.dataset.panes = String(paneCount);
+  workspace.innerHTML = `<div class="split-workspace-bar"><div><span class="split-workspace-icon"><svg><use href="#i-split"/></svg></span><span><b>Split workspace</b><small>${state.splitPanes.length} open pane${state.splitPanes.length === 1 ? '' : 's'} · drag headers to reorder · drag items to copy</small></span></div><div><button class="btn btn-ghost btn-sm" type="button" data-split-import><svg><use href="#i-download"/></svg>Import</button><button class="btn btn-primary btn-sm" type="button" data-split-create><svg><use href="#i-plus"/></svg>New instance</button><button class="btn btn-secondary btn-sm" type="button" data-split-add ${state.splitPanes.length >= 4 ? 'disabled' : ''}><svg><use href="#i-split"/></svg>Add pane</button><button class="btn btn-ghost btn-sm" type="button" data-split-exit>Exit split view</button></div></div>
+    <div class="split-grid" style="--split-column:${column}%;--split-row:${row}%;grid-template-columns:${columns};grid-template-rows:${rows}">${state.splitPanes.map(pane => pane.mode === 'instance' ? renderSplitInstancePane(pane) : renderSplitLibraryPane(pane)).join('')}${resizeHandles}</div>`;
+  for (const pane of state.splitPanes) {
+    if (pane.mode !== 'instance') continue;
+    const key = `${pane.instanceName}|${pane.section}|${pane.contentType}`;
+    if (!pane.loading && pane.loadedKey !== key) loadSplitPaneData(pane.id, key);
+  }
+}
+
+async function loadSplitPaneData(paneId, key) {
+  const pane = state.splitPanes.find(item => item.id === paneId);
+  if (!pane || pane.mode !== 'instance') return;
+  const requestId = ++pane.requestId;
+  pane.loading = true;
+  renderSplitWorkspace();
+  try {
+    let items;
+    if (pane.section === 'worlds') items = await api.getInstanceWorldDetails(pane.instanceName);
+    else if (pane.section === 'screenshots') items = await api.getInstanceScreenshots(pane.instanceName);
+    else items = await api.getInstanceContent(pane.instanceName, pane.contentType);
+    if (requestId !== pane.requestId) return;
+    pane.items = Array.isArray(items) ? items : [];
+    pane.loadedKey = key;
+  } catch (error) {
+    if (requestId !== pane.requestId) return;
+    pane.items = [];
+    pane.loadedKey = key;
+    toast(`Could not load ${pane.instanceName}: ${error.message || error}`, 'error', 6000);
+  } finally {
+    if (requestId === pane.requestId) pane.loading = false;
+    renderSplitWorkspace();
+  }
+}
+
+function openSplitInstance(paneId, instanceName) {
+  const pane = state.splitPanes.find(item => item.id === paneId);
+  const instance = state.instances.find(item => item.name === instanceName);
+  if (!pane || !instance) return;
+  pane.mode = 'instance';
+  pane.instanceName = instance.name;
+  pane.section = 'content';
+  pane.contentType = 'mod';
+  pane.itemQuery = '';
+  pane.items = [];
+  pane.loadedKey = '';
+  state.splitWorkspaceDock = 'instance';
+  api.updateInstance(instance.name, { lastOpened: new Date().toISOString() }).catch(() => {});
+  saveSplitWorkspace();
+  if (state.currentView !== 'instance') switchView('instance');
+  else renderSplitWorkspace();
+}
+
+function splitPaneRects() {
+  return new Map([...document.querySelectorAll('[data-split-pane]')].map(element => [Number(element.dataset.splitPane), element.getBoundingClientRect()]));
+}
+
+function animateSplitPaneLayout(before, duration = 360) {
+  requestAnimationFrame(() => document.querySelectorAll('[data-split-pane]').forEach(element => {
+    const previous = before.get(Number(element.dataset.splitPane));
+    if (!previous) return;
+    const current = element.getBoundingClientRect();
+    const dx = previous.left - current.left;
+    const dy = previous.top - current.top;
+    const sx = previous.width / Math.max(1, current.width);
+    const sy = previous.height / Math.max(1, current.height);
+    element.animate([{ transformOrigin: 'top left', transform: `translate(${dx}px,${dy}px) scale(${sx},${sy})` }, { transformOrigin: 'top left', transform: 'none' }], { duration, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  }));
+}
+
+function closeSplitPane(paneId) {
+  const before = splitPaneRects();
+  state.splitPanes = state.splitPanes.filter(pane => pane.id !== paneId);
+  if (!state.splitPanes.length) return exitSplitWorkspace();
+  saveSplitWorkspace();
+  renderSplitWorkspace();
+  animateSplitPaneLayout(before);
+}
+
+function swapSplitPanes(sourceId, targetId) {
+  if (sourceId === targetId) return;
+  const sourceIndex = state.splitPanes.findIndex(pane => pane.id === sourceId);
+  const targetIndex = state.splitPanes.findIndex(pane => pane.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  const before = splitPaneRects();
+  [state.splitPanes[sourceIndex], state.splitPanes[targetIndex]] = [state.splitPanes[targetIndex], state.splitPanes[sourceIndex]];
+  saveSplitWorkspace();
+  renderSplitWorkspace();
+  animateSplitPaneLayout(before, 420);
+}
+
+function beginSplitResize(event, axis) {
+  const grid = event.target.closest('.split-grid');
+  if (!grid) return;
+  event.preventDefault();
+  const update = pointerEvent => {
+    const box = grid.getBoundingClientRect();
+    if (axis === 'column') {
+      const percent = Math.max(25, Math.min(75, ((pointerEvent.clientX - box.left) / Math.max(1, box.width)) * 100));
+      state.splitColumnPercent = percent;
+      grid.style.setProperty('--split-column', `${percent}%`);
+      grid.style.gridTemplateColumns = `${percent}fr ${100 - percent}fr`;
+    } else {
+      const percent = Math.max(28, Math.min(72, ((pointerEvent.clientY - box.top) / Math.max(1, box.height)) * 100));
+      state.splitRowPercent = percent;
+      grid.style.setProperty('--split-row', `${percent}%`);
+      grid.style.gridTemplateRows = `${percent}fr ${100 - percent}fr`;
+    }
+  };
+  const finish = () => {
+    window.removeEventListener('pointermove', update);
+    window.removeEventListener('pointerup', finish);
+    window.removeEventListener('pointercancel', finish);
+    document.documentElement.classList.remove('split-resizing');
+    saveSplitWorkspace();
+  };
+  document.documentElement.classList.add('split-resizing');
+  window.addEventListener('pointermove', update);
+  window.addEventListener('pointerup', finish, { once: true });
+  window.addEventListener('pointercancel', finish, { once: true });
+}
+
+function splitTransferItem(pane, index) {
+  const item = pane.items[index];
+  if (!item) return null;
+  if (pane.section === 'worlds') return { kind: 'world', identifier: item.identifier, label: item.name || item.identifier };
+  if (pane.section === 'screenshots') return { kind: 'screenshot', filename: item.name };
+  return { kind: 'content', type: pane.contentType, key: item.key || item.filename, filename: item.filename };
+}
+
+function bindSplitWorkspace() {
+  const workspace = $('split-workspace');
+  if (!workspace) return;
+  workspace.addEventListener('pointerdown', event => {
+    const handle = event.target.closest('[data-split-resize]');
+    if (handle) beginSplitResize(event, handle.dataset.splitResize);
+  });
+  workspace.addEventListener('click', event => {
+    const close = event.target.closest('[data-split-close]');
+    if (close) return closeSplitPane(Number(close.dataset.splitClose));
+    if (event.target.closest('[data-split-create]')) return openCreateModal();
+    if (event.target.closest('[data-split-import]')) return openImportHub();
+    if (event.target.closest('[data-split-add]')) return startOrAddSplitPane();
+    if (event.target.closest('[data-split-exit]')) return exitSplitWorkspace();
+    const open = event.target.closest('[data-split-open]');
+    if (open && !event.target.closest('[data-split-play]')) return openSplitInstance(Number(open.dataset.paneId), open.dataset.splitOpen);
+    const play = event.target.closest('[data-split-play]');
+    if (play) return launchInstance(play.dataset.splitPlay);
+    const library = event.target.closest('[data-split-library]');
+    if (library) {
+      const pane = state.splitPanes.find(item => item.id === Number(library.dataset.splitLibrary));
+      if (pane) { pane.mode = 'library'; pane.instanceName = null; pane.items = []; pane.loadedKey = ''; saveSplitWorkspace(); renderSplitWorkspace(); }
+      return;
+    }
+    const section = event.target.closest('[data-split-section]');
+    if (section) {
+      const pane = state.splitPanes.find(item => item.id === Number(section.dataset.paneId));
+      if (pane) { pane.section = section.dataset.splitSection; pane.itemQuery = ''; pane.loadedKey = ''; pane.items = []; saveSplitWorkspace(); renderSplitWorkspace(); }
+      return;
+    }
+    const content = event.target.closest('[data-split-content]');
+    if (content) {
+      const pane = state.splitPanes.find(item => item.id === Number(content.dataset.paneId));
+      if (pane) { pane.contentType = content.dataset.splitContent; pane.itemQuery = ''; pane.loadedKey = ''; pane.items = []; saveSplitWorkspace(); renderSplitWorkspace(); }
+    }
+  });
+  workspace.addEventListener('change', event => {
+    const sort = event.target.closest('[data-split-sort]');
+    const group = event.target.closest('[data-split-group]');
+    const control = sort || group;
+    if (!control) return;
+    const pane = state.splitPanes.find(item => item.id === Number(sort?.dataset.splitSort || group?.dataset.splitGroup));
+    if (!pane) return;
+    if (sort) pane.sort = sort.value;
+    if (group) pane.group = group.value;
+    saveSplitWorkspace();
+    renderSplitWorkspace();
+  });
+  workspace.addEventListener('input', debounce(event => {
+    const input = event.target.closest('[data-split-query]');
+    const itemInput = event.target.closest('[data-split-item-query]');
+    if (!input && !itemInput) return;
+    const pane = state.splitPanes.find(item => item.id === Number(input?.dataset.splitQuery || itemInput?.dataset.splitItemQuery));
+    if (!pane) return;
+    if (input) pane.query = input.value;
+    if (itemInput) pane.itemQuery = itemInput.value;
+    saveSplitWorkspace();
+    renderSplitWorkspace();
+    requestAnimationFrame(() => {
+      const selector = input ? `[data-split-query="${pane.id}"]` : `[data-split-item-query="${pane.id}"]`;
+      const next = document.querySelector(selector);
+      next?.focus();
+      next?.setSelectionRange?.(next.value.length, next.value.length);
+    });
+  }, 100));
+  workspace.addEventListener('dragstart', event => {
+    const reorder = event.target.closest('[data-split-reorder]');
+    if (reorder) {
+      if (event.target.closest('button, input, select')) return event.preventDefault();
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('application/x-pine-split-pane', reorder.dataset.splitReorder);
+      reorder.closest('[data-split-pane]')?.classList.add('split-pane-reordering');
+      return;
+    }
+    const row = event.target.closest('[data-split-item]');
+    const paneElement = row?.closest('[data-split-pane]');
+    const pane = state.splitPanes.find(item => item.id === Number(paneElement?.dataset.splitPane));
+    const item = pane ? splitTransferItem(pane, Number(row.dataset.splitItem)) : null;
+    if (!pane || !item) return event.preventDefault();
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData('application/x-pine-instance-item', JSON.stringify({ sourcePaneId: pane.id, sourceInstance: pane.instanceName, item }));
+    row.classList.add('is-dragging');
+  });
+  workspace.addEventListener('dragend', event => {
+    event.target.closest('[data-split-item]')?.classList.remove('is-dragging');
+    workspace.querySelectorAll('.split-drop-target,.split-pane-swap-target,.split-pane-reordering').forEach(element => element.classList.remove('split-drop-target', 'split-pane-swap-target', 'split-pane-reordering'));
+  });
+  workspace.addEventListener('dragover', event => {
+    const types = Array.from(event.dataTransfer?.types || []);
+    const anyPane = event.target.closest('[data-split-pane]');
+    if (types.includes('application/x-pine-split-pane') && anyPane) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const sourceId = Number(event.dataTransfer.getData('application/x-pine-split-pane'));
+      workspace.querySelectorAll('.split-pane-swap-target').forEach(element => element.classList.toggle('split-pane-swap-target', element === anyPane && Number(element.dataset.splitPane) !== sourceId));
+      return;
+    }
+    if (!types.includes('application/x-pine-instance-item')) return;
+    const target = event.target.closest('[data-split-pane][data-mode="instance"]');
+    if (!target) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    workspace.querySelectorAll('.split-drop-target').forEach(element => element.classList.toggle('split-drop-target', element === target));
+  });
+  workspace.addEventListener('drop', async event => {
+    const anyPane = event.target.closest('[data-split-pane]');
+    const paneSource = Number(event.dataTransfer.getData('application/x-pine-split-pane'));
+    if (anyPane && paneSource) {
+      event.preventDefault();
+      workspace.querySelectorAll('.split-pane-swap-target,.split-pane-reordering').forEach(element => element.classList.remove('split-pane-swap-target', 'split-pane-reordering'));
+      swapSplitPanes(paneSource, Number(anyPane.dataset.splitPane));
+      return;
+    }
+    const targetElement = event.target.closest('[data-split-pane][data-mode="instance"]');
+    if (!targetElement) return;
+    event.preventDefault();
+    workspace.querySelectorAll('.split-drop-target').forEach(element => element.classList.remove('split-drop-target'));
+    let payload;
+    try { payload = JSON.parse(event.dataTransfer.getData('application/x-pine-instance-item')); } catch { return; }
+    const target = state.splitPanes.find(item => item.id === Number(targetElement.dataset.splitPane));
+    if (!target || !payload?.sourceInstance || !payload.item) return;
+    if (target.instanceName === payload.sourceInstance) return void toast('Choose a different instance pane', 'info');
+    targetElement.classList.add('split-copying');
+    try {
+      const result = await api.copyInstanceItems(payload.sourceInstance, target.instanceName, [payload.item]);
+      target.loadedKey = '';
+      target.items = [];
+      renderSplitWorkspace();
+      if (result.copied?.length) toast(`Copied ${result.copied[0].label || 'item'} into ${target.instanceName}`, 'success');
+      else toast(`${result.skipped?.[0]?.label || 'That item'} already exists in ${target.instanceName}`, 'info');
+    } catch (error) { toast(`Could not copy item: ${error.message || error}`, 'error', 7000); }
+    finally { targetElement.classList.remove('split-copying'); }
+  });
+}
+
 function setLibrarySelectionMode(enabled) {
   state.librarySelectionMode = Boolean(enabled);
   if (!enabled) state.selectedInstances.clear();
@@ -1588,9 +2613,45 @@ function quickLaunch() {
 }
 
 // ── Instance view ───────────────────────────────────────────
+function setInstanceDetailVisible(visible) {
+  const landing = $('instance-landing');
+  if (landing) landing.hidden = visible;
+  const view = $('view-instance');
+  if (!view) return;
+  const header = view.querySelector('.page-header');
+  if (header) header.hidden = !visible;
+  if ($('instance-tabs')) $('instance-tabs').hidden = !visible;
+  if ($('instance-tab-content')) $('instance-tab-content').hidden = !visible;
+}
+
+function renderInstanceLanding() {
+  const landing = $('instance-landing');
+  if (!landing) return;
+  setInstanceDetailVisible(false);
+  const instances = sortByRecency(state.instances);
+  landing.innerHTML = `<div class="instance-landing-hero">
+    <span class="instance-landing-symbol"><svg aria-hidden="true"><use href="#i-monitor"/></svg></span>
+    <div><h1>${instances.length ? 'Choose an instance' : 'Your instances live here'}</h1><p>${instances.length ? 'Open one to manage its content, worlds, screenshots, logs, and settings.' : 'Create or import an instance, then return here whenever you want to manage it.'}</p></div>
+    <div class="instance-landing-actions"><button class="btn btn-primary" type="button" data-instance-create><svg><use href="#i-plus"/></svg>New instance</button><button class="btn btn-secondary" type="button" data-instance-import><svg><use href="#i-download"/></svg>Import</button></div>
+  </div>
+  ${instances.length ? `<div class="instance-landing-heading"><div><strong>Recently opened</strong><small>Select an instance to open its workspace</small></div><button class="btn btn-ghost" type="button" data-view-library>View full library</button></div><div class="instance-landing-grid">${instances.slice(0, 6).map(instance => {
+    const icon = instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml((instance.name || '?')[0].toUpperCase());
+    return `<article class="instance-landing-card" data-instance-open="${escHtml(instance.name)}"><span class="instance-landing-icon">${icon}</span><span class="instance-landing-copy"><b>${escHtml(instance.name)}</b><small>${escHtml(instance.loader || 'vanilla')} · Minecraft ${escHtml(instance.gameVersion || 'Unknown')}</small>${instance.totalPlaytimeSeconds ? `<em>${formatDuration(instance.totalPlaytimeSeconds)} played</em>` : ''}</span><button type="button" data-instance-play="${escHtml(instance.name)}" aria-label="Play ${escHtml(instance.name)}"><svg><use href="#i-play"/></svg></button></article>`;
+  }).join('')}</div>` : ''}`;
+  landing.querySelector('[data-instance-create]')?.addEventListener('click', openCreateModal);
+  landing.querySelector('[data-instance-import]')?.addEventListener('click', openImportHub);
+  landing.querySelector('[data-view-library]')?.addEventListener('click', () => switchView('library'));
+  landing.querySelectorAll('[data-instance-open]').forEach(card => card.addEventListener('click', () => selectInstance(card.dataset.instanceOpen)));
+  landing.querySelectorAll('[data-instance-play]').forEach(button => button.addEventListener('click', event => {
+    event.stopPropagation();
+    launchInstance(button.dataset.instancePlay);
+  }));
+}
+
 function openInstanceView() {
   if (!state.currentInstance) return;
   switchView('instance');
+  setInstanceDetailVisible(true);
   const inst = state.currentInstance;
   const name = inst.name || '';
   const blurDir = inst.bannerData ? (inst.bannerBlurDir || 'left') : null;
@@ -1805,8 +2866,8 @@ function renderSkinFigure(canvas, source, variant = 'classic', minecraftTextures
   }
   const viewer = new lib.SkinViewer({
     canvas,
-    width: 128,
-    height: 160,
+    width: Number(canvas.getAttribute('width')) || 128,
+    height: Number(canvas.getAttribute('height')) || 160,
     skin: source,
     model: variant === 'slim' ? 'slim' : 'default',
     animation: new lib.IdleAnimation(),
@@ -2092,9 +3153,100 @@ const CONTENT_LABELS = {
   datapack: { singular: 'data pack', plural: 'data packs' },
 };
 
+let modDropDepth = 0;
+
+function hideModDropZone() {
+  modDropDepth = 0;
+  const zone = $('mod-drop-zone');
+  if (!zone || zone.classList.contains('is-copying')) return;
+  zone.hidden = true;
+}
+
+function bindModDropZone() {
+  const pane = document.querySelector('#instance-tab-content .tab-pane[data-tab="content"]');
+  const zone = $('mod-drop-zone');
+  if (!pane || !zone) return;
+  const hasFiles = event => Array.from(event.dataTransfer?.types || []).includes('Files');
+  const canDrop = () => Boolean(
+    state.currentInstance
+    && state.contentCategory === 'mod'
+    && pane.classList.contains('active')
+    && $('view-instance')?.classList.contains('active')
+  );
+  const show = () => {
+    zone.classList.remove('is-copying');
+    zone.querySelector('strong').textContent = 'Drop mods to copy them';
+    zone.querySelector('small').textContent = `Add .jar files to ${state.currentInstance?.name || 'this instance'} without moving the originals.`;
+    zone.hidden = false;
+  };
+
+  pane.addEventListener('dragenter', event => {
+    if (!hasFiles(event) || !canDrop()) return;
+    event.preventDefault();
+    modDropDepth += 1;
+    show();
+  });
+  pane.addEventListener('dragover', event => {
+    if (!hasFiles(event) || !canDrop()) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    if (zone.hidden) show();
+  });
+  pane.addEventListener('dragleave', event => {
+    if (!hasFiles(event)) return;
+    modDropDepth = Math.max(0, modDropDepth - 1);
+    if (!modDropDepth) hideModDropZone();
+  });
+  pane.addEventListener('drop', async event => {
+    if (!hasFiles(event) || !canDrop()) return;
+    event.preventDefault();
+    modDropDepth = 0;
+    const instanceName = state.currentInstance.name;
+    const files = [...(event.dataTransfer?.files || [])];
+    const filePaths = files.map(file => {
+      try { return api.getPathForFile(file); } catch { return ''; }
+    }).filter(Boolean);
+    if (!filePaths.length) {
+      zone.hidden = true;
+      toast('Pine could not read the dropped files', 'error');
+      return;
+    }
+
+    zone.hidden = false;
+    zone.classList.add('is-copying');
+    zone.querySelector('strong').textContent = `Copying ${filePaths.length} mod${filePaths.length === 1 ? '' : 's'}…`;
+    zone.querySelector('small').textContent = 'Verifying each JAR before adding it to the instance.';
+    try {
+      const result = await api.copyModFiles(instanceName, filePaths);
+      if (state.currentInstance?.name === instanceName && state.contentCategory === 'mod') await loadContentList();
+      const copied = result.copied?.length || 0;
+      const skipped = result.skipped?.length || 0;
+      const rejected = result.rejected?.length || 0;
+      const warnings = (result.copied || []).filter(item => item.compatibilityIssue);
+      if (copied) {
+        const restart = result.restartRequired ? ' Restart Minecraft to load them.' : '';
+        toast(`${copied} mod${copied === 1 ? '' : 's'} copied into ${instanceName}.${restart}`, 'success', result.restartRequired ? 6500 : 4000);
+      }
+      if (warnings.length) toast(`${warnings.length} copied mod${warnings.length === 1 ? '' : 's'} may target another loader. Review the compatibility warning${warnings.length === 1 ? '' : 's'} in the list.`, 'error', 7000);
+      if (skipped) toast(`${skipped} mod${skipped === 1 ? ' was' : 's were'} already installed`, 'info', 4000);
+      if (rejected) {
+        const first = result.rejected[0];
+        const extra = rejected > 1 ? ` and ${rejected - 1} more` : '';
+        toast(`Could not add ${first.filename}: ${first.reason}${extra}`, 'error', 7000);
+      }
+    } catch (error) {
+      toast('Could not copy mods: ' + (error.message || error), 'error', 7000);
+    } finally {
+      zone.classList.remove('is-copying');
+      zone.hidden = true;
+    }
+  });
+}
+
 function switchContentCategory(type) {
   if (!CONTENT_LABELS[type] || state.contentCategory === type) return;
   state.contentCategory = type;
+  hideModDropZone();
   const compatibilityButton = $('check-mod-compatibility');
   if (compatibilityButton) compatibilityButton.hidden = type !== 'mod';
   $('content-categories')?.querySelectorAll('[data-content-type]').forEach(button => {
@@ -2316,6 +3468,7 @@ async function applyCompatibilityAction(action, finding, overlay) {
     if (input) input.value = action.query || finding.targetId || '';
     const loader = $('filter-loader');
     if (loader) loader.value = instance.loader === 'vanilla' ? '' : instance.loader;
+    setDiscoverMode('minecraft');
     switchView('discover');
     moveDiscoverIndicator();
     await searchMods(false);
@@ -2418,6 +3571,13 @@ async function openContentAdder() {
   if (search) search.placeholder = `Search ${CONTENT_LABELS[state.contentCategory].plural}...`;
   const loaderSel = $('filter-loader');
   if (loaderSel) loaderSel.value = state.currentInstance.loader === 'vanilla' ? '' : state.currentInstance.loader;
+  const versionSel = $('filter-version');
+  if (versionSel) {
+    const gameVersion = state.currentInstance.gameVersion || '';
+    if (gameVersion && ![...versionSel.options].some(option => option.value === gameVersion)) versionSel.add(new Option(gameVersion, gameVersion));
+    versionSel.value = gameVersion;
+  }
+  setDiscoverMode('minecraft');
   switchView('discover');
   moveDiscoverIndicator();
   searchMods(false);
@@ -2569,6 +3729,7 @@ function openWorldDatapackChooser(instance, world) {
       state.discoverCategory = 'datapack';
       overlay.remove();
       document.querySelectorAll('#discover-categories [data-category]').forEach(chip => chip.classList.toggle('chip-active', chip.dataset.category === 'datapack'));
+      setDiscoverMode('minecraft');
       switchView('discover');
       moveDiscoverIndicator();
       searchMods(false);
@@ -2829,8 +3990,7 @@ function loadInstanceSettings() {
     </div>` : ''}
     <div class="settings-card">
       <div class="settings-card-title">Memory</div>
-      <div class="settings-row"><label>Min memory (GB)</label><input id="inst-min-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(inst.minMemory, 2)}"></div>
-      <div class="settings-row"><label>Max memory (GB)</label><input id="inst-max-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(inst.maxMemory, 4)}"></div>
+      ${memoryRangeMarkup('inst', memoryToGigabytes(inst.minMemory, 2), memoryToGigabytes(inst.maxMemory, 4))}
     </div>
     <div class="settings-card">
       <div class="settings-card-title">Java</div>
@@ -2853,11 +4013,18 @@ function loadInstanceSettings() {
       <div><div class="settings-card-title">Minecraft settings &amp; sync</div><p class="text-muted settings-card-note">Edit options without opening text files, or copy selected preferences from another instance. Pine creates a restore point before writing.</p></div>
       <div class="instance-tool-actions"><button class="btn btn-secondary" id="edit-game-options" type="button">Edit game settings</button><button class="btn btn-secondary" id="sync-instance-settings" type="button">Sync from instance</button></div>
     </div>
+    <div class="settings-card instance-migration-card">
+      <div><div class="settings-card-title">Version migration</div><p class="text-muted settings-card-note">Create a new instance on another Minecraft version while copying this instance's worlds, mods, settings, servers, resource packs, shaders, screenshots, and custom files.</p></div>
+      <div class="migration-beta-warning"><svg aria-hidden="true"><use href="#i-alert-triangle"/></svg><span><b>Beta testing</b>This feature may break mods, worlds, resource packs, or other files in the new instance. Your original instance will not be changed.</span></div>
+      <div class="instance-tool-actions"><button class="btn btn-secondary" id="migrate-instance-version" type="button">Migrate to another version</button></div>
+    </div>
     <button class="btn btn-primary" id="inst-save-btn">Save settings</button>
   `;
   $('inst-save-btn')?.addEventListener('click', saveInstanceSettings);
+  bindMemoryRange('inst');
   $('edit-game-options')?.addEventListener('click', openGameOptionsEditor);
   $('sync-instance-settings')?.addEventListener('click', openInstanceSync);
+  $('migrate-instance-version')?.addEventListener('click', openVersionMigrationDialog);
   if (inst.modpack) loadManagedPackPanel(inst);
   if (inst.loader === 'neoforge') loadNeoForgePanel(inst);
   $('inst-pack-state')?.addEventListener('change', async event => {
@@ -3210,6 +4377,7 @@ function updatePride() {
 // ── Settings ────────────────────────────────────────────────
 async function loadSettings() {
   try { state.settings = await api.getSettings() || {}; } catch { state.settings = {}; }
+  try { state.systemMemoryGb = await api.getSystemMemoryGb() || 16; } catch { state.systemMemoryGb = 16; }
   applyAppearanceSettings();
 }
 
@@ -3272,12 +4440,7 @@ function renderSettingsLayout() {
           <div class="settings-row"><label>Default Java path</label>
             <input id="set-java-path" class="input" value="${escHtml(s.javaPath || '')}" placeholder="(use system default)">
           </div>
-          <div class="settings-row"><label>Default min memory (GB)</label>
-            <input id="set-min-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.minMemory, 4)}">
-          </div>
-          <div class="settings-row"><label>Default max memory (GB)</label>
-            <input id="set-max-mem" class="input" type="number" min="1" max="128" step="1" value="${memoryToGigabytes(s.maxMemory, 4)}">
-          </div>
+          ${memoryRangeMarkup('set', memoryToGigabytes(s.minMemory, 4), memoryToGigabytes(s.maxMemory, 4))}
           <div class="settings-row"><label>Default JVM args</label>
             <input id="set-jvm-args" class="input" value="${escHtml(s.jvmArgs || '')}" placeholder="Optional, e.g. -XX:+UseG1GC">
           </div>
@@ -3422,6 +4585,7 @@ function renderSettingsLayout() {
   $('update-action-btn')?.addEventListener('click', runUpdateAction);
   $('storage-refresh')?.addEventListener('click', loadStorageUsage);
   $('storage-clear-cache')?.addEventListener('click', clearDownloadCache);
+  bindMemoryRange('set');
   renderUpdatePanel();
   const headerSave = $('settings-header-save');
   if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
@@ -3555,6 +4719,14 @@ function applyUpdateState(value, notify = false) {
   if (!value || typeof value !== 'object') return;
   const previous = state.updateState;
   state.updateState = { ...state.updateState, ...value };
+  const update = state.updateState;
+  if (['downloading', 'downloaded', 'installing'].includes(update.status) || (update.status === 'error' && ['downloading', 'installing'].includes(previous?.status))) {
+    const activityStatus = update.status === 'downloaded' ? 'done' : update.status === 'error' ? 'failed' : 'active';
+    const version = update.availableVersion || 'update';
+    const activityId = channelActivityId(`launcher-update:${version}`, activityStatus);
+    const etaSeconds = update.total > update.transferred && update.bytesPerSecond ? (update.total - update.transferred) / update.bytesPerSecond : null;
+    upsertActivity({ id: activityId, kind: 'download', title: `Pine Launcher ${version}`, detail: update.message || (update.status === 'installing' ? 'Installing update' : 'Downloading update'), status: activityStatus, progress: update.percent, received: update.transferred, total: update.total, bytesPerSecond: update.bytesPerSecond, etaSeconds, doneLabel: 'Downloaded' });
+  }
   renderUpdatePanel();
   renderUpdatePill();
   if (notify && state.updateState.status === 'available' && state.updateState.availableVersion &&
@@ -3922,6 +5094,7 @@ function bindEditSheet() {
 
 function bindDuplicateEvents() {
   api.onDuplicateProgress?.((progress) => {
+    upsertActivity({ id: `duplicate:${progress.operationId}`, kind: 'instance', title: `Copying ${progress.name || 'instance'}`, detail: progress.current ? `Copying ${shortFile(progress.current)}` : 'Copying and verifying instance', status: Number(progress.percent) >= 100 ? 'done' : 'active', progress: progress.percent, doneLabel: 'Copied' });
     const root = $('duplicate-instance-root');
     if (!root || root.dataset.name !== progress.name) return;
     const fill = root.querySelector('[data-progress-fill]');
@@ -3932,6 +5105,7 @@ function bindDuplicateEvents() {
       : `Copying instance · ${progress.percent}%`;
   });
   api.onImportProgress?.((progress) => {
+    upsertActivity({ id: `import:${progress.operationId}`, kind: 'instance', title: `Importing ${progress.name || 'instance'}`, detail: progress.current ? `Copying and verifying ${shortFile(progress.current)}` : 'Copying and verifying instance', status: Number(progress.percent) >= 100 ? 'done' : 'active', progress: progress.percent, doneLabel: 'Imported' });
     const root = document.querySelector(`.folder-import-root[data-operation-id="${CSS.escape(String(progress.operationId || ''))}"]`);
     if (!root) return;
     const fill = root.querySelector('[data-import-progress-fill]');
@@ -3941,6 +5115,15 @@ function bindDuplicateEvents() {
       ? `Copying and verifying ${shortFile(progress.current)} · ${progress.percent}%`
       : `Copying complete instance · ${progress.percent}%`;
   });
+  api.onMigrationProgress?.((progress) => {
+    upsertActivity({ id: `migration:${progress.operationId}`, kind: 'instance', title: `Migrating ${progress.name || 'instance'}`, detail: progress.current ? `Copying ${shortFile(progress.current)}` : 'Copying and verifying instance', status: Number(progress.percent) >= 100 ? 'done' : 'active', progress: progress.percent, doneLabel: 'Migrated' });
+    const root = $('version-migration-root');
+    if (!root || root.dataset.name !== progress.name) return;
+    const fill = root.querySelector('[data-progress-fill]');
+    const label = root.querySelector('[data-progress-label]');
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%`;
+    if (label) label.textContent = progress.current ? `Copying ${shortFile(progress.current)} · ${progress.percent}%` : `Preparing migrated instance · ${progress.percent}%`;
+  });
 }
 
 function suggestedDuplicateName(name) {
@@ -3949,6 +5132,147 @@ function suggestedDuplicateName(name) {
   let number = 2;
   while (state.instances.some(item => item.name.toLowerCase() === `${base} ${number}`.toLowerCase())) number += 1;
   return `${base} ${number}`;
+}
+
+function suggestedMigrationName(name, version = '') {
+  const base = `${name} ${version || 'Migrated'}`.trim();
+  if (!state.instances.some(item => item.name.toLowerCase() === base.toLowerCase())) return base;
+  let number = 2;
+  while (state.instances.some(item => item.name.toLowerCase() === `${base} ${number}`.toLowerCase())) number += 1;
+  return `${base} ${number}`;
+}
+
+async function openVersionMigrationDialog() {
+  const instance = state.currentInstance;
+  if (!instance) return;
+  closeEditSheet();
+  document.getElementById('version-migration-root')?.remove();
+  const root = document.createElement('div');
+  root.id = 'version-migration-root';
+  root.className = 'modal-root duplicate-instance-root visible';
+  root.innerHTML = `
+    <div class="modal duplicate-instance-modal" role="dialog" aria-modal="true" aria-labelledby="version-migration-title">
+      <div class="modal-header"><div><h2 id="version-migration-title" class="modal-title">Migrate Minecraft version</h2><p class="modal-sub">Create a separate copy for another Minecraft version. ${escHtml(instance.name)} stays exactly as it is.</p></div><button class="modal-close" type="button" data-close aria-label="Close"><svg width="20" height="20"><use href="#i-x"/></svg></button></div>
+      <div class="modal-body modal-form">
+        <div class="migration-beta-warning"><svg aria-hidden="true"><use href="#i-alert-triangle"/></svg><span><b>Beta testing</b>This may break mods, worlds, resource packs, or other files in the new instance. Your original instance will not be changed.</span></div>
+        <div class="migration-summary"><span><b>${escHtml(instance.gameVersion || 'Unknown')}</b><small>${escHtml(instance.loader || 'vanilla')}</small></span><svg aria-hidden="true"><use href="#i-chevron-right"/></svg><span><b data-target-version>Choose version</b><small data-target-loader>Choose loader</small></span></div>
+        <div class="form-row"><label for="migration-instance-name">New instance name</label><input id="migration-instance-name" class="input" maxlength="120" autocomplete="off" value="${escHtml(suggestedMigrationName(instance.name))}"></div>
+        <div class="form-row"><label for="migration-game-version">Minecraft version</label><select id="migration-game-version" class="input"><option value="">Loading versions…</option></select></div>
+        <div class="form-row"><label for="migration-loader">Mod loader</label><select id="migration-loader" class="input">${['vanilla','fabric','quilt','forge','neoforge'].map(loader => `<option value="${loader}" ${loader === (instance.loader || 'vanilla') ? 'selected' : ''}>${loader === 'neoforge' ? 'NeoForge' : loader.charAt(0).toUpperCase() + loader.slice(1)}</option>`).join('')}</select></div>
+        <div class="form-row" data-loader-version-row><label for="migration-loader-version">Loader version</label><select id="migration-loader-version" class="input"><option value="">Choose a Minecraft version first</option></select></div>
+        <p class="duplicate-note">Pine copies your user content, verifies the copy, and rebuilds Minecraft and loader files for the chosen version on first launch.</p>
+      </div>
+      <div class="modal-progress" data-progress hidden><div class="progress-bar"><div class="progress-fill" data-progress-fill></div></div><span data-progress-label>Preparing migration…</span></div>
+      <div class="modal-footer"><button class="btn btn-secondary" type="button" data-close data-cancel>Cancel</button><button class="btn btn-primary" type="button" data-migrate disabled>Create migrated instance</button></div>
+    </div>`;
+  document.body.appendChild(root);
+  const gameSelect = root.querySelector('#migration-game-version');
+  const loaderSelect = root.querySelector('#migration-loader');
+  const loaderVersionSelect = root.querySelector('#migration-loader-version');
+  const loaderVersionRow = root.querySelector('[data-loader-version-row]');
+  const nameInput = root.querySelector('#migration-instance-name');
+  const migrateButton = root.querySelector('[data-migrate]');
+  const operationId = crypto.randomUUID();
+  const close = () => root.remove();
+  root.addEventListener('click', event => { if ((event.target === root || event.target.closest('[data-close]')) && !root.dataset.busy) close(); });
+  root.querySelector('[data-cancel]').addEventListener('click', async event => {
+    if (!root.dataset.busy) return;
+    event.currentTarget.disabled = true;
+    event.currentTarget.textContent = 'Cancelling…';
+    await api.cancelTransfer(operationId).catch(() => false);
+  });
+
+  const updateSummary = () => {
+    root.querySelector('[data-target-version]').textContent = gameSelect.value || 'Choose version';
+    root.querySelector('[data-target-loader]').textContent = loaderSelect.options[loaderSelect.selectedIndex]?.textContent || 'Choose loader';
+  };
+  const updateReady = () => {
+    migrateButton.disabled = !gameSelect.value || !nameInput.value.trim() || (loaderSelect.value !== 'vanilla' && !loaderVersionSelect.value);
+  };
+  const loadTargetLoaderVersions = async () => {
+    updateSummary();
+    const gameVersion = gameSelect.value;
+    const loader = loaderSelect.value;
+    loaderVersionRow.hidden = loader === 'vanilla';
+    if (!gameVersion || loader === 'vanilla') {
+      loaderVersionSelect.innerHTML = '<option value="">N/A</option>';
+      updateReady();
+      return;
+    }
+    migrateButton.disabled = true;
+    loaderVersionSelect.disabled = true;
+    loaderVersionSelect.innerHTML = '<option value="">Loading compatible versions…</option>';
+    try {
+      const versions = await api.getLoaderVersions(gameVersion, loader);
+      if (!root.isConnected || gameSelect.value !== gameVersion || loaderSelect.value !== loader) return;
+      loaderVersionSelect.replaceChildren();
+      (versions || []).forEach((item, index) => loaderVersionSelect.add(new Option(`${item.name || item.version}${index === 0 ? ' (recommended)' : ''}`, item.version)));
+      if (!versions?.length) loaderVersionSelect.add(new Option('No compatible versions found', ''));
+    } catch (error) {
+      loaderVersionSelect.innerHTML = '<option value="">Could not load compatible versions</option>';
+      toast(error.message || String(error), 'error');
+    } finally {
+      loaderVersionSelect.disabled = false;
+      updateReady();
+    }
+  };
+  gameSelect.addEventListener('change', () => {
+    nameInput.value = suggestedMigrationName(instance.name, gameSelect.value);
+    loadTargetLoaderVersions();
+  });
+  loaderSelect.addEventListener('change', loadTargetLoaderVersions);
+  loaderVersionSelect.addEventListener('change', updateReady);
+  nameInput.addEventListener('input', updateReady);
+  try {
+    const versions = state.allVersions?.length ? state.allVersions : await api.getVersions();
+    gameSelect.replaceChildren(new Option('Choose target version', ''));
+    (versions || []).filter(version => version.type === 'release').forEach(version => {
+      const option = new Option(`${version.id}${version.id === instance.gameVersion ? ' (current)' : ''}`, version.id);
+      option.disabled = version.id === instance.gameVersion;
+      gameSelect.add(option);
+    });
+    gameSelect.value = '';
+  } catch (error) {
+    gameSelect.innerHTML = '<option value="">Could not load versions</option>';
+    toast('Could not load Minecraft versions: ' + (error.message || error), 'error');
+  }
+  updateSummary();
+  updateReady();
+
+  migrateButton.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    if (!name || !gameSelect.value) return;
+    root.dataset.busy = 'true';
+    root.dataset.name = name;
+    root.querySelectorAll('input,select,button').forEach(element => { element.disabled = true; });
+    root.querySelector('[data-cancel]').disabled = false;
+    root.querySelector('[data-cancel]').textContent = 'Cancel migration';
+    migrateButton.innerHTML = '<span class="spinner"></span>Migrating…';
+    root.querySelector('[data-progress]').hidden = false;
+    upsertActivity({ id: `migration:${operationId}`, kind: 'instance', title: `Migrating ${name}`, detail: `Copying ${instance.name} for Minecraft ${gameSelect.value}`, status: 'active', progress: 1 });
+    try {
+      const migrated = await api.migrateInstanceVersion(instance.name, { name, gameVersion: gameSelect.value, loader: loaderSelect.value, loaderVersion: loaderVersionSelect.value || null, operationId });
+      await loadInstances();
+      await loadRecentDestinations();
+      const compatibility = migrated.migrationCompatibility || {};
+      const warnings = (compatibility.knownBroken?.length || 0) + (compatibility.incompatible?.length || 0) + (compatibility.duplicates?.length || 0);
+      upsertActivity({ id: `migration:${operationId}`, kind: 'instance', title: `${name} is ready`, detail: warnings ? `${warnings} mod compatibility warning${warnings === 1 ? '' : 's'} found` : `Migrated to Minecraft ${migrated.gameVersion}`, status: 'done', progress: 100, doneLabel: 'Migrated' });
+      toast(warnings ? `${name} is ready · ${warnings} mod warning${warnings === 1 ? '' : 's'} will be checked again at launch` : `${name} is ready`, warnings ? 'info' : 'success', 6500);
+      close();
+      selectInstance(name);
+    } catch (error) {
+      delete root.dataset.busy;
+      root.querySelectorAll('input,select,button').forEach(element => { element.disabled = false; });
+      loaderVersionRow.hidden = loaderSelect.value === 'vanilla';
+      root.querySelector('[data-cancel]').textContent = 'Cancel';
+      migrateButton.innerHTML = 'Create migrated instance';
+      root.querySelector('[data-progress]').hidden = true;
+      updateReady();
+      const message = error.message || String(error);
+      upsertActivity({ id: `migration:${operationId}`, kind: 'instance', title: `Could not migrate ${name}`, detail: message, status: message.includes('Transfer cancelled') ? 'cancelled' : 'failed' });
+      toast(message.includes('Transfer cancelled') ? 'Migration cancelled · no partial instance was kept' : 'Could not migrate instance: ' + message, message.includes('Transfer cancelled') ? 'info' : 'error', 7000);
+    }
+  });
 }
 
 function openDuplicateDialog() {
@@ -4047,6 +5371,7 @@ function openDuplicateDialog() {
     button.disabled = true;
     button.innerHTML = '<span class="spinner"></span>Copying…';
     root.querySelector('[data-progress]').hidden = false;
+    upsertActivity({ id: `duplicate:${operationId}`, kind: 'instance', title: `Copying ${name}`, detail: `Preparing a copy of ${instance.name}`, status: 'active', progress: 1 });
     try {
       const components = Object.fromEntries([...root.querySelectorAll('[data-copy-component]')].map(field => [field.dataset.copyComponent, field.checked]));
       const copied = await api.duplicateInstance(instance.name, { name, customRoot: selectedRoot, components, operationId });
@@ -4055,6 +5380,7 @@ function openDuplicateDialog() {
       state.currentInstance = state.instances.find(item => item.id === copied.id) || copied;
       root.querySelector('[data-progress-fill]').style.width = '100%';
       root.querySelector('[data-progress-label]').textContent = 'Copy verified and ready';
+      upsertActivity({ id: `duplicate:${operationId}`, kind: 'instance', title: `${name} is ready`, detail: `Copied from ${instance.name}`, status: 'done', progress: 100, doneLabel: 'Copied' });
       toast(`${name} is ready`, 'success');
       setTimeout(() => { close(); selectInstance(name); }, 350);
     } catch (error) {
@@ -4068,6 +5394,7 @@ function openDuplicateDialog() {
       button.innerHTML = '<svg width="15" height="15"><use href="#i-copy"/></svg>Duplicate instance';
       root.querySelector('[data-progress]').hidden = true;
       const message = error.message || String(error);
+      upsertActivity({ id: `duplicate:${operationId}`, kind: 'instance', title: `Could not copy ${name}`, detail: message, status: message.includes('Transfer cancelled') ? 'cancelled' : 'failed' });
       toast(message.includes('Transfer cancelled') ? 'Copy cancelled · no partial instance was kept' : 'Could not duplicate instance: ' + message, message.includes('Transfer cancelled') ? 'info' : 'error', 7000);
     }
   };
@@ -4161,15 +5488,18 @@ async function openPineImport() {
   root.querySelector('[data-import]').addEventListener('click', async event => {
     const name = input.value.trim();
     if (!name) return toast('Enter an instance name', 'error');
+    const activityId = `archive-import:${Date.now()}`;
     root.dataset.busy = 'true';
     root.querySelectorAll('button,input').forEach(element => { element.disabled = true; });
     event.currentTarget.innerHTML = '<span class="spinner"></span>Validating and importing…';
+    upsertActivity({ id: activityId, kind: 'instance', title: `Importing ${name}`, detail: isManifest ? 'Downloading and verifying recipe files' : 'Extracting and verifying instance', status: 'active', progress: null });
     try {
       const imported = isModrinth
         ? await api.importModrinthArchive({ file: selected.file, name, customRoot: selectedRoot })
         : isManifest
           ? await api.importPineManifest({ file: selected.file, name, customRoot: selectedRoot })
           : await api.importPineArchive({ file: selected.file, name, customRoot: selectedRoot });
+      upsertActivity({ id: activityId, kind: 'instance', title: `${imported.name} is ready`, detail: 'Instance imported and verified', status: 'done', progress: 100, doneLabel: 'Imported' });
       await loadInstances();
       close();
       toast(`${imported.name} imported`, 'success');
@@ -4178,6 +5508,7 @@ async function openPineImport() {
       delete root.dataset.busy;
       root.querySelectorAll('button,input').forEach(element => { element.disabled = false; });
       event.currentTarget.textContent = 'Import instance';
+      upsertActivity({ id: activityId, kind: 'instance', title: `Could not import ${name}`, detail: error.message || String(error), status: 'failed' });
       toast('Import failed: ' + (error.message || error), 'error', 7000);
     }
   });
@@ -4281,21 +5612,25 @@ async function openFolderImport(preselected = null) {
     await api.cancelTransfer(operationId).catch(() => false);
   });
   root.querySelector('[data-import]').addEventListener('click', async event => {
+    const requestedName = nameInput.value.trim() || source.name || 'instance';
     root.dataset.busy = 'true';
     root.querySelectorAll('button,input,select').forEach(element => { element.disabled = true; });
     root.querySelector('[data-cancel-import]').disabled = false;
     root.querySelector('[data-cancel-import]').textContent = 'Cancel import';
     root.querySelector('[data-import-progress]').hidden = false;
     event.currentTarget.innerHTML = '<span class="spinner"></span>Copying and validating…';
+    upsertActivity({ id: `import:${operationId}`, kind: 'instance', title: `Importing ${requestedName}`, detail: 'Copying and validating instance files', status: 'active', progress: 1 });
     try {
       const selection = Object.fromEntries([...root.querySelectorAll('[data-import-category]')].map(input => [input.dataset.importCategory, input.checked]));
       const imported = await api.importExistingInstanceFolder({ folder: source.folder, launcherHint: source.source, name: nameInput.value, gameVersion: versionSelect.value, loader: loaderSelect.value, loaderVersion: loaderVersionSelect.value, confirmNewerWorlds: root.querySelector('[data-confirm-worlds]').checked, selection, sourceFingerprint: transfer.fingerprint, operationId });
+      upsertActivity({ id: `import:${operationId}`, kind: 'instance', title: `${imported.name} is ready`, detail: 'Instance imported and verified', status: 'done', progress: 100, doneLabel: 'Imported' });
       await loadInstances(); close(); toast(`${imported.name} imported`, 'success'); selectInstance(imported.name);
     } catch (error) {
       delete root.dataset.busy;
       root.querySelectorAll('button,input,select').forEach(element => { element.disabled = false; });
       root.querySelector('[data-import-progress]').hidden = true;
       event.currentTarget.textContent = 'Import complete instance';
+      upsertActivity({ id: `import:${operationId}`, kind: 'instance', title: `Could not import ${requestedName}`, detail: error.message || String(error), status: (error.message || '').includes('Transfer cancelled') ? 'cancelled' : 'failed' });
       toast('Import failed: ' + (error.message || error), 'error', 7000);
     }
   });
@@ -4823,33 +6158,42 @@ async function createInstance() {
   btn.innerHTML = '<span class="spinner"></span> Creating…';
   $('modal-progress').removeAttribute('hidden');
   $('modal-progress-fill').style.width = '0%';
+  const activityId = `instance-create:${name}`;
+  state.creatingInstanceName = name;
+  upsertActivity({ id: activityId, kind: 'instance', title: `Creating ${name}`, detail: `Preparing Minecraft ${version}`, status: 'active', progress: 2 });
 
   let createdThisAttempt = false;
   try {
     await api.createInstance({ name, gameVersion: version, profile: state.chosenProfile || 'custom', loader: state.selectedLoader, loaderVersion: loaderVer || null, iconData: state.pendingIcon || null, bannerData: state.pendingBanner || null, bannerBlurDir: state.bannerBlurDir || 'left', customRoot: state.pendingInstanceRoot || '', group: $('modal-group')?.value || '' });
     createdThisAttempt = true;
     setProgress($('modal-progress-fill'), $('modal-progress-text'), 40, 'Instance created');
+    upsertActivity({ id: activityId, kind: 'instance', title: `Creating ${name}`, detail: 'Instance files created', status: 'active', progress: 40 });
 
     if (isModPresetProfile() && state.presetMods.length) {
       const selectedMods = state.presetMods.filter((id) => !state.removedPresetMods.has(id));
       if (!selectedMods.length) { setProgress($('modal-progress-fill'), $('modal-progress-text'), 95, 'Skipping — no mods selected'); }
       const versionIds = [];
       const versionSizes = {};
+      const versionRoles = {};
       for (let i = 0; i < selectedMods.length; i++) {
         const modId = selectedMods[i];
         const checked = state.presetCompatibility.included.find(item => item.projectId === modId);
         if (!checked) continue;
         versionIds.push(checked.versionId, ...(checked.requiredDepVersionIds || []));
         versionSizes[checked.versionId] = checked.fileSize || 0;
+        versionRoles[checked.versionId] = 'requested';
+        for (const dependencyId of checked.requiredDepVersionIds || []) if (!versionRoles[dependencyId]) versionRoles[dependencyId] = 'required';
         Object.assign(versionSizes, checked.requiredDepSizes || {});
         const pct = 40 + ((i + 1) / selectedMods.length) * 55;
         setProgress($('modal-progress-fill'), $('modal-progress-text'), pct, `Preparing ${checked.title || modId} (${i + 1}/${selectedMods.length})`);
+        upsertActivity({ id: activityId, kind: 'instance', title: `Creating ${name}`, detail: `Preparing ${checked.title || modId} · ${i + 1} of ${selectedMods.length}`, status: 'active', progress: pct });
       }
-      if (versionIds.length) await api.installMod(name, { versionIds: [...new Set(versionIds)], versionSizes, disableFiles: [] });
+      if (versionIds.length) await api.installMod(name, { versionIds: [...new Set(versionIds)], versionSizes, versionRoles, disableFiles: [] });
       burstConfetti();
     }
 
     setProgress($('modal-progress-fill'), $('modal-progress-text'), 100, 'Ready!');
+    upsertActivity({ id: activityId, kind: 'instance', title: `${name} is ready`, detail: `Minecraft ${version} installed`, status: 'done', progress: 100, doneLabel: 'Installed' });
     setTimeout(async () => {
       closeModal();
       await loadInstances();
@@ -4865,6 +6209,9 @@ async function createInstance() {
     btn.disabled = false;
     btn.innerHTML = 'Create';
     $('modal-progress').setAttribute('hidden', '');
+    upsertActivity({ id: activityId, kind: 'instance', title: `Could not create ${name}`, detail: e.message || String(e), status: 'failed' });
+  } finally {
+    if (state.creatingInstanceName === name) state.creatingInstanceName = null;
   }
 }
 
@@ -4958,6 +6305,9 @@ function bindLaunchEvents() {
   api.onJavaInstallProgress?.((update) => {
     const label = update?.label || 'Preparing Java';
     setStatus(label);
+    const javaStatus = update?.error ? 'failed' : update?.complete ? 'done' : 'active';
+    const javaId = channelActivityId('java-runtime', javaStatus);
+    upsertActivity({ id: javaId, kind: 'java', title: 'Java runtime', detail: label, status: javaStatus, progress: update?.percent, doneLabel: 'Installed' });
     if (update?.error) {
       toast(label, 'error', 7000);
     } else if (update?.complete) {
@@ -4993,6 +6343,7 @@ function bindLaunchEvents() {
       toast('Launch failed: ' + message, 'error', 8000);
       setTimeout(() => explainCrash(instanceName, { automatic: true }), 180);
     }
+    setTimeout(() => { loadInstances(); if (state.currentView === 'stats') loadPlayStats(); }, 250);
   });
   api.onLaunchClose(() => {
     clearLogs();
@@ -5004,6 +6355,8 @@ function bindLaunchEvents() {
     state.launchingName = null;
     renderAllInstanceCards();
     loadRecentDestinations();
+    loadInstances();
+    if (state.currentView === 'stats') loadPlayStats();
   });
   api.onLaunchLog((line) => appendLog(line));
   api.onLaunchMetrics((m) => updateDockedMetrics(m));
@@ -5216,6 +6569,546 @@ function burstConfetti() {
 }
 
 // ── Discover / Modrinth ─────────────────────────────────────
+function setDiscoverMode(mode) {
+  if (!['minecraft', 'servers', 'skins', 'saved'].includes(mode)) return;
+  if (mode !== 'servers') {
+    clearTimeout(serverDirectoryRetryTimer);
+    clearServerStatusJobs();
+  }
+  state.discoverMode = mode;
+  document.querySelectorAll('[data-discover-mode]').forEach(button => {
+    const active = button.dataset.discoverMode === mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  for (const name of ['minecraft', 'servers', 'skins', 'saved']) {
+    const panel = $(`discover-${name}-panel`);
+    if (panel) panel.hidden = name !== mode;
+  }
+  const copy = document.querySelector('#view-discover .page-header .section-copy');
+  if (copy) copy.textContent = mode === 'minecraft' ? 'Search mods, resource packs, and more.' : mode === 'servers' ? 'Find a new Minecraft community to join.' : mode === 'skins' ? 'Find a new look for your Minecraft character.' : 'Launch and manage the servers you already know.';
+  if (mode === 'minecraft') requestAnimationFrame(moveDiscoverIndicator);
+  else if (mode === 'servers' && !state.serverDirectoryItems.length) loadServerDirectory(false);
+  else if (mode === 'skins' && !state.skinLibraryItems.length) loadSkinLibrary(false);
+  else if (mode === 'saved') loadSavedServers();
+}
+
+function skinLibraryFigureMarkup(skin) {
+  const texture = escHtml(skin.textureUrl);
+  return `<span class="skin-library-figure" style="--skin-url:url('${texture}')" aria-hidden="true"><i class="skin-figure-head"></i><i class="skin-figure-body"></i><i class="skin-figure-arm arm-left"></i><i class="skin-figure-arm arm-right"></i><i class="skin-figure-leg leg-left"></i><i class="skin-figure-leg leg-right"></i></span>`;
+}
+
+function renderSkinLibrary() {
+  const grid = $('skin-library-grid');
+  const more = $('skin-library-more');
+  if (!grid) return;
+  const query = $('skin-library-search')?.value.trim().toLowerCase() || '';
+  const matchingCommunity = query ? state.skinLibraryItems.filter(skin => [skin.name, skin.shortId].filter(Boolean).join(' ').toLowerCase().includes(query)) : state.skinLibraryItems;
+  const skins = query ? [...new Map([state.skinPlayerResult, ...matchingCommunity].filter(Boolean).map(skin => [skin.id, skin])).values()].sort((a, b) => {
+    const playerDifference = Number(Boolean(b.player)) - Number(Boolean(a.player));
+    if (playerDifference) return playerDifference;
+    const aName = String(a.name || '').toLowerCase();
+    const bName = String(b.name || '').toLowerCase();
+    const exactDifference = Number(bName === query) - Number(aName === query);
+    if (exactDifference) return exactDifference;
+    const prefixDifference = Number(bName.startsWith(query)) - Number(aName.startsWith(query));
+    return prefixDifference || aName.localeCompare(bName);
+  }) : state.skinLibraryItems;
+  if (!skins.length) {
+    grid.innerHTML = emptyStateMarkup(query ? (state.skinPlayerLoading ? 'Finding player…' : 'No matching skin yet') : 'No community skins found', query ? (state.skinPlayerLoading ? 'Checking the official Minecraft profile services.' : 'Type a complete Minecraft Java username to find its current skin automatically.') : 'MineSkin may be temporarily unavailable.', 'i-user');
+  } else {
+    grid.innerHTML = skins.map(skin => `<button class="skin-library-card${skin.player ? ' player-skin-card' : ''}" type="button" data-library-skin="${escHtml(skin.id)}"><span class="skin-library-stage">${skinLibraryFigureMarkup(skin)}${skin.player ? '<span class="skin-player-result-badge"><svg><use href="#i-check"/></svg>Minecraft player</span>' : ''}<span class="skin-library-open"><svg><use href="#i-user"/></svg>3D preview</span></span><span class="skin-library-card-copy"><strong title="${escHtml(skin.name)}">${escHtml(skin.name)}</strong><small>${skin.player ? `Current skin · ${escHtml(skin.variant)}` : `MineSkin · ${escHtml(skin.shortId)}`}</small></span></button>`).join('');
+    staggerInto(grid.querySelectorAll('.skin-library-card'));
+  }
+  if (!query && state.skinLibraryAfter) more?.removeAttribute('hidden'); else more?.setAttribute('hidden', '');
+}
+
+async function lookupPlayerSkin({ username: requestedUsername = '', silent = false } = {}) {
+  const input = $('skin-library-search');
+  const username = requestedUsername || input?.value.trim() || '';
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) return;
+  if (state.skinPlayerLoading && state.skinPlayerLookupQuery.toLowerCase() === username.toLowerCase()) return;
+  const requestId = ++state.skinPlayerRequestId;
+  state.skinPlayerLoading = true;
+  state.skinPlayerLookupQuery = username;
+  state.skinPlayerResult = null;
+  renderSkinLibrary();
+  const button = $('skin-player-search-btn');
+  if (button) button.disabled = true;
+  try {
+    const skin = await api.lookupPlayerSkin(username);
+    if (requestId !== state.skinPlayerRequestId || input.value.trim() !== username) return;
+    state.skinPlayerResult = skin;
+    if (!state.skinLibraryItems.some(item => item.id === skin.id)) state.skinLibraryItems.unshift(skin);
+  } catch (error) {
+    if (!silent && requestId === state.skinPlayerRequestId && input.value.trim() === username) toast(error.message || error, 'error', 5500);
+  } finally {
+    if (requestId === state.skinPlayerRequestId) {
+      state.skinPlayerLoading = false;
+      state.skinPlayerLookupQuery = '';
+      if (button) button.disabled = false;
+      renderSkinLibrary();
+    }
+  }
+}
+
+async function loadSkinLibrary(append = false) {
+  if (state.skinLibraryLoading || (append && !state.skinLibraryAfter)) return;
+  state.skinLibraryLoading = true;
+  const requestId = ++state.skinLibraryRequestId;
+  const grid = $('skin-library-grid');
+  if (!append && grid) grid.innerHTML = '<div class="skeleton skeleton-block"></div>'.repeat(8);
+  try {
+    const result = await api.browseSkinLibrary({ after: append ? state.skinLibraryAfter : '', size: 20 });
+    if (requestId !== state.skinLibraryRequestId) return;
+    state.skinLibraryItems = append
+      ? [...new Map([...state.skinLibraryItems, ...(result.skins || [])].map(skin => [skin.id, skin])).values()]
+      : result.skins || [];
+    state.skinLibraryAfter = result.next || '';
+    renderSkinLibrary();
+  } catch (error) {
+    if (requestId !== state.skinLibraryRequestId) return;
+    if (!state.skinLibraryItems.length && grid) grid.innerHTML = emptyStateMarkup('Could not load community skins', error.message || String(error), 'i-alert');
+    toast('Could not load more skins: ' + (error.message || error), 'error', 5000);
+  } finally {
+    if (requestId === state.skinLibraryRequestId) state.skinLibraryLoading = false;
+  }
+}
+
+async function openLibrarySkinPreview(skin) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible skin-studio-root skin-library-preview-root';
+  overlay.innerHTML = `<div class="modal skin-studio skin-library-preview" role="dialog" aria-modal="true"><div class="modal-header"><div><h2 class="modal-title">${escHtml(skin.name)}</h2><p class="modal-sub">Community skin from MineSkin · drag to rotate, click to hit</p></div><button class="modal-close" data-close type="button"><svg><use href="#i-x"/></svg></button></div><div class="modal-body"><article class="skin-card skin-library-preview-card"><button class="skin-texture" data-hit-skin type="button" title="Drag to rotate or click the character"><canvas width="300" height="390" data-library-skin-preview aria-label="Interactive 3D preview of ${escHtml(skin.name)}"></canvas><span class="skin-rage-symbol" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M10 25h10c4 0 6-2 6-6V9M54 25H44c-4 0-6-2-6-6V9M10 39h10c4 0 6 2 6 6v10M54 39H44c-4 0-6 2-6 6v10"/></svg></span></button><div class="skin-library-preview-copy"><strong>${escHtml(skin.name)}</strong><small>Choose the arm model before saving or applying.</small><label>Player model<select class="input" data-library-skin-variant><option value="classic">Classic</option><option value="slim">Slim</option></select></label><div class="skin-library-preview-actions"><button class="btn btn-secondary" data-save-library-skin type="button">Save to wardrobe</button><button class="btn btn-primary" data-apply-library-skin type="button">Apply skin</button></div></div></article></div></div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-library-skin-variant]').value = skin.variant === 'slim' ? 'slim' : 'classic';
+  let textures = null;
+  try { textures = await api.getMinecraftUiTextures(); } catch {}
+  const auth = await api.getAuth().catch(() => null);
+  const applyButton = overlay.querySelector('[data-apply-library-skin]');
+  if (applyButton && (!auth || auth.meta?.type === 'offline')) {
+    applyButton.disabled = true;
+    applyButton.title = 'Sign in with Microsoft to apply skins';
+  }
+  const renderPreview = () => renderSkinFigure(overlay.querySelector('[data-library-skin-preview]'), skin.textureUrl, overlay.querySelector('[data-library-skin-variant]').value, textures);
+  renderPreview();
+  overlay.querySelector('[data-library-skin-variant]')?.addEventListener('change', () => {
+    const oldCanvas = overlay.querySelector('[data-library-skin-preview]');
+    const nextCanvas = oldCanvas.cloneNode(false);
+    oldCanvas.replaceWith(nextCanvas);
+    renderPreview();
+  });
+  overlay.addEventListener('click', async event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) { overlay.remove(); return; }
+    const apply = Boolean(event.target.closest('[data-apply-library-skin]'));
+    const save = Boolean(event.target.closest('[data-save-library-skin]'));
+    if (!apply && !save) return;
+    const button = event.target.closest('button');
+    button.disabled = true;
+    try {
+      await api.saveLibrarySkin(skin, overlay.querySelector('[data-library-skin-variant]').value, apply);
+      toast(apply ? 'Skin saved and applied to your Minecraft profile' : 'Skin saved to your wardrobe', 'success');
+    } catch (error) { toast(error.message || error, 'error', 6000); }
+    finally { if (button.isConnected) button.disabled = false; }
+  });
+  overlay.querySelector('[data-close]')?.focus();
+}
+
+function publicServerAddress(server) {
+  return Number(server.port) && Number(server.port) !== 25565 ? `${server.host}:${server.port}` : server.host;
+}
+
+function loadStoredServerMetadata() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SERVER_METADATA_STORAGE_KEY) || '[]');
+    return Array.isArray(stored) ? stored.filter(entry => Array.isArray(entry) && entry.length === 2) : [];
+  } catch { return []; }
+}
+
+function staticServerMetadata(server) {
+  return {
+    name: server.name, description: server.description, liveDescription: server.liveDescription,
+    version: server.version, versionMin: server.versionMin, versionMax: server.versionMax,
+    types: server.types, requiresMods: server.requiresMods, bedrock: server.bedrock,
+    software: server.software, iconUrl: server.iconUrl, iconData: server.iconData,
+    bannerUrl: server.bannerUrl, uptime: server.uptime, partner: server.partner,
+    source: server.source, statusAddress: server.statusAddress, cachedAt: Date.now(),
+  };
+}
+
+function cacheServerMetadata(server) {
+  const key = publicServerAddress(server).toLowerCase();
+  serverMetadataCache.set(key, staticServerMetadata(server));
+  while (serverMetadataCache.size > 180) serverMetadataCache.delete(serverMetadataCache.keys().next().value);
+  clearTimeout(serverMetadataSaveTimer);
+  serverMetadataSaveTimer = setTimeout(() => {
+    try { localStorage.setItem(SERVER_METADATA_STORAGE_KEY, JSON.stringify([...serverMetadataCache])); } catch {}
+  }, 300);
+}
+
+function withCachedServerMetadata(server) {
+  const cached = serverMetadataCache.get(publicServerAddress(server).toLowerCase());
+  const hasDirectoryPlayers = server.status === 'online' || Number(server.playersOnline) > 0 || Number(server.playersMax) > 0;
+  if (!cached) return { ...server, playersChecked: hasDirectoryPlayers };
+  return {
+    ...server, ...cached,
+    name: server.name || cached.name,
+    description: server.description || cached.description,
+    types: server.types?.length ? server.types : cached.types,
+    source: server.source || cached.source,
+    partner: server.partner || cached.partner,
+    statusAddress: server.statusAddress || cached.statusAddress,
+    playersOnline: server.playersOnline,
+    playersMax: server.playersMax,
+    playersChecked: hasDirectoryPlayers,
+  };
+}
+
+function generatedServerBannerMarkup(server) {
+  const icon = server.iconData || server.iconUrl;
+  const subtitle = server.liveDescription || server.description || server.version || 'Public Minecraft server';
+  return `<div class="server-banner-generated">
+    <span class="server-banner-art">${icon ? `<img src="${escHtml(icon)}" alt="">` : escHtml((server.name || '?')[0].toUpperCase())}</span>
+    <span class="server-banner-copy"><strong>${escHtml(server.name || publicServerAddress(server))}</strong><small>${escHtml(subtitle)}</small></span>
+    <span class="server-banner-live"><i></i>${server.playersChecked ? `${fmtNum(server.playersOnline)} online` : 'Checking live status…'}</span>
+  </div>`;
+}
+
+function enrichPublicServerCards(servers) {
+  for (const server of servers) {
+    const address = server.statusAddress || publicServerAddress(server);
+    const key = address.toLowerCase();
+    if (serverStatusJobs.has(key)) continue;
+    const refresh = async (attempt = 0) => {
+      if (state.currentView !== 'discover' || state.discoverMode !== 'servers') { serverStatusJobs.delete(key); return; }
+      const card = document.querySelector(`[data-public-server="${CSS.escape(String(server.id))}"]`);
+      if (!card) { serverStatusJobs.delete(key); return; }
+      try {
+        const status = await api.getPublicServerStatus(address);
+        const currentCard = document.querySelector(`[data-public-server="${CSS.escape(String(server.id))}"]`);
+        if (!currentCard) { serverStatusJobs.delete(key); return; }
+        if (status?.iconData) {
+          server.iconData = status.iconData;
+          const icon = currentCard.querySelector('[data-public-icon]');
+          if (icon) icon.innerHTML = `<img src="${escHtml(status.iconData)}" alt="">`;
+        }
+        if (status?.online) {
+          server.playersOnline = status.players;
+          server.playersMax = status.maxPlayers;
+          server.playersChecked = true;
+          server.liveDescription = status.description || server.description;
+          server.version = status.version || server.version;
+          const players = currentCard.querySelector('[data-public-players]');
+          if (players) players.textContent = `${fmtNum(status.players)} / ${fmtNum(status.maxPlayers)} online`;
+          const generatedBanner = currentCard.querySelector('.server-card-banner[data-generated-banner]');
+          if (generatedBanner) generatedBanner.innerHTML = generatedServerBannerMarkup(server);
+          cacheServerMetadata(server);
+          serverStatusJobs.set(key, setTimeout(() => refresh(0), 30_000));
+          return;
+        }
+      } catch {}
+      const delay = Math.min(30_000, 1500 * (2 ** Math.min(attempt, 5)));
+      serverStatusJobs.set(key, setTimeout(() => refresh(Math.min(attempt + 1, 6)), delay));
+    };
+    serverStatusJobs.set(key, true);
+    refresh();
+  }
+}
+
+function filteredServerDirectoryItems() {
+  const query = $('server-search-input')?.value.trim().toLowerCase() || '';
+  const provider = $('server-provider-filter')?.value || '';
+  return state.serverDirectoryItems.filter(server => {
+    const providers = String(server.source || '').split(',').map(value => value.trim());
+    if (provider && !providers.includes(provider)) return false;
+    return !query || [server.name, server.host, server.description, server.version, ...(server.types || [])].some(value => String(value || '').toLowerCase().includes(query));
+  });
+}
+
+function clearServerStatusJobs() {
+  for (const job of serverStatusJobs.values()) if (job !== true) clearTimeout(job);
+  serverStatusJobs.clear();
+}
+
+function loadNextServerBatch() {
+  if (state.serverDirectoryLoading) return;
+  const filtered = filteredServerDirectoryItems();
+  if (state.serverDirectoryVisibleCount < filtered.length) {
+    state.serverDirectoryVisibleCount = Math.min(filtered.length, state.serverDirectoryVisibleCount + SERVER_BATCH_SIZE);
+    renderServerDirectory();
+    return;
+  }
+  if (state.serverDirectoryMeta && state.serverDirectoryPage < state.serverDirectoryMeta.totalPages) loadServerDirectory(true);
+}
+
+function scheduleServerDirectoryRetry() {
+  clearTimeout(serverDirectoryRetryTimer);
+  const failures = state.serverDirectoryMeta?.failedSources || [];
+  if (!failures.length || state.currentView !== 'discover' || state.discoverMode !== 'servers') {
+    state.serverDirectoryRetryAttempt = 0;
+    return;
+  }
+  const delay = Math.min(30_000, 2000 * (2 ** Math.min(state.serverDirectoryRetryAttempt, 4)));
+  serverDirectoryRetryTimer = setTimeout(() => {
+    state.serverDirectoryRetryAttempt += 1;
+    loadServerDirectory(false, { retry: true });
+  }, delay);
+}
+
+function renderServerDirectory() {
+  const grid = $('server-results-grid');
+  const count = $('server-results-count');
+  const more = $('server-load-more-btn');
+  if (!grid || !count) return;
+  const query = $('server-search-input')?.value.trim().toLowerCase() || '';
+  const filtered = filteredServerDirectoryItems();
+  const visible = filtered.slice(0, state.serverDirectoryVisibleCount);
+  count.textContent = '';
+  count.setAttribute('hidden', '');
+  if (!filtered.length) {
+    grid.innerHTML = emptyStateMarkup(query ? 'No loaded servers match' : 'No public servers found', query ? 'Try another search, or load another page.' : 'Adjust the filters and try again.', 'i-search');
+  } else {
+    grid.innerHTML = visible.map(server => `<article class="server-discovery-card${server.partner ? ' partner-server-card' : ''}" data-public-server="${escHtml(server.id)}">
+      ${server.bannerUrl ? `<div class="server-card-banner" data-source-banner><img src="${escHtml(server.bannerUrl)}" alt="" loading="lazy"></div>` : `<div class="server-card-banner" data-generated-banner>${generatedServerBannerMarkup(server)}</div>`}
+      <div class="server-card-content">
+        <div class="server-card-heading"><span class="server-card-icon" data-public-icon>${server.iconData || server.iconUrl ? `<img src="${escHtml(server.iconData || server.iconUrl)}" alt="" loading="lazy">` : escHtml((server.name || '?')[0].toUpperCase())}</span><span><b title="${escHtml(server.name)}">${escHtml(server.name)}</b><small><i class="server-live-dot"></i><span data-public-players>${server.playersChecked ? `${fmtNum(server.playersOnline)} / ${fmtNum(server.playersMax)} online` : 'Checking live status…'}</span></small></span>${server.partner ? '<span class="server-partner-badge"><svg><use href="#i-star"/></svg>Pine partner</span>' : `<span class="server-uptime">${Math.round(server.uptime || 0)}% uptime</span>`}</div>
+        <p>${escHtml(server.description || 'A public Minecraft server.')}</p>
+        <div class="server-card-tags">${(server.types || []).slice(0, 3).map(type => `<span>${escHtml(type)}</span>`).join('')}<span>${escHtml(server.version || [server.versionMin, server.versionMax].filter(Boolean).join('–') || 'Version unknown')}</span>${server.requiresMods === true ? '<span class="requires-mods">Requires mods</span>' : server.requiresMods === false ? '<span>Vanilla compatible</span>' : ''}${server.bedrock ? '<span>Java + Bedrock</span>' : ''}<span class="server-source">${escHtml(server.source || 'Public directory')}</span></div>
+        <div class="server-card-address"><code>${escHtml(publicServerAddress(server))}</code><button type="button" data-server-action="copy" aria-label="Copy server address"><svg><use href="#i-copy"/></svg></button></div>
+        <div class="server-card-actions"><button class="btn btn-secondary btn-sm server-add-btn" type="button" data-server-action="add"><svg><use href="#i-plus"/></svg>Add to server list</button><button class="btn btn-primary btn-sm" type="button" data-server-action="play"><svg><use href="#i-play"/></svg>Play</button></div>
+      </div>
+    </article>`).join('');
+    staggerInto(grid.querySelectorAll('.server-discovery-card'));
+    grid.querySelectorAll('.server-card-banner[data-source-banner] img').forEach(image => image.addEventListener('error', () => {
+      const card = image.closest('[data-public-server]');
+      const server = state.serverDirectoryItems.find(item => String(item.id) === card?.dataset.publicServer);
+      if (server && image.parentElement) {
+        image.parentElement.dataset.generatedBanner = '';
+        image.parentElement.removeAttribute('data-source-banner');
+        image.parentElement.innerHTML = generatedServerBannerMarkup(server);
+      }
+    }, { once: true }));
+    enrichPublicServerCards(visible);
+  }
+  const canReveal = state.serverDirectoryVisibleCount < filtered.length;
+  const canFetch = state.serverDirectoryMeta && state.serverDirectoryPage < state.serverDirectoryMeta.totalPages;
+  if (canReveal || canFetch) {
+    more?.removeAttribute('hidden');
+    if (more) more.textContent = 'Load more servers';
+  } else more?.setAttribute('hidden', '');
+}
+
+async function loadServerDirectory(append = false, { retry = false } = {}) {
+  if (state.serverDirectoryLoading) return;
+  state.serverDirectoryLoading = true;
+  const requestId = ++state.serverDirectoryRequestId;
+  const page = append ? state.serverDirectoryPage + 1 : 1;
+  const grid = $('server-results-grid');
+  if (!append && !retry && grid) grid.innerHTML = '<div class="skeleton skeleton-block"></div>'.repeat(6);
+  $('server-results-count')?.setAttribute('hidden', '');
+  try {
+    const modFilter = $('server-mod-filter')?.value;
+    const result = await api.searchServerDirectory({
+      page,
+      type: $('server-type-filter')?.value || '',
+      version: $('server-version-filter')?.value || '',
+      provider: $('server-provider-filter')?.value || '',
+      requiresMods: modFilter === 'true' ? true : modFilter === 'false' ? false : null,
+      online: $('server-online-filter')?.checked !== false,
+    });
+    if (requestId !== state.serverDirectoryRequestId) return;
+    if (!append && !retry) {
+      state.serverDirectoryVisibleCount = SERVER_BATCH_SIZE;
+      clearServerStatusJobs();
+    }
+    const incoming = (result.servers || []).map(withCachedServerMetadata);
+    const shouldMerge = append || retry;
+    state.serverDirectoryItems = shouldMerge
+      ? [...new Map([...state.serverDirectoryItems, ...incoming].map(server => [publicServerAddress(server).toLowerCase(), server])).values()]
+      : incoming;
+    state.serverDirectoryMeta = result.meta || null;
+    state.serverDirectoryPage = append ? page : Math.max(1, state.serverDirectoryPage && retry ? state.serverDirectoryPage : page);
+    renderServerDirectory();
+    scheduleServerDirectoryRetry();
+  } catch (error) {
+    if (requestId !== state.serverDirectoryRequestId) return;
+    if (!state.serverDirectoryItems.length && grid) grid.innerHTML = emptyStateMarkup('Could not load servers', error.message || String(error), 'i-alert');
+    state.serverDirectoryMeta = { ...(state.serverDirectoryMeta || {}), failedSources: ['Public directories'] };
+    scheduleServerDirectoryRetry();
+  } finally { if (requestId === state.serverDirectoryRequestId) state.serverDirectoryLoading = false; }
+}
+
+async function runServerAction(instance, server, action) {
+  const address = server.address || publicServerAddress(server);
+  if (action === 'add') {
+    const result = await api.addInstanceServer({ instanceName: instance.name, address, name: server.name || address });
+    toast(result.added ? `${server.name || address} added to ${instance.name}'s server list` : `${server.name || address} updated in ${instance.name}'s server list`, 'success');
+    state.savedServers = [];
+  } else {
+    launchInstance(instance.name, { type: 'multiplayer', identifier: address, address, label: server.name || address });
+  }
+}
+
+function chooseServerInstance(server, action) {
+  if (!state.instances.length) {
+    toast('Create an instance before joining or adding a server.', 'error', 5500);
+    openCreateModal();
+    return;
+  }
+  if (state.instances.length === 1) {
+    runServerAction(state.instances[0], server, action).catch(error => toast(error.message || error, 'error'));
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  overlay.innerHTML = `<div class="modal modal-sm"><div class="modal-header"><div><h2 class="modal-title">${action === 'play' ? 'Play on' : 'Add'} ${escHtml(server.name || server.address)}</h2><p class="modal-sub">${action === 'play' ? 'Choose the Minecraft instance to use' : 'Choose which instance server list to update'}</p></div><button class="modal-close" data-close type="button"><svg><use href="#i-x"/></svg></button></div><div class="modal-body modal-body-list">${sortByRecency(state.instances).map(instance => `<button class="pick-instance" data-server-instance="${escHtml(instance.name)}" type="button"><span class="pick-instance-icon">${instance.iconData ? `<img src="${escHtml(instance.iconData)}" alt="">` : escHtml(instance.name[0])}</span><span class="pick-instance-body"><span class="pick-instance-name">${escHtml(instance.name)}</span><span class="pick-instance-desc">${escHtml(instance.loader)} · ${escHtml(instance.gameVersion)}</span></span></button>`).join('')}</div></div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) return overlay.remove();
+    const choice = event.target.closest('[data-server-instance]');
+    if (!choice) return;
+    const instance = state.instances.find(item => item.name === choice.dataset.serverInstance);
+    overlay.remove();
+    if (instance) runServerAction(instance, server, action).catch(error => toast(error.message || error, 'error'));
+  });
+}
+
+async function loadSavedServers() {
+  try { state.savedServers = await api.listServers() || []; }
+  catch (error) { state.savedServers = []; toast('Could not load saved servers: ' + (error.message || error), 'error'); }
+  renderSavedServers();
+}
+
+function renderSavedServers() {
+  const grid = $('saved-server-grid');
+  const count = $('saved-server-count');
+  if (!grid || !count) return;
+  const query = $('saved-server-search')?.value.trim().toLowerCase() || '';
+  const items = state.savedServers.filter(server => !query || [server.name, server.address, server.instanceName].some(value => String(value || '').toLowerCase().includes(query)));
+  count.textContent = `${items.length} saved server${items.length === 1 ? '' : 's'}`;
+  if (!items.length) {
+    grid.innerHTML = emptyStateMarkup(query ? 'No saved servers match' : 'No saved servers yet', query ? 'Try another name or address.' : 'Save a public server or add one inside Minecraft.', 'i-star');
+    return;
+  }
+  grid.innerHTML = items.map(server => `<article class="server-discovery-card saved-server-card" data-saved-server="${escHtml(server.id)}"><div class="server-card-content"><div class="server-card-heading"><span class="server-card-icon">${server.iconData ? `<img src="${escHtml(server.iconData)}" alt="">` : escHtml((server.name || '?')[0].toUpperCase())}</span><span><b>${escHtml(server.name || server.address)}</b><small>${escHtml(server.instanceName || 'Instance unavailable')}</small></span><span class="server-status-pill" data-server-status>Checking…</span></div><p class="saved-server-address">${escHtml(server.address)}</p><div class="server-card-actions"><button class="btn btn-secondary btn-sm" type="button" data-saved-action="copy"><svg><use href="#i-copy"/></svg>Copy IP</button>${server.imported ? '' : '<button class="btn btn-ghost btn-sm" type="button" data-saved-action="delete"><svg><use href="#i-trash"/></svg>Remove</button>'}<button class="btn btn-primary btn-sm" type="button" data-saved-action="play" ${server.instanceName ? '' : 'disabled'}><svg><use href="#i-play"/></svg>Play</button></div></div></article>`).join('');
+  for (const server of items.slice(0, 40)) {
+    api.getServerStatus(server.id).then(status => {
+      const pill = grid.querySelector(`[data-saved-server="${CSS.escape(server.id)}"] [data-server-status]`);
+      if (!pill) return;
+      pill.textContent = status.online ? `${fmtNum(status.players)} online · ${status.latencyMs ?? '—'} ms` : 'Offline';
+      pill.dataset.online = String(Boolean(status.online));
+    }).catch(() => {});
+  }
+}
+
+function interleaveDiscoverResults(primary, secondary) {
+  const merged = [];
+  const length = Math.max(primary.length, secondary.length);
+  for (let index = 0; index < length; index++) {
+    if (primary[index]) merged.push(primary[index]);
+    if (secondary[index]) merged.push(secondary[index]);
+  }
+  return merged;
+}
+
+function officialDiscoverResults(query, version, loader, category = '') {
+  if (state.discoverCategory !== 'mod') return [];
+  const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const explicitlyRequested = normalizedQuery && (['optifine', 'optfine'].some(name => name.includes(normalizedQuery)) || normalizedQuery.includes('optifine'));
+  const legacyVersion = new Set(['1.7.10', '1.8', '1.8.8', '1.8.9', '1.9', '1.9.4', '1.10.2', '1.11.2', '1.12.2']).has(version);
+  const categoryMatches = !category || ['performance', 'optimization', 'graphics', 'shaders', 'utility'].some(value => value.includes(category.toLowerCase()) || category.toLowerCase().includes(value));
+  if ((!explicitlyRequested && !legacyVersion) || !categoryMatches || (loader && loader !== 'forge')) return [];
+  return [{
+    source: 'official',
+    project_id: 'official:optifine',
+    title: 'OptiFine',
+    author: 'sp614x',
+    description: `The classic performance, graphics, and shader mod${version ? ` for Minecraft ${version}` : ''}. Downloaded from the official OptiFine site.`,
+    downloads: null,
+    icon_url: null,
+    project_type: 'mod',
+  }];
+}
+
+function openOfficialModDetails(projectId) {
+  if (projectId !== 'official:optifine') return;
+  const selectedVersion = $('filter-version')?.value || state.currentInstance?.gameVersion || '';
+  const forgeInstances = sortByRecency(state.instances).filter(instance => instance.loader === 'forge');
+  const preferred = forgeInstances.find(instance => instance.name === state.currentInstance?.name)
+    || forgeInstances.find(instance => instance.gameVersion === selectedVersion)
+    || forgeInstances[0]
+    || null;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  overlay.style.zIndex = '320';
+  overlay.innerHTML = `<div class="modal modal-md">
+    <div class="modal-header"><div><h2 class="modal-title">Install OptiFine</h2><p class="modal-sub">Official source · verified by Pine</p></div><button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="official-mod-notice"><span><svg aria-hidden="true"><use href="#i-check"/></svg></span><div><strong>Downloaded directly from OptiFine</strong><p>Pine fetches the original, unchanged JAR from OptiFine’s official server, verifies it, and installs it into the selected instance’s mods folder.</p></div></div>
+      ${forgeInstances.length ? `<div class="official-mod-form">
+        <label for="optifine-instance">Install into</label><select id="optifine-instance" class="input">${forgeInstances.map(instance => `<option value="${escHtml(instance.name)}" ${instance.name === preferred?.name ? 'selected' : ''}>${escHtml(instance.name)} · Minecraft ${escHtml(instance.gameVersion)} · Forge</option>`).join('')}</select>
+        <label for="optifine-build">OptiFine build</label><select id="optifine-build" class="input" disabled><option value="">Loading official builds…</option></select>
+        <div class="modal-error text-muted" id="optifine-error" hidden></div>
+      </div>` : `<div class="modal-error">OptiFine loads from the mods folder through Forge. Create or import a Forge instance first, then install it here.</div>`}
+    </div>
+    <div class="modal-footer"><button class="btn btn-secondary" data-close type="button">Cancel</button><button class="btn btn-primary" id="optifine-install" type="button" disabled>Install</button></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', event => { if (event.target === overlay || event.target.closest('[data-close]')) close(); });
+  const instanceSelect = overlay.querySelector('#optifine-instance');
+  const buildSelect = overlay.querySelector('#optifine-build');
+  const error = overlay.querySelector('#optifine-error');
+  const install = overlay.querySelector('#optifine-install');
+  if (!instanceSelect || !buildSelect || !error || !install) return;
+  const loadBuilds = async () => {
+    const instance = state.instances.find(item => item.name === instanceSelect.value);
+    if (!instance) return;
+    buildSelect.disabled = true;
+    install.disabled = true;
+    error.hidden = true;
+    buildSelect.innerHTML = '<option value="">Loading official builds…</option>';
+    try {
+      const builds = await api.getOptiFineBuilds(instance.gameVersion);
+      if (!overlay.isConnected) return;
+      buildSelect.innerHTML = builds.map(build => `<option value="${escHtml(build.filename)}">${escHtml(build.name)}${build.preview ? ' · Preview' : ''}</option>`).join('');
+      buildSelect.disabled = !builds.length;
+      install.disabled = !builds.length;
+      if (!builds.length) {
+        error.hidden = false;
+        error.textContent = `OptiFine does not currently publish a build for Minecraft ${instance.gameVersion}.`;
+      }
+    } catch (failure) {
+      buildSelect.innerHTML = '<option value="">Could not load builds</option>';
+      error.hidden = false;
+      error.textContent = failure.message || String(failure);
+    }
+  };
+  instanceSelect.addEventListener('change', loadBuilds);
+  install.addEventListener('click', async () => {
+    if (!instanceSelect.value || !buildSelect.value) return;
+    const instanceName = instanceSelect.value;
+    const activityId = `optifine-install:${Date.now()}`;
+    install.disabled = true;
+    install.innerHTML = '<span class="spinner"></span> Installing…';
+    error.hidden = true;
+    upsertActivity({ id: activityId, kind: 'install', title: `Installing OptiFine into ${instanceName}`, detail: 'Downloading from the official OptiFine server', status: 'active', progress: null });
+    try {
+      const result = await api.installOptiFine(instanceName, buildSelect.value);
+      upsertActivity({ id: activityId, kind: 'install', title: `OptiFine installed into ${instanceName}`, detail: result.restartRequired ? 'Ready for the next Minecraft launch' : result.name, status: 'done', progress: 100, doneLabel: 'Installed', items: [{ title: 'OptiFine', filename: result.filename, projectType: 'mod', role: 'requested' }] });
+      if (state.currentInstance?.name === instanceName && state.contentCategory === 'mod') await loadContentList();
+      close();
+      toast(`OptiFine installed into ${instanceName}${result.restartRequired ? ' · restart Minecraft to apply it' : ''}`, 'success', result.restartRequired ? 6500 : 4000);
+    } catch (failure) {
+      upsertActivity({ id: activityId, kind: 'install', title: `Could not install OptiFine into ${instanceName}`, detail: failure.message || String(failure), status: 'failed' });
+      install.disabled = false;
+      install.textContent = 'Install';
+      error.hidden = false;
+      error.textContent = failure.message || String(failure);
+    }
+  });
+  loadBuilds();
+}
+
 async function searchMods(append = false) {
   if (append && state.searchLoading) return;
   if (!append) state.searchOffset = 0;
@@ -5246,11 +7139,21 @@ async function searchMods(append = false) {
   }
 
   try {
-    const response = await api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort);
+    const [modrinthResult, curseForgeResult] = await Promise.allSettled([
+      api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort),
+      api.searchCurseForge(query, { type: state.discoverCategory, gameVersion: version, loader, offset: state.searchOffset, limit: SEARCH_LIMIT, sort }),
+    ]);
     if (requestId !== state.searchRequestId || searchKey !== state.activeSearchKey) return;
-    const hits = (response.hits || []).map(hit => ({ ...hit, source: 'modrinth' }));
+    if (modrinthResult.status === 'rejected' && (curseForgeResult.status === 'rejected' || curseForgeResult.value?.configured === false)) throw modrinthResult.reason;
+    const modrinthResponse = modrinthResult.status === 'fulfilled' ? modrinthResult.value : { hits: [], total_hits: 0 };
+    const curseForgeResponse = curseForgeResult.status === 'fulfilled' ? curseForgeResult.value : { hits: [], total_hits: 0, configured: false };
+    const modrinthHits = (modrinthResponse.hits || []).map(hit => ({ ...hit, source: 'modrinth' }));
+    const curseForgeHits = (curseForgeResponse.hits || []).map(hit => ({ ...hit, source: 'curseforge' }));
+    const officialCatalog = officialDiscoverResults(query, version, loader, category);
+    const officialHits = append ? [] : officialCatalog;
+    const hits = [...officialHits, ...interleaveDiscoverResults(modrinthHits, curseForgeHits)];
     state.searchOffset += SEARCH_LIMIT;
-    const total = response.total_hits || response.hits?.length || 0;
+    const total = (Number(modrinthResponse.total_hits) || modrinthHits.length) + (Number(curseForgeResponse.total_hits) || curseForgeHits.length) + officialCatalog.length;
     const took = Math.round(performance.now() - state.searchStartTime);
 
     if (!hits.length && !append) {
@@ -5265,25 +7168,28 @@ async function searchMods(append = false) {
     }
     count.textContent = `${fmtNum(total)} results · ${took} ms`;
 
-    const html = hits.map((mod) => `
-      <div class="mod-card" data-pid="${escHtml(mod.project_id || '')}">
+    const html = hits.map((mod) => {
+      const source = mod.source || 'modrinth';
+      const sourceLabel = source === 'curseforge' ? 'CurseForge' : source === 'official' ? 'Official site' : 'Modrinth';
+      return `
+      <div class="mod-card${source === 'official' ? ' official-mod-card' : ''}" data-pid="${escHtml(mod.project_id || '')}" data-source="${escHtml(source)}">
         <div class="mod-card-icon">
           ${mod.icon_url ? `<img src="${escHtml(mod.icon_url)}" alt="" loading="lazy">` : escHtml((mod.title || '?')[0].toUpperCase())}
         </div>
         <div class="mod-card-body">
           <div class="mod-card-title">${escHtml(mod.title || mod.name)}</div>
-          <div class="mod-card-author">by ${escHtml(mod.author || 'unknown')} · Modrinth</div>
+          <div class="mod-card-author">by ${escHtml(mod.author || 'unknown')} · ${sourceLabel}</div>
           <div class="mod-card-desc">${escHtml(mod.description || '')}</div>
           <div class="mod-card-footer">
-            <span class="mod-card-dls">${fmtNum(mod.downloads)} downloads</span>
+            <span class="mod-card-dls">${source === 'official' ? 'Official source' : `${fmtNum(mod.downloads)} downloads`}</span>
             <span class="mod-card-actions">
-              ${state.discoverCategory === 'mod' ? '<button class="btn btn-secondary btn-sm" data-act="versions" type="button">Versions</button>' : ''}
+              ${state.discoverCategory === 'mod' && source !== 'official' ? '<button class="btn btn-secondary btn-sm" data-act="versions" type="button">Versions</button>' : ''}
               <button class="btn btn-primary btn-sm" data-act="install" type="button">Install</button>
             </span>
           </div>
         </div>
       </div>
-    `).join('');
+    `; }).join('');
     if (append) {
       grid.insertAdjacentHTML('beforeend', html);
       const cards = [...grid.querySelectorAll('.mod-card')];
@@ -5302,17 +7208,19 @@ async function searchMods(append = false) {
     grid.querySelectorAll('.mod-card:not([data-bound])').forEach((card) => {
       card.setAttribute('data-bound', '');
       const pid = card.dataset.pid;
-      card.addEventListener('click', () => showModDetails(pid));
+      const source = card.dataset.source;
+      card.addEventListener('click', () => source === 'curseforge' ? showCurseForgeDetails(pid) : source === 'official' ? openOfficialModDetails(pid) : showModDetails(pid));
       card.querySelector('[data-act="install"]')?.addEventListener('click', (e) => {
         e.stopPropagation();
         installModFromSearch(pid);
       });
       card.querySelector('[data-act="versions"]')?.addEventListener('click', (e) => {
         e.stopPropagation();
-        openModVersionBrowser(pid);
+        if (source === 'curseforge') showCurseForgeDetails(pid, true);
+        else openModVersionBrowser(pid);
       });
     });
-    if (state.searchOffset < total && hits.length >= SEARCH_LIMIT) loadMoreBtn?.removeAttribute('hidden');
+    if (state.searchOffset < total && (modrinthHits.length >= SEARCH_LIMIT || curseForgeHits.length >= SEARCH_LIMIT)) loadMoreBtn?.removeAttribute('hidden');
     else loadMoreBtn?.setAttribute('hidden', '');
     state.searchLoading = false;
   } catch (e) {
@@ -5325,6 +7233,14 @@ async function searchMods(append = false) {
 }
 
 async function installModFromSearch(projectId) {
+  if (String(projectId).startsWith('official:')) {
+    openOfficialModDetails(projectId);
+    return;
+  }
+  if (String(projectId).startsWith('curseforge:')) {
+    showCurseForgeDetails(projectId, true);
+    return;
+  }
   if (state.discoverCategory === 'modpack') {
     try {
       const project = await api.getProject(projectId);
@@ -5509,10 +7425,12 @@ async function doInstallMod(inst, projectId, backupOptions = {}, requestedVersio
   // ── Resolve all version IDs + sizes (primary + required + chosen optional) ──
   const allVersionIds = [version.id];
   const versionSizes = {};
+  const versionRoles = { [version.id]: 'requested' };
   versionSizes[version.id] = version.files?.[0]?.size || 0;
   if (check.requiredDepSizes) {
     for (const [vid, sz] of Object.entries(check.requiredDepSizes)) {
       versionSizes[vid] = sz;
+      versionRoles[vid] = 'required';
       if (!allVersionIds.includes(vid)) allVersionIds.push(vid);
     }
   }
@@ -5523,6 +7441,7 @@ async function doInstallMod(inst, projectId, backupOptions = {}, requestedVersio
         if (optVersions?.[0]) {
           allVersionIds.push(optVersions[0].id);
           versionSizes[optVersions[0].id] = optVersions[0].files?.[0]?.size || 0;
+          versionRoles[optVersions[0].id] = 'optional';
         }
       } catch {}
     }
@@ -5540,7 +7459,7 @@ async function doInstallMod(inst, projectId, backupOptions = {}, requestedVersio
   api.onInstallProgress(onProgress);
 
   try {
-    const result = await api.installMod(inst.name, { versionIds: allVersionIds, versionSizes, disableFiles, ...backupOptions });
+    const result = await api.installMod(inst.name, { versionIds: allVersionIds, versionSizes, versionRoles, disableFiles, ...backupOptions });
     const restartNote = result.restartRequired ? ' · will apply on the next launch from Pine' : '';
     const installVerb = result.queued ? 'Downloaded' : 'Installed';
     toast(`${installVerb} ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}${restartNote}`, 'success', result.restartRequired ? 6500 : 3000);
@@ -5856,20 +7775,23 @@ async function openModrinthPackInstall(project) {
   install.addEventListener('click', async () => {
     const name = overlay.querySelector('#mr-pack-name').value.trim();
     if (!name || !select.value) return;
+    const activityId = `modpack-install:${Date.now()}`;
     install.disabled = true;
     install.innerHTML = '<span class="spinner"></span> Installing…';
     error.hidden = true;
+    upsertActivity({ id: activityId, kind: 'instance', title: `Installing ${name}`, detail: `Downloading ${project.title || 'Modrinth modpack'}`, status: 'active', progress: null });
     try {
-      await api.installModrinthModpack({ projectId: project.id, versionId: select.value, name });
-      await loadInstances();
+      const installRequest = api.installModrinthModpack({ projectId: project.id, versionId: select.value, name });
       close();
+      toast(`Installing ${project.title || 'modpack'} in the background`, 'info', 4500);
+      await installRequest;
+      upsertActivity({ id: activityId, kind: 'instance', title: `${name} is ready`, detail: `${project.title || 'Modrinth modpack'} installed`, status: 'done', progress: 100, doneLabel: 'Installed' });
+      await loadInstances();
       switchView('library');
       toast(`${project.title || 'Modpack'} installed as a managed pack`, 'success', 6000);
     } catch (failure) {
-      install.disabled = false;
-      install.textContent = 'Install managed pack';
-      error.hidden = false;
-      error.textContent = failure.message || String(failure);
+      upsertActivity({ id: activityId, kind: 'instance', title: `Could not install ${name}`, detail: failure.message || String(failure), status: 'failed' });
+      toast(`Could not install ${name}: ${failure.message || failure}`, 'error', 7000);
     }
   });
 }
@@ -5991,20 +7913,36 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
     installButton.disabled = type !== 'modpack' && !state.instances.length;
     installButton.addEventListener('click', async () => {
       if (!fileSelect.value || fileSelect.disabled) return;
+      const targetName = type === 'modpack' ? body.querySelector('#cf-pack-name').value.trim() : project.name;
+      const activityId = `curseforge-install:${Date.now()}`;
       installButton.disabled = true;
       error.hidden = true;
+      upsertActivity({ id: activityId, kind: type === 'modpack' ? 'instance' : 'install', title: `Installing ${targetName || project.name}`, detail: `Downloading from CurseForge`, status: 'active', progress: null });
       try {
+        let installedResult = null;
         if (type === 'modpack') {
           await api.importCurseForgeModpack({ projectId, fileId: Number(fileSelect.value), name: body.querySelector('#cf-pack-name').value });
           await loadInstances();
           toast('CurseForge modpack imported', 'success');
         } else {
           const result = await api.installCurseForgeContent(instanceSelect.value, { projectId, fileId: Number(fileSelect.value), type, world: worldSelect?.value || null });
+          installedResult = result;
           if (state.currentInstance?.name === instanceSelect.value) await loadContentList();
           toast(`${project.name} ${result?.queued ? 'downloaded' : 'installed'}${result?.restartRequired ? ' · will apply on the next launch from Pine' : ''}`, 'success', result?.restartRequired ? 6500 : 3000);
         }
+        upsertActivity({
+          id: activityId,
+          kind: type === 'modpack' ? 'instance' : 'install',
+          title: `${targetName || project.name} is ready`,
+          detail: type === 'modpack' ? 'CurseForge modpack imported' : `Installed 1 file into ${instanceSelect.value}`,
+          status: 'done',
+          progress: 100,
+          doneLabel: 'Installed',
+          items: installedResult ? [{ title: project.name, filename: installedResult.filename, projectType: type, role: 'requested' }] : [],
+        });
         close();
       } catch (installError) {
+        upsertActivity({ id: activityId, kind: type === 'modpack' ? 'instance' : 'install', title: `Could not install ${targetName || project.name}`, detail: installError.message || String(installError), status: 'failed' });
         showError(installError.message || installError);
         installButton.disabled = false;
       }

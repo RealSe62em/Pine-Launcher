@@ -20,6 +20,7 @@
 .nav nav{gap:2px}
 .nav nav a{padding:9px 10px;font-size:12px}
 #features,#safety,#download,#github-section,#discord-section,#developer{scroll-margin-top:96px}
+.verify[hidden]{display:none}
 .icon svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .stack{bottom:25px}
 .stack b:nth-child(1){transform:translateX(0)}

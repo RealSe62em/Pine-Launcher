@@ -1,7 +1,14 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
+  windowControl: (action) => ipcRenderer.invoke('window-control', action),
+  openDiscordServer: () => ipcRenderer.invoke('open-discord-server'),
+  onWindowMaximizedChanged: (cb) => {
+    const listener = (_, maximized) => cb(Boolean(maximized));
+    ipcRenderer.on('window-maximized-changed', listener);
+    return () => ipcRenderer.removeListener('window-maximized-changed', listener);
+  },
   createDesktopShortcut: (instanceName, destination) => ipcRenderer.invoke('create-desktop-shortcut', instanceName, destination),
   consumeDesktopShortcut: () => ipcRenderer.invoke('consume-desktop-shortcut'),
   onDesktopShortcutReady: (cb) => ipcRenderer.on('desktop-shortcut-ready', () => cb()),
@@ -16,8 +23,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRecipePreview: (name, resourcepackMatches) => ipcRenderer.invoke('get-recipe-preview', name, resourcepackMatches),
   listServers: () => ipcRenderer.invoke('list-servers'),
   saveServer: (value) => ipcRenderer.invoke('save-server', value),
+  addInstanceServer: (value) => ipcRenderer.invoke('add-instance-server', value),
   deleteServer: (id) => ipcRenderer.invoke('delete-server', id),
   getServerStatus: (id) => ipcRenderer.invoke('get-server-status', id),
+  searchServerDirectory: (options) => ipcRenderer.invoke('search-server-directory', options),
+  getPublicServerStatus: (address) => ipcRenderer.invoke('get-public-server-status', address),
+  browseSkinLibrary: (options) => ipcRenderer.invoke('browse-skin-library', options),
+  lookupPlayerSkin: (username) => ipcRenderer.invoke('lookup-player-skin', username),
+  saveLibrarySkin: (skin, variant, apply) => ipcRenderer.invoke('save-library-skin', skin, variant, apply),
   previewManagedPackVersion: (name, id) => ipcRenderer.invoke('preview-managed-pack-version', name, id),
   getVersions: () => ipcRenderer.invoke('get-versions'),
   getInstancesDir: () => ipcRenderer.invoke('get-instances-dir'),
@@ -29,6 +42,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rollbackNeoForge: (instanceName) => ipcRenderer.invoke('rollback-neoforge', instanceName),
   createInstance: (data) => ipcRenderer.invoke('create-instance', data),
   duplicateInstance: (name, options) => ipcRenderer.invoke('duplicate-instance', name, options),
+  migrateInstanceVersion: (name, options) => ipcRenderer.invoke('migrate-instance-version', name, options),
   cancelTransfer: (operationId) => ipcRenderer.invoke('cancel-transfer', operationId),
   bulkUpdateInstances: (names, action) => ipcRenderer.invoke('bulk-update-instances', names, action),
   bulkDeleteInstances: (names) => ipcRenderer.invoke('bulk-delete-instances', names),
@@ -47,6 +61,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   changeManagedPackVersion: (name, versionId, fingerprint) => ipcRenderer.invoke('change-managed-pack-version', name, versionId, fingerprint),
   rollbackManagedPack: (name) => ipcRenderer.invoke('rollback-managed-pack', name),
   listInstances: () => ipcRenderer.invoke('list-instances'),
+  getPlayStats: () => ipcRenderer.invoke('get-play-stats'),
   listGroups: () => ipcRenderer.invoke('list-groups'),
   createGroup: (name) => ipcRenderer.invoke('create-group', name),
   deleteGroup: (name) => ipcRenderer.invoke('delete-group', name),
@@ -73,6 +88,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setActiveCape: (id) => ipcRenderer.invoke('set-active-cape', id),
   searchMods: (query, facets, offset, limit, sort) => ipcRenderer.invoke('search-mods', query, facets, offset, limit, sort),
   searchCurseForge: (query, options) => ipcRenderer.invoke('search-curseforge', query, options),
+  getOptiFineBuilds: (gameVersion) => ipcRenderer.invoke('get-optifine-builds', gameVersion),
+  installOptiFine: (instanceName, filename) => ipcRenderer.invoke('install-optifine', instanceName, filename),
   getCurseForgeProject: (projectId) => ipcRenderer.invoke('get-curseforge-project', projectId),
   getCurseForgeFiles: (projectId, instanceName) => ipcRenderer.invoke('get-curseforge-files', projectId, instanceName),
   installCurseForgeContent: (instanceName, options) => ipcRenderer.invoke('install-curseforge-content', instanceName, options),
@@ -104,6 +121,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getOptionalDeps: (projectIds) => ipcRenderer.invoke('get-optional-deps', projectIds),
   getInstanceMods: (instanceName) => ipcRenderer.invoke('get-instance-mods', instanceName),
   getInstanceContent: (instanceName, type) => ipcRenderer.invoke('get-instance-content', instanceName, type),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
+  copyModFiles: (instanceName, filePaths) => ipcRenderer.invoke('copy-mod-files', instanceName, filePaths),
+  copyInstanceItems: (sourceName, destinationName, items) => ipcRenderer.invoke('copy-instance-items', sourceName, destinationName, items),
   getRecentDestinations: () => ipcRenderer.invoke('get-recent-destinations'),
   getServerMetadata: (instanceName, address) => ipcRenderer.invoke('get-server-metadata', instanceName, address),
   removeRecentDestination: (instanceName, destination) => ipcRenderer.invoke('remove-recent-destination', instanceName, destination),
@@ -118,6 +138,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkModCompatibility: (instanceName) => ipcRenderer.invoke('check-mod-compatibility', instanceName),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   getSettings: () => ipcRenderer.invoke('get-settings'),
+  getSystemMemoryGb: () => ipcRenderer.invoke('get-system-memory-gb'),
   getStorageUsage: () => ipcRenderer.invoke('get-storage-usage'),
   clearDownloadCache: (confirmed) => ipcRenderer.invoke('clear-download-cache', confirmed),
   checkJavaInstalled: () => ipcRenderer.invoke('check-java'),
@@ -147,5 +168,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onJavaInstallProgress: (cb) => ipcRenderer.on('java-install-progress', (_, value) => cb(value)),
   onInstallProgress: (cb) => ipcRenderer.on('install-progress', (_, v) => cb(v)),
   onDuplicateProgress: (cb) => ipcRenderer.on('duplicate-progress', (_, v) => cb(v)),
+  onMigrationProgress: (cb) => ipcRenderer.on('migration-progress', (_, v) => cb(v)),
   onImportProgress: (cb) => ipcRenderer.on('import-progress', (_, v) => cb(v)),
 });

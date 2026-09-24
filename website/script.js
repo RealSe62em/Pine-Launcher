@@ -1,11 +1,11 @@
 const RELEASES = {
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.7/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.7/PineLauncherSetup-arm64.exe',
-  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.7/PineLauncher-1.2.7-linux-amd64.deb',
-  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.7/PineLauncher-1.2.7-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.7/PineLauncher-1.2.7-archlinux-x64.pacman'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncher-1.2.8-linux-amd64.deb',
+  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncher-1.2.8-linux-arm64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncher-1.2.8-archlinux-x64.pacman'
 };
-const FALLBACK_VERSION = '1.2.7';
+const FALLBACK_VERSION = '1.2.8';
 const ANALYTICS_ID = 'G-FR14WGWZY2';
 const CONSENT_KEY = 'pine_analytics_consent';
 
@@ -126,6 +126,8 @@ async function syncLatestRelease() {
     if (code) code.textContent = `${digest.slice(0, 8)}…${digest.slice(-8)}`;
     const virusTotal = document.querySelector('[data-virustotal]');
     if (virusTotal) virusTotal.href = `https://www.virustotal.com/gui/file/${digest.toLowerCase()}`;
+    const verifyPanel = document.querySelector('[data-verify-download]');
+    if (verifyPanel) verifyPanel.hidden = false;
   }
 }
 syncLatestRelease().catch(() => {});
