@@ -33,6 +33,7 @@ test('Windows builds publish GitHub updater metadata and differential packages',
   assert.match(workflow, /latest\.yml' -Pattern '\^path: PineLauncherSetup-x64\\\.exe\$'/);
   assert.match(workflow, /latest-arm64\.yml' -Pattern '\^path: PineLauncherSetup-arm64\\\.exe\$'/);
   assert.match(workflow, /ALLOW_UNSIGNED_WINDOWS_RELEASES/);
+  assert.match(workflow, /github\.ref_name.*-ne 'v1\.2\.8'/);
   assert.match(workflow, /steps\.windows-signing\.outputs\.enabled == 'true'/);
   assert.match(workflow, /Publishing explicitly approved unsigned Windows installers/);
 });

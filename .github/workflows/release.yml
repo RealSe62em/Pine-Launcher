@@ -46,7 +46,7 @@ jobs:
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
-            if ("$env:ALLOW_UNSIGNED_WINDOWS_RELEASES" -ne 'true') {
+            if ("$env:ALLOW_UNSIGNED_WINDOWS_RELEASES" -ne 'true' -or "${{ github.ref_name }}" -ne 'v1.2.8') {
               throw 'Configure WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD, or explicitly set ALLOW_UNSIGNED_WINDOWS_RELEASES=true for an approved unsigned release.'
             }
             "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
