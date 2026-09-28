@@ -694,6 +694,25 @@ test('NeoForge has verified installation, exact compatibility, and a complete lo
   assert.doesNotMatch(main, /NeoForge launching is not available/);
 });
 
+test('Fabric Loader updates scan installed mods before changing the loader', () => {
+  assert.match(preload, /getFabricStatus/);
+  assert.match(preload, /previewFabricVersion/);
+  assert.match(preload, /changeFabricVersion/);
+  assert.match(preload, /repairFabric/);
+  assert.match(preload, /rollbackFabric/);
+  assert.match(main, /ipcMain\.handle\('get-fabric-status'/);
+  assert.match(main, /ipcMain\.handle\('preview-fabric-version'/);
+  assert.match(main, /ipcMain\.handle\('change-fabric-version'/);
+  assert.match(main, /createAutomaticInstanceBackup\(instance, reason\)/);
+  assert.match(main, /classifyFabricLoaderCompatibility\(scan\.records \|\| \[\], targetVersion\)/);
+  assert.match(renderer, /function loadFabricPanel/);
+  assert.match(renderer, /Scanning installed mods/);
+  assert.match(renderer, /data-fabric-change/);
+  assert.match(renderer, /Mods are never removed automatically/);
+  assert.match(components, /\.fabric-loader-card/);
+  assert.match(components, /\.fabric-compatibility-group/);
+});
+
 test('step five adds selective copies, bulk organization, and complete playtime surfaces', () => {
   assert.match(html, /id="library-select-btn"/);
   assert.match(html, /id="library-bulk-bar"/);

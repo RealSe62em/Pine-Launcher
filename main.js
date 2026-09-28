@@ -16,7 +16,7 @@ const { sanitizeMemory, memoryMegabytes, resolveLaunchMemory } = require('./lib/
 const { installMclReliabilityPatches, rememberValidatedJava } = require('./lib/mcl-reliability');
 const { ValidationCache } = require('./lib/validation-cache');
 const { extractRuntimeArchive } = require('./lib/runtime-extraction');
-const { analyzeFabricRelations, jarLoaderCompatibilityIssue, knownModrinthIncompatibility, versionPredicateSatisfies } = require('./lib/mod-compatibility');
+const { analyzeFabricRelations, classifyFabricLoaderCompatibility, compareModVersions, jarLoaderCompatibilityIssue, knownModrinthIncompatibility, versionPredicateSatisfies } = require('./lib/mod-compatibility');
 const { expectedLoaderProfileId, isMatchingLoaderProfile, writeJsonAtomic } = require('./lib/loader-profile');
 const { createUpdateManager } = require('./lib/updater');
 const { DiscordPresence, isPrivateServerAddress, normalizeServerIcon, parseGamePresenceLine, readSavedServers, serverDisplayAddress } = require('./lib/discord-presence');
@@ -137,6 +137,7 @@ try {
 const launchValidationCache = new ValidationCache(LAUNCH_VALIDATION_CACHE_FILE);
 const managedPackValidationCache = new ValidationCache(path.join(app.getPath('userData'), 'cache', 'managed-pack-validation.json'));
 const activeNeoForgeOperations = new Set();
+const activeFabricOperations = new Set();
 const activeTransfers = new Map();
 const publicServerDirectoryCache = new Map();
 const publicSkinDirectoryCache = new Map();
@@ -150,6 +151,7 @@ const REGISTRY_MUTATION_CHANNELS = new Set([
   'preview-managed-pack-version', 'save-server', 'delete-server', 'add-instance-server',
   'disable-mod', 'remove-mod', 'toggle-instance-content', 'remove-instance-content', 'copy-mod-files', 'copy-instance-items', 'install-optifine',
   'change-neoforge-version', 'repair-neoforge', 'rollback-neoforge',
+  'change-fabric-version', 'repair-fabric', 'rollback-fabric',
   'create-instance', 'duplicate-instance', 'migrate-instance-version', 'bulk-update-instances', 'bulk-delete-instances',
   'import-pine-manifest', 'import-existing-instance-folder', 'import-pine-archive',
   'import-modrinth-archive', 'install-modrinth-modpack', 'import-curseforge-modpack',
@@ -193,6 +195,19 @@ async function withNeoForgeOperation(instanceName, task) {
 function assertNeoForgeIdle(instanceName) {
   const key = sanitizeName(instanceName).toLowerCase();
   if (activeNeoForgeOperations.has(key)) throw new Error('Wait for the NeoForge operation to finish');
+}
+
+async function withFabricOperation(instanceName, task) {
+  const key = sanitizeName(instanceName).toLowerCase();
+  if (activeFabricOperations.has(key)) throw new Error('Another Fabric Loader operation is already running for this instance');
+  activeFabricOperations.add(key);
+  try { return await task(); }
+  finally { activeFabricOperations.delete(key); }
+}
+
+function assertFabricIdle(instanceName) {
+  const key = sanitizeName(instanceName).toLowerCase();
+  if (activeFabricOperations.has(key)) throw new Error('Wait for the Fabric Loader operation to finish');
 }
 
 let diagnosticLogInitialized = false;
@@ -2384,6 +2399,25 @@ async function buildLoaderUrl(instance, instanceDir) {
   }
 }
 
+function fabricProfileHealth(instanceDir, gameVersion, loaderVersion) {
+  const profileId = expectedLoaderProfileId('fabric', loaderVersion, gameVersion);
+  const profileFile = path.join(instanceDir, 'versions', profileId, `${profileId}.json`);
+  const profile = readJSON(profileFile);
+  const installed = fs.existsSync(profileFile);
+  return {
+    installed,
+    valid: installed && isMatchingLoaderProfile(profile, 'fabric', loaderVersion, gameVersion),
+    profileId: installed ? profileId : null,
+  };
+}
+
+function removeFabricProfile(instanceDir, gameVersion, loaderVersion) {
+  const profileId = expectedLoaderProfileId('fabric', loaderVersion, gameVersion);
+  const profileDir = path.join(instanceDir, 'versions', profileId);
+  fs.rmSync(profileDir, { recursive: true, force: true });
+  return !fs.existsSync(profileDir);
+}
+
 function forgeInstallerProfile(installerPath) {
   try { return JSON.parse(new AdmZip(installerPath).readAsText('version.json')); }
   catch { return null; }
@@ -3052,6 +3086,119 @@ function setupIPC() {
   ipcMain.handle('get-loader-versions', async (_, gameVersion, loader) => {
     return fetchLoaderVersions(gameVersion, loader);
   });
+
+  async function previewRegisteredFabricChange(instanceName, requestedVersion) {
+    const instance = getRegisteredInstance(instanceName).instance;
+    if (instance.loader !== 'fabric') throw new Error('This instance does not use Fabric Loader');
+    const targetVersion = String(requestedVersion || '').trim();
+    if (!targetVersion) throw new Error('Choose a Fabric Loader version');
+    const versions = await fetchLoaderVersions(instance.gameVersion, 'fabric');
+    if (!versions.some(item => item.version === targetVersion)) {
+      throw new Error(`Fabric Loader ${targetVersion} is not published for Minecraft ${instance.gameVersion}`);
+    }
+    const scan = await inspectFilesystemInWorker({
+      type: 'launch-mod-checks',
+      modsDir: getInstanceDir(instance, 'mods'),
+      loader: 'fabric',
+      gameVersion: instance.gameVersion,
+    });
+    const compatibility = classifyFabricLoaderCompatibility(scan.records || [], targetVersion);
+    return {
+      ...compatibility,
+      currentLoaderVersion: instance.loaderVersion,
+      gameVersion: instance.gameVersion,
+      checkedMods: compatibility.compatible.length + compatibility.incompatible.length + compatibility.unknown.length,
+      counts: {
+        compatible: compatibility.compatible.length,
+        incompatible: compatibility.incompatible.length,
+        unknown: compatibility.unknown.length,
+      },
+    };
+  }
+
+  ipcMain.handle('get-fabric-status', async (_, instanceName) => {
+    const instance = getRegisteredInstance(instanceName).instance;
+    if (instance.loader !== 'fabric') throw new Error('This instance does not use Fabric Loader');
+    let versions = [];
+    let versionError = '';
+    try { versions = await fetchLoaderVersions(instance.gameVersion, 'fabric'); }
+    catch (error) { versionError = error.message || String(error); }
+    const latest = versions.find(item => item.stable) || versions[0] || null;
+    const history = Array.isArray(instance.fabricLoaderHistory) ? instance.fabricLoaderHistory : [];
+    const backups = listBackups(BACKUPS_DIR, instance);
+    const rollback = [...history].reverse().find(item => item?.backupId && backups.some(backup => backup.id === item.backupId)) || null;
+    return {
+      gameVersion: instance.gameVersion,
+      installedVersion: instance.loaderVersion,
+      health: fabricProfileHealth(getInstanceDir(instance), instance.gameVersion, instance.loaderVersion),
+      versions: versions.slice(0, 200),
+      latestVersion: latest?.version && compareModVersions(latest.version, instance.loaderVersion) > 0 ? latest.version : null,
+      lockedByPack: instance.modpack?.lockState === 'locked',
+      rollbackVersion: rollback?.fromVersion || null,
+      versionError,
+    };
+  });
+
+  ipcMain.handle('preview-fabric-version', async (_, instanceName, version) => previewRegisteredFabricChange(instanceName, version));
+
+  async function installRegisteredFabric(instanceName, requestedVersion, { force = false, reason = 'Before updating Fabric Loader' } = {}) {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    if (instance.loader !== 'fabric') throw new Error('This instance does not use Fabric Loader');
+    if (activeInstanceName) throw new Error('Close Minecraft before changing Fabric Loader');
+    if (!force && instance.modpack?.lockState === 'locked') throw new Error('This modpack controls its Fabric Loader version. Update the complete pack or unlock it first.');
+    const version = String(requestedVersion || '').trim();
+    const compatibility = await previewRegisteredFabricChange(instance.name, version);
+    const backup = await createAutomaticInstanceBackup(instance, reason);
+    const instanceDir = getInstanceDir(instance);
+    const previousVersion = instance.loaderVersion;
+    try {
+      mainWindow?.webContents.send('install-progress', { instanceName: instance.name, phase: 'downloading', message: `Preparing Fabric Loader ${version}`, percent: 20 });
+      if (force) removeFabricProfile(instanceDir, instance.gameVersion, version);
+      const candidate = { ...instance, loaderVersion: version };
+      await buildLoaderUrl(candidate, instanceDir);
+      const health = fabricProfileHealth(instanceDir, instance.gameVersion, version);
+      if (!health.installed || !health.valid) throw new Error(`Fabric Loader ${version} did not pass launch-profile validation`);
+      if (previousVersion !== version) removeFabricProfile(instanceDir, instance.gameVersion, previousVersion);
+      const index = registry.findIndex(item => item.id === instance.id);
+      const history = Array.isArray(registry[index].fabricLoaderHistory) ? registry[index].fabricLoaderHistory : [];
+      registry[index] = {
+        ...registry[index],
+        loaderVersion: version,
+        loaderUpdatedAt: new Date().toISOString(),
+        fabricLoaderHistory: previousVersion !== version
+          ? [...history, { id: crypto.randomUUID(), backupId: backup.id, fromVersion: previousVersion, toVersion: version, changedAt: new Date().toISOString() }].slice(-10)
+          : history,
+      };
+      writeJSON(INSTANCES_FILE, registry);
+      mainWindow?.webContents.send('install-progress', { instanceName: instance.name, phase: 'done', message: `Fabric Loader ${version} is ready`, percent: 100 });
+      return { instance: registry[index], health, backupId: backup.id, previousVersion, compatibility };
+    } catch (error) {
+      try { await runBackupInWorker('restore', { backupsDir: BACKUPS_DIR, instance, instanceDir, id: backup.id }); }
+      catch (restoreError) { diagnosticLog('ERROR', `Could not restore ${instance.name} after Fabric Loader failure: ${restoreError.stack || restoreError.message || restoreError}`); }
+      throw error;
+    }
+  }
+
+  ipcMain.handle('change-fabric-version', async (_, instanceName, version) => withFabricOperation(instanceName, () => installRegisteredFabric(instanceName, version, { reason: `Before changing Fabric Loader to ${String(version).slice(0, 80)}` })));
+  ipcMain.handle('repair-fabric', async (_, instanceName) => withFabricOperation(instanceName, async () => {
+    const instance = getRegisteredInstance(instanceName).instance;
+    return installRegisteredFabric(instance.name, instance.loaderVersion, { force: true, reason: `Before reinstalling Fabric Loader ${instance.loaderVersion}` });
+  }));
+  ipcMain.handle('rollback-fabric', async (_, instanceName) => withFabricOperation(instanceName, async () => {
+    const { instance, registry } = getRegisteredInstance(instanceName);
+    if (instance.loader !== 'fabric') throw new Error('This instance does not use Fabric Loader');
+    if (activeInstanceName) throw new Error('Close Minecraft before rolling back Fabric Loader');
+    if (instance.modpack?.lockState === 'locked') throw new Error('This modpack controls its Fabric Loader version. Roll back the complete pack instead.');
+    const history = Array.isArray(instance.fabricLoaderHistory) ? instance.fabricLoaderHistory : [];
+    const changeIndex = [...history].map((item, index) => ({ item, index })).reverse().find(({ item }) => item?.backupId && listBackups(BACKUPS_DIR, instance).some(backup => backup.id === item.backupId));
+    if (!changeIndex) throw new Error('No Fabric Loader rollback is available');
+    await createAutomaticInstanceBackup(instance, `Before rolling back Fabric Loader to ${changeIndex.item.fromVersion}`);
+    await runBackupInWorker('restore', { backupsDir: BACKUPS_DIR, instance, instanceDir: getInstanceDir(instance), id: changeIndex.item.backupId });
+    const registryIndex = registry.findIndex(item => item.id === instance.id);
+    registry[registryIndex] = { ...registry[registryIndex], loaderVersion: changeIndex.item.fromVersion, loaderUpdatedAt: new Date().toISOString(), fabricLoaderHistory: history.slice(0, changeIndex.index) };
+    writeJSON(INSTANCES_FILE, registry);
+    return registry[registryIndex];
+  }));
 
   ipcMain.handle('get-neoforge-status', async (_, instanceName) => {
     const instance = getRegisteredInstance(instanceName).instance;
@@ -4904,6 +5051,7 @@ function setupIPC() {
   ipcMain.handle('delete-instance', async (_, name) => {
     const safeName = sanitizeName(name);
     assertNeoForgeIdle(safeName);
+    assertFabricIdle(safeName);
     if (activeInstanceName === safeName) throw new Error('Stop Minecraft before deleting this instance');
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
@@ -4934,6 +5082,7 @@ function setupIPC() {
     if (mcClient || activeInstanceName) throw new Error('Minecraft is already launching or running');
     const safeName = sanitizeName(name);
     if (activeNeoForgeOperations.has(safeName.toLowerCase())) throw new Error('Wait for the NeoForge operation to finish before launching');
+    if (activeFabricOperations.has(safeName.toLowerCase())) throw new Error('Wait for the Fabric Loader operation to finish before launching');
     const registry = readJSON(INSTANCES_FILE) || [];
     const instance = registry.find(i => i.name === safeName);
     if (!instance) throw new Error(`Instance "${safeName}" not found`);

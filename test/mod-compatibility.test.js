@@ -10,6 +10,7 @@ const {
   knownModrinthIncompatibility,
   inspectModSet,
   analyzeFabricRelations,
+  classifyFabricLoaderCompatibility,
   findDuplicateModIds,
   findLoaderIncompatibleMods,
   quarantineKnownBrokenMods,
@@ -216,6 +217,22 @@ test('Fabric predicates support intervals, comparator sets, alternatives, and pr
   assert.equal(versionPredicateSatisfies('0.9.2-beta.1+mc26.2', '[0.9.1,0.10.0)'), false);
   assert.equal(versionPredicateSatisfies('1.11.2+mc26.2', '<=1.11.2'), true);
   assert.equal(versionPredicateSatisfies('2.5.0', ['<2', '>=2.4 <3']), true);
+});
+
+test('Fabric Loader update preview classifies every readable mod against the target loader', () => {
+  const records = [
+    { filename: 'modern.jar', readable: true, fabricMetadata: { id: 'modern', name: 'Modern Mod', version: '2', depends: { fabricloader: '>=0.16.10' } } },
+    { filename: 'legacy.jar', readable: true, fabricMetadata: { id: 'legacy', name: 'Legacy Mod', version: '1', depends: { fabricloader: '<0.16' } } },
+    { filename: 'blocked.jar', readable: true, fabricMetadata: { id: 'blocked', name: 'Blocked Mod', version: '1', breaks: { fabricloader: '>=0.16.12' } } },
+    { filename: 'unrestricted.jar', readable: true, fabricMetadata: { id: 'unrestricted', name: 'Unrestricted Mod', version: '1' } },
+    { filename: 'damaged.jar', readable: false, fabricMetadata: null },
+  ];
+  const report = classifyFabricLoaderCompatibility(records, '0.16.12');
+  assert.deepEqual(report.compatible.map(item => item.id), ['modern', 'unrestricted']);
+  assert.deepEqual(report.incompatible.map(item => item.id), ['legacy', 'blocked']);
+  assert.deepEqual(report.unknown.map(item => item.filename), ['damaged.jar']);
+  assert.match(report.incompatible[0].reason, /requires Fabric Loader <0\.16/);
+  assert.match(report.incompatible[1].reason, /marks Fabric Loader >=0\.16\.12 as incompatible/);
 });
 
 test('Fabric checks recognize nested API modules without treating them as duplicate top-level mods', () => {

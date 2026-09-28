@@ -2034,6 +2034,35 @@ html[data-platform="linux"] .search-container {
 .loader-version-picker > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .loader-version-note { position: relative; z-index: 1; margin: 9px 0 0; color: var(--text-md); font-size: var(--text-caption); line-height: 1.45; }
 .loader-action-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.fabric-loader-card { position: relative; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 24%, var(--border-subtle)); background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 7%, var(--glass-surface-base)), var(--glass-surface-base)); }
+.fabric-loader-card::after { content: ''; position: absolute; top: -70px; right: -55px; width: 180px; height: 180px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 10%, transparent); filter: blur(38px); pointer-events: none; }
+.fabric-loader-mark { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 30%, transparent), color-mix(in srgb, var(--accent) 9%, transparent)); color: color-mix(in srgb, var(--accent) 72%, white); font-weight: 800; box-shadow: inset 0 1px rgba(255,255,255,.16), 0 8px 20px color-mix(in srgb, var(--accent) 12%, transparent); }
+.fabric-update-callout { border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle)); background: color-mix(in srgb, var(--accent) 9%, var(--glass-surface-base)); }
+.fabric-compatibility { position: relative; z-index: 1; margin-top: 12px; }
+.fabric-compatibility > .compatibility-loading { min-height: 92px; }
+.fabric-compatibility-summary { display: flex; align-items: center; gap: 11px; padding: 12px; border: 1px solid color-mix(in srgb, var(--accent-green) 25%, var(--border-subtle)); border-radius: var(--r-lg); background: color-mix(in srgb, var(--accent-green) 7%, var(--glass-surface-base)); }
+.fabric-compatibility-summary.has-incompatible { border-color: color-mix(in srgb, var(--accent-orange) 32%, var(--border-subtle)); background: color-mix(in srgb, var(--accent-orange) 8%, var(--glass-surface-base)); }
+.fabric-compatibility-summary > svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--accent-green); }
+.fabric-compatibility-summary.has-incompatible > svg { color: var(--accent-orange); }
+.fabric-compatibility-summary > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fabric-compatibility-summary strong { color: var(--text-hi); }
+.fabric-compatibility-summary span { color: var(--text-md); font-size: var(--text-caption); }
+.fabric-compatibility-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.fabric-compatibility-group { min-width: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--r-lg); background: var(--glass-surface-base); }
+.fabric-compatibility-group.is-unknown { grid-column: 1 / -1; }
+.fabric-compatibility-group > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border-subtle); }
+.fabric-compatibility-group > header strong { color: var(--text-hi); font-size: var(--text-caption); }
+.fabric-compatibility-group > header span { min-width: 22px; padding: 2px 6px; border-radius: var(--r-pill); color: var(--text-md); background: var(--glass-surface-overlay); font-size: 10px; text-align: center; }
+.fabric-compatibility-group > div { max-height: 210px; overflow-y: auto; scrollbar-width: thin; }
+.fabric-compatibility-group article { display: flex; align-items: flex-start; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border-subtle); }
+.fabric-compatibility-group article:last-child { border-bottom: 0; }
+.fabric-compatibility-group article > svg { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 2px; color: var(--accent-green); }
+.fabric-compatibility-group.is-incompatible article > svg { color: var(--accent-orange); }
+.fabric-compatibility-group.is-unknown article > svg { color: var(--text-lo); }
+.fabric-compatibility-group article > span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.fabric-compatibility-group article b { overflow: hidden; color: var(--text-hi); font-size: var(--text-caption); text-overflow: ellipsis; white-space: nowrap; }
+.fabric-compatibility-group article small, .fabric-compatibility-group p { margin: 0; color: var(--text-lo); font-size: 10px; line-height: 1.4; }
+.fabric-compatibility-group p { padding: 12px; }
 .managed-pack-card { position: relative; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); }
 .managed-pack-card::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 38%); }
 .managed-pack-card > * { position: relative; z-index: 1; }
@@ -3270,6 +3299,8 @@ html.is-scrolling .destination-card:hover::after { left: 18%; opacity: .46; }
   .loader-update-callout { align-items: stretch; flex-direction: column; }
   .loader-version-picker > div { grid-template-columns: 1fr; }
   .loader-action-row { flex-direction: column; }
+  .fabric-compatibility-lists { grid-template-columns: 1fr; }
+  .fabric-compatibility-group.is-unknown { grid-column: auto; }
 }
 
 /* Settings use the single page-header save action. Keep the reset action in

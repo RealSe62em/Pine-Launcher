@@ -3750,6 +3750,131 @@ async function backupAllWorlds() {
   finally { button.disabled = false; }
 }
 
+async function refreshFabricInstance(instanceName) {
+  await loadInstances();
+  const refreshed = state.instances.find(item => item.name === instanceName);
+  if (refreshed) state.currentInstance = refreshed;
+  loadInstanceSettings();
+}
+
+function fabricCompatibilityGroup(title, items, tone, emptyLabel) {
+  return `<section class="fabric-compatibility-group is-${tone}">
+    <header><strong>${escHtml(title)}</strong><span>${items.length}</span></header>
+    <div>${items.length ? items.map(item => `<article><svg aria-hidden="true"><use href="#i-${tone === 'compatible' ? 'check' : tone === 'incompatible' ? 'alert-triangle' : 'info'}"/></svg><span><b>${escHtml(item.name || item.filename)}</b><small>${escHtml(item.reason || item.filename)}${item.filename && item.name !== item.filename ? ` · ${escHtml(item.filename)}` : ''}</small></span></article>`).join('') : `<p>${escHtml(emptyLabel)}</p>`}</div>
+  </section>`;
+}
+
+function renderFabricCompatibility(host, report) {
+  if (!host) return;
+  const counts = report.counts || {};
+  host.innerHTML = `
+    <div class="fabric-compatibility-summary ${counts.incompatible ? 'has-incompatible' : 'is-compatible'}">
+      <svg aria-hidden="true"><use href="#i-${counts.incompatible ? 'alert-triangle' : 'check'}"/></svg>
+      <div><strong>${counts.incompatible ? `${counts.incompatible} incompatible mod${counts.incompatible === 1 ? '' : 's'} found` : 'Installed mods look compatible'}</strong><span>${report.checkedMods} enabled mod${report.checkedMods === 1 ? '' : 's'} checked for Fabric Loader ${escHtml(report.targetLoaderVersion)}</span></div>
+    </div>
+    <div class="fabric-compatibility-lists">
+      ${fabricCompatibilityGroup('Compatible', report.compatible || [], 'compatible', 'No compatible mods were detected.')}
+      ${fabricCompatibilityGroup('Incompatible', report.incompatible || [], 'incompatible', 'No declared incompatibilities were found.')}
+      ${(report.unknown || []).length ? fabricCompatibilityGroup('Could not verify', report.unknown, 'unknown', '') : ''}
+    </div>`;
+}
+
+async function loadFabricPanel(instance) {
+  const statusHost = $('fabric-status');
+  const actionsHost = $('fabric-actions');
+  if (!statusHost || !actionsHost) return;
+  try {
+    const status = await api.getFabricStatus(instance.name);
+    const ready = status.health?.installed && status.health?.valid;
+    statusHost.innerHTML = `
+      <div class="loader-health-state ${ready ? 'is-ready' : 'needs-repair'}"><svg aria-hidden="true"><use href="#${ready ? 'i-check' : 'i-info'}"/></svg><div><strong>${ready ? 'Launch profile ready' : 'Profile will be prepared'}</strong><span>Fabric Loader ${escHtml(status.installedVersion)} · Minecraft ${escHtml(status.gameVersion)}</span></div></div>
+      <div class="loader-health-grid"><span><b>${escHtml(status.installedVersion)}</b><small>Installed</small></span><span><b>${escHtml(status.latestVersion || status.installedVersion)}</b><small>${status.latestVersion ? 'Latest stable' : 'Current'}</small></span><span><b>${status.versions.length}</b><small>Available</small></span></div>`;
+    const versions = status.versions || [];
+    const targetVersion = status.latestVersion || status.installedVersion;
+    const lockedMessage = status.lockedByPack ? '<p class="loader-version-note">This managed pack controls its Fabric Loader version. Update the complete pack or unlock it before changing the loader.</p>' : '';
+    actionsHost.innerHTML = `
+      ${status.latestVersion && !status.lockedByPack ? `<div class="loader-update-callout fabric-update-callout"><div><strong>Fabric Loader ${escHtml(status.latestVersion)} is available</strong><span>Pine will scan every enabled mod before updating.</span></div></div>` : ''}
+      <div class="loader-version-picker"><label for="inst-fabric-version">Fabric Loader version</label><div><select id="inst-fabric-version" class="input" ${versions.length && !status.lockedByPack ? '' : 'disabled'}>${versions.length ? versions.map(item => `<option value="${escHtml(item.version)}" ${item.version === targetVersion ? 'selected' : ''}>${escHtml(item.name)}${item.version === status.installedVersion ? ' · installed' : item.stable ? '' : ' · unstable'}</option>`).join('') : `<option>${escHtml(status.installedVersion)}</option>`}</select><button class="btn btn-primary" type="button" data-fabric-change disabled>${targetVersion === status.installedVersion ? 'Current version' : 'Update loader'}</button></div></div>
+      ${lockedMessage}
+      ${status.versionError ? `<p class="loader-version-note">Could not check the public Fabric catalog: ${escHtml(status.versionError)}</p>` : ''}
+      <div class="fabric-compatibility" data-fabric-compatibility><div class="compatibility-loading"><span class="spinner"></span><strong>Scanning installed mods…</strong><small>Checking their declared Fabric Loader requirements.</small></div></div>
+      <div class="loader-action-row"><button class="btn btn-secondary" type="button" data-fabric-repair>Reinstall Fabric Loader</button>${status.rollbackVersion && !status.lockedByPack ? `<button class="btn btn-ghost" type="button" data-fabric-rollback>Roll back to ${escHtml(status.rollbackVersion)}</button>` : '<button class="btn btn-ghost" type="button" data-fabric-backups>View restore points</button>'}</div>
+      <p class="loader-version-note">Pine creates a full restore point before a loader change. Mods are never removed automatically.</p>`;
+
+    const select = $('inst-fabric-version');
+    const changeButton = actionsHost.querySelector('[data-fabric-change]');
+    const compatibilityHost = actionsHost.querySelector('[data-fabric-compatibility]');
+    let currentReport = null;
+    let scanSequence = 0;
+    const scan = async () => {
+      const version = select?.value;
+      if (!version) return;
+      const sequence = ++scanSequence;
+      currentReport = null;
+      changeButton.disabled = true;
+      changeButton.textContent = version === status.installedVersion ? 'Current version' : 'Scanning…';
+      compatibilityHost.innerHTML = '<div class="compatibility-loading"><span class="spinner"></span><strong>Scanning installed mods…</strong><small>Checking their declared Fabric Loader requirements.</small></div>';
+      try {
+        const report = await api.previewFabricVersion(instance.name, version);
+        if (sequence !== scanSequence || !actionsHost.isConnected) return;
+        currentReport = report;
+        renderFabricCompatibility(compatibilityHost, report);
+        changeButton.textContent = version === status.installedVersion ? 'Current version' : status.latestVersion === version ? 'Update loader' : 'Change version';
+        changeButton.disabled = version === status.installedVersion || status.lockedByPack;
+      } catch (error) {
+        if (sequence !== scanSequence || !actionsHost.isConnected) return;
+        compatibilityHost.innerHTML = `<div class="compatibility-empty is-error"><svg aria-hidden="true"><use href="#i-alert-triangle"/></svg><strong>Compatibility scan failed</strong><span>${escHtml(error.message || String(error))}</span></div>`;
+        changeButton.textContent = 'Scan unavailable';
+      }
+    };
+    select?.addEventListener('change', scan);
+    changeButton?.addEventListener('click', async event => {
+      const version = select?.value;
+      if (!version || !currentReport || currentReport.targetLoaderVersion !== version) return scan();
+      const incompatible = Number(currentReport.counts?.incompatible || 0);
+      const unknown = Number(currentReport.counts?.unknown || 0);
+      const confirmed = await backupConfirmation({
+        title: `${status.latestVersion === version ? 'Update' : 'Change'} to Fabric Loader ${version}?`,
+        message: `${currentReport.counts?.compatible || 0} mod${currentReport.counts?.compatible === 1 ? '' : 's'} look compatible.${incompatible ? ` ${incompatible} mod${incompatible === 1 ? '' : 's'} declared an incompatibility and may prevent Minecraft from starting.` : ''}${unknown ? ` ${unknown} file${unknown === 1 ? '' : 's'} could not be verified.` : ''} Pine will create a full restore point and keep every mod installed.`,
+        action: incompatible ? 'Update anyway' : 'Update Fabric Loader',
+      });
+      if (!confirmed) return;
+      actionsHost.querySelectorAll('button, select').forEach(control => control.disabled = true);
+      event.currentTarget.textContent = 'Installing…';
+      try {
+        const result = await api.changeFabricVersion(instance.name, version);
+        const found = Number(result.compatibility?.counts?.incompatible || 0);
+        toast(found ? `Fabric Loader ${version} installed · ${found} incompatible mod warning${found === 1 ? '' : 's'}` : `Fabric Loader updated to ${version}`, found ? 'info' : 'success', 7000);
+        await refreshFabricInstance(instance.name);
+      } catch (error) {
+        toast('Fabric Loader update failed: ' + (error.message || error), 'error', 8000);
+        loadFabricPanel(instance);
+      }
+    });
+    actionsHost.querySelector('[data-fabric-repair]')?.addEventListener('click', async event => {
+      const confirmed = await backupConfirmation({ title: `Reinstall Fabric Loader ${status.installedVersion}?`, message: 'Pine will create a full restore point and rebuild the loader profile. Worlds, mods, configurations, and settings stay untouched.', action: 'Reinstall Fabric Loader' });
+      if (!confirmed) return;
+      actionsHost.querySelectorAll('button, select').forEach(control => control.disabled = true);
+      event.currentTarget.textContent = 'Reinstalling…';
+      try { await api.repairFabric(instance.name); toast(`Fabric Loader ${status.installedVersion} is ready`, 'success', 6000); await refreshFabricInstance(instance.name); }
+      catch (error) { toast('Fabric Loader repair failed: ' + (error.message || error), 'error', 8000); loadFabricPanel(instance); }
+    });
+    actionsHost.querySelector('[data-fabric-backups]')?.addEventListener('click', () => openBackupPanel());
+    actionsHost.querySelector('[data-fabric-rollback]')?.addEventListener('click', async event => {
+      const confirmed = await backupConfirmation({ title: `Roll back to Fabric Loader ${status.rollbackVersion}?`, message: 'Pine will save the current setup, then restore the complete loader state from before the last loader change.', action: 'Roll back Fabric Loader' });
+      if (!confirmed) return;
+      actionsHost.querySelectorAll('button, select').forEach(control => control.disabled = true);
+      event.currentTarget.textContent = 'Rolling back…';
+      try { await api.rollbackFabric(instance.name); toast(`Fabric Loader rolled back to ${status.rollbackVersion}`, 'success', 6000); await refreshFabricInstance(instance.name); }
+      catch (error) { toast('Fabric Loader rollback failed: ' + (error.message || error), 'error', 8000); loadFabricPanel(instance); }
+    });
+    scan();
+  } catch (error) {
+    statusHost.innerHTML = `<p class="loader-version-note">Could not inspect Fabric Loader: ${escHtml(error.message || String(error))}</p>`;
+    actionsHost.innerHTML = '';
+  }
+}
+
 async function refreshNeoForgeInstance(instanceName) {
   await loadInstances();
   const refreshed = state.instances.find(item => item.name === instanceName);
@@ -3983,6 +4108,11 @@ function loadInstanceSettings() {
       <div class="pack-health-grid" id="managed-pack-status"><span class="spinner"></span><small>Inspecting pack ownership…</small></div>
       <div id="managed-pack-actions"></div>
     </div>` : ''}
+    ${inst.loader === 'fabric' ? `<div class="settings-card fabric-loader-card">
+      <div class="neoforge-loader-head fabric-loader-head"><span class="fabric-loader-mark">F</span><div><div class="settings-card-title">Fabric Loader</div><p>Minecraft ${escHtml(inst.gameVersion)} · updates and mod compatibility</p></div></div>
+      <div id="fabric-status" class="loader-status-host"><span class="spinner"></span><small>Checking Fabric Loader…</small></div>
+      <div id="fabric-actions"></div>
+    </div>` : ''}
     ${inst.loader === 'neoforge' ? `<div class="settings-card neoforge-loader-card">
       <div class="neoforge-loader-head"><span class="neoforge-loader-mark">N</span><div><div class="settings-card-title">NeoForge</div><p>Minecraft ${escHtml(inst.gameVersion)} · loader lifecycle</p></div></div>
       <div id="neoforge-status" class="loader-status-host"><span class="spinner"></span><small>Verifying loader profile…</small></div>
@@ -4026,6 +4156,7 @@ function loadInstanceSettings() {
   $('sync-instance-settings')?.addEventListener('click', openInstanceSync);
   $('migrate-instance-version')?.addEventListener('click', openVersionMigrationDialog);
   if (inst.modpack) loadManagedPackPanel(inst);
+  if (inst.loader === 'fabric') loadFabricPanel(inst);
   if (inst.loader === 'neoforge') loadNeoForgePanel(inst);
   $('inst-pack-state')?.addEventListener('change', async event => {
     const previous = inst.modpack.lockState || 'locked';
