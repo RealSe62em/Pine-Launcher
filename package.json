@@ -21,7 +21,10 @@
     "build:pacman:x64": "electron-builder --config electron-builder.yml --publish never --linux pacman --x64",
     "build:pacman": "npm run build:pacman:x64",
     "build:arch": "npm run build:pacman:x64",
-    "build:all": "npm run build:installer && npm run build:deb:x64 && npm run build:deb:arm64 && npm run build:pacman:x64",
+    "build:rpm:x64": "electron-builder --config electron-builder.yml --publish never --linux rpm --x64",
+    "build:rpm:arm64": "electron-builder --config electron-builder.yml --publish never --linux rpm --arm64",
+    "build:rpm": "npm run build:rpm:x64",
+    "build:all": "npm run build:installer && npm run build:deb:x64 && npm run build:deb:arm64 && npm run build:pacman:x64 && npm run build:rpm:x64 && npm run build:rpm:arm64",
     "build": "npm run build:installer",
     "test:smoke": "electron scripts/smoke-test.cjs --feature-smoke"
   },

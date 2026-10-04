@@ -62,6 +62,10 @@ linux:
     - target: pacman
       arch:
         - x64
+    - target: rpm
+      arch:
+        - x64
+        - arm64
   category: Game
   icon: build/icons
   executableName: pine-launcher
@@ -79,6 +83,13 @@ deb:
   synopsis: Multi-instance Minecraft launcher
   description: Pine Launcher manages isolated Minecraft instances, loaders, Java runtimes, mods, packs, worlds, and backups.
   priority: optional
+rpm:
+  packageName: pine-launcher
+  packageCategory: Game
+  maintainer: Pine Launcher
+  synopsis: Multi-instance Minecraft launcher
+  description: Pine Launcher manages isolated Minecraft instances, loaders, Java runtimes, mods, packs, worlds, and backups.
+  artifactName: PineLauncher-${version}-fedora-${arch}.${ext}
 pacman:
   packageName: pine-launcher
   packageCategory: games

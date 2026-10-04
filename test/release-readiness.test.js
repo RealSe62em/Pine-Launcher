@@ -40,7 +40,10 @@ test('Windows builds publish GitHub updater metadata and differential packages',
 });
 
 test('Linux release builders install every native compression prerequisite', () => {
-  assert.match(workflow, /apt-get install --yes libarchive-tools zstd/);
+  assert.match(workflow, /apt-get install --yes libarchive-tools rpm zstd/);
+  assert.match(pkg.scripts['build:rpm:x64'], /--linux rpm --x64/);
+  assert.match(pkg.scripts['build:rpm:arm64'], /--linux rpm --arm64/);
+  assert.match(builder, /target:\s*rpm[\s\S]*?- x64[\s\S]*?- arm64/);
 });
 
 test('Linux windows and packages share the Pine taskbar identity and icon', () => {
@@ -68,16 +71,18 @@ test('website fallbacks point at every 1.2.9 native installer', () => {
   assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-amd64\.deb/);
   assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-arm64\.deb/);
   assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-archlinux-x64\.pacman/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-fedora-x86_64\.rpm/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-fedora-aarch64\.rpm/);
   assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.9'/);
   assert.match(websiteScript, /Object\.values\(names\)\.some\(name => !assets\.get\(name\)\?\.browser_download_url\)/);
   assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.8/);
 });
 
-test('website uses one searchable Linux distro picker', () => {
+test('website uses one concise Linux distro picker', () => {
   assert.equal((website.match(/class="button secondary large linux-picker-trigger"/g) || []).length, 1);
-  assert.match(website, /data-linux-search/);
+  assert.doesNotMatch(website, /data-linux-search/);
   assert.match(website, /Debian[\s\S]*Ubuntu[\s\S]*Linux Mint[\s\S]*Pop!_OS/);
-  assert.match(website, /Arch Linux[\s\S]*Manjaro[\s\S]*EndeavourOS[\s\S]*CachyOS/);
+  assert.match(website, /Fedora[\s\S]*Nobara[\s\S]*Arch Linux[\s\S]*Manjaro[\s\S]*EndeavourOS[\s\S]*CachyOS/);
   assert.match(websiteScript, /function setLinuxPickerOpen\(open\)/);
-  assert.match(websiteScript, /row\.dataset\.search\.includes\(query\)/);
+  assert.doesNotMatch(websiteScript, /row\.dataset\.search\.includes\(query\)/);
 });

@@ -3,7 +3,9 @@ const RELEASES = {
   arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncherSetup-arm64.exe',
   linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-linux-amd64.deb',
   linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-archlinux-x64.pacman'
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-archlinux-x64.pacman',
+  fedora: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-fedora-x86_64.rpm',
+  fedoraArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-fedora-aarch64.rpm'
 };
 const FALLBACK_VERSION = '1.2.9';
 const ANALYTICS_ID = 'G-FR14WGWZY2';
@@ -70,29 +72,15 @@ document.querySelectorAll('.download-link').forEach((link) => { link.href = RELE
 const linuxPicker = document.querySelector('[data-linux-picker]');
 const linuxPickerTrigger = linuxPicker?.querySelector('.linux-picker-trigger');
 const linuxPickerMenu = linuxPicker?.querySelector('.linux-picker-menu');
-const linuxSearch = linuxPicker?.querySelector('[data-linux-search]');
-const linuxDistros = [...(linuxPicker?.querySelectorAll('[data-linux-distro]') || [])];
-const linuxEmpty = linuxPicker?.querySelector('[data-linux-empty]');
 
 function setLinuxPickerOpen(open) {
   if (!linuxPickerTrigger || !linuxPickerMenu) return;
   linuxPickerMenu.hidden = !open;
   linuxPickerTrigger.setAttribute('aria-expanded', String(open));
   linuxPicker.classList.toggle('is-open', open);
-  if (open) requestAnimationFrame(() => linuxSearch?.focus());
 }
 
 linuxPickerTrigger?.addEventListener('click', () => setLinuxPickerOpen(linuxPickerMenu?.hidden));
-linuxSearch?.addEventListener('input', () => {
-  const query = linuxSearch.value.trim().toLowerCase();
-  let visible = 0;
-  linuxDistros.forEach((row) => {
-    const matches = !query || row.dataset.search.includes(query) || row.textContent.toLowerCase().includes(query);
-    row.hidden = !matches;
-    if (matches) visible += 1;
-  });
-  if (linuxEmpty) linuxEmpty.hidden = visible !== 0;
-});
 document.addEventListener('click', (event) => {
   if (linuxPicker && !linuxPicker.contains(event.target)) setLinuxPickerOpen(false);
 });
@@ -135,7 +123,9 @@ async function syncLatestRelease() {
     arm64: 'PineLauncherSetup-arm64.exe',
     linux: `PineLauncher-${version}-linux-amd64.deb`,
     linuxArm64: `PineLauncher-${version}-linux-arm64.deb`,
-    arch: `PineLauncher-${version}-archlinux-x64.pacman`
+    arch: `PineLauncher-${version}-archlinux-x64.pacman`,
+    fedora: `PineLauncher-${version}-fedora-x86_64.rpm`,
+    fedoraArm64: `PineLauncher-${version}-fedora-aarch64.rpm`
   };
   if (Object.values(names).some(name => !assets.get(name)?.browser_download_url)) return;
   document.querySelectorAll('[data-release-version]').forEach((element) => { element.textContent = version; });
