@@ -11,6 +11,7 @@ const builder = fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8')
 const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
 const website = fs.readFileSync(path.join(root, 'website', 'index.html'), 'utf8');
 const websiteScript = fs.readFileSync(path.join(root, 'website', 'script.js'), 'utf8');
+const sitemap = fs.readFileSync(path.join(root, 'website', 'sitemap.xml'), 'utf8');
 
 test('release uses the planned updater-visible version', () => {
   assert.equal(pkg.version, '1.2.9');
@@ -85,4 +86,11 @@ test('website uses one concise Linux distro picker', () => {
   assert.match(website, /Fedora[\s\S]*Nobara[\s\S]*Arch Linux[\s\S]*Manjaro[\s\S]*EndeavourOS[\s\S]*CachyOS/);
   assert.match(websiteScript, /function setLinuxPickerOpen\(open\)/);
   assert.doesNotMatch(websiteScript, /row\.dataset\.search\.includes\(query\)/);
+});
+
+test('website analytics count each download once and publish a fresh sitemap', () => {
+  assert.doesNotMatch(websiteScript, /sendAnalyticsEvent\(['"]file_download['"]/);
+  assert.match(websiteScript, /enhanced measurement records file_download/i);
+  assert.match(sitemap, /<lastmod>2026-10-04<\/lastmod>/);
+  assert.match(sitemap, /https:\/\/realse62em\.github\.io\/Pine-Launcher\//);
 });

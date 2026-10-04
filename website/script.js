@@ -96,13 +96,8 @@ document.addEventListener('click', (event) => {
   if (!link) return;
   const href = link.href;
   if (link.classList.contains('download-link')) {
-    const fileName = new URL(href).pathname.split('/').pop();
-    sendAnalyticsEvent('file_download', {
-      build: link.dataset.build || 'unknown',
-      file_name: fileName,
-      link_url: href,
-      version: document.querySelector('[data-release-version]')?.textContent || FALLBACK_VERSION
-    });
+    // Google Analytics enhanced measurement records file_download automatically.
+    // Sending the same event here doubled every installer click.
     return;
   }
   if (href.includes('github.com/')) sendAnalyticsEvent('github_click', { link_url: href, link_text: link.textContent.trim() });
