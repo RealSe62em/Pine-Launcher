@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.2.9 (2026-10-04)
+
+### Quality, responsiveness, and maintenance
+
+- Added a repository-wide JavaScript syntax check and minimum automated-test coverage thresholds to the standard quality gate.
+- Run the full quality gate in both continuous integration and release builds so regressions cannot silently enter packaged releases.
+- Moved screenshot discovery, screenshot loading and deletion, Minecraft settings access, world discovery, and instance-data synchronization away from blocking filesystem operations on Electron's main thread.
+- Ensure automatic restore points finish before Minecraft settings are changed or instance data is synchronized.
+- Added regression coverage for asynchronous instance-data synchronization and screenshot discovery.
+- Stopped tracking machine-local launcher settings in the repository.
+- Made Linux installation examples work across future Pine package versions instead of naming one specific release artifact.
+- Fixed partial Home destination scans collapsing the frequently visited cache; failed instance scans now retain their last known entries and produce a diagnostic warning instead of silently removing history.
+- Fixed a main-process JavaScript error appearing after joining multiplayer servers while preserving server activity tracking and Discord presence.
+
+### Library groups
+
+- Added direct drag-and-drop organization: the full instance card follows the pointer and group tiles show a large `+` drop target before moving the instance immediately, with completion feedback.
+- Added persistent drag ordering inside groups so the chosen first and last instances control the group preview, plus a per-card **Move out of group** action and predictable Library-tab navigation back to the overview.
+
+### Instance settings
+
+- Rebuilt the gear-menu Instance Settings screen as a responsive bottom-origin Pine popup with clear Identity, Artwork, and Storage sections, current artwork previews, and desktop-style actions.
+
+### Mod management
+
+- Fixed mod updates leaving duplicate disabled files and stale Update actions behind; replacements are now transactional, queued updates show as pending, and duplicate rows retain independent toggle and delete controls.
+- Stopped successful single-mod and **Update all** replacements from showing the old version's expected duplicate preflight check as a red installation error.
+- Restore names and icons for mod JARs moved into an instance through the system file explorer by reading embedded loader metadata, with exact Modrinth hash recovery when local artwork is unavailable.
+- Added a reviewed **Make compatible** repair to the compatibility check. Pine previews the mod upgrades and downgrades, warns before changing versions, creates one restore point, installs verified builds and dependencies transactionally, then rechecks the instance and leaves unsafe manual issues visible.
+
+### Version migration
+
+- Make Fabric migrations install and validate the selected Fabric Loader profile plus a compatible Fabric API release before the migrated instance is published, replacing copied Fabric API builds from the source version.
+
+### Instance creation and presets
+
+- Added Effortless Building and Axiom to the Builder preset, with the existing Minecraft-version and Fabric compatibility preflight applied before installation.
+
+### Linux downloads
+
+- Added a searchable distro picker to the Pine website so supported Debian, Ubuntu, Mint, Pop!_OS, Zorin, elementary, Arch, Manjaro, EndeavourOS, and CachyOS users receive the correct native installer from one Linux download button.
+- Publish Debian-family x64 and ARM64 packages alongside the Arch-family x64 package and their SHA-256 checksums.
+
 ## 1.2.8
 
 ### Version migration

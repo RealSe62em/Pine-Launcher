@@ -1,11 +1,11 @@
 const RELEASES = {
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncherSetup-arm64.exe',
-  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncher-1.2.8-linux-amd64.deb',
-  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncher-1.2.8-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.8/PineLauncher-1.2.8-archlinux-x64.pacman'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-linux-amd64.deb',
+  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-linux-arm64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-archlinux-x64.pacman'
 };
-const FALLBACK_VERSION = '1.2.8';
+const FALLBACK_VERSION = '1.2.9';
 const ANALYTICS_ID = 'G-FR14WGWZY2';
 const CONSENT_KEY = 'pine_analytics_consent';
 
@@ -66,6 +66,42 @@ function compareVersions(left, right) {
   return 0;
 }
 document.querySelectorAll('.download-link').forEach((link) => { link.href = RELEASES[link.dataset.build] || RELEASES.x64; });
+
+const linuxPicker = document.querySelector('[data-linux-picker]');
+const linuxPickerTrigger = linuxPicker?.querySelector('.linux-picker-trigger');
+const linuxPickerMenu = linuxPicker?.querySelector('.linux-picker-menu');
+const linuxSearch = linuxPicker?.querySelector('[data-linux-search]');
+const linuxDistros = [...(linuxPicker?.querySelectorAll('[data-linux-distro]') || [])];
+const linuxEmpty = linuxPicker?.querySelector('[data-linux-empty]');
+
+function setLinuxPickerOpen(open) {
+  if (!linuxPickerTrigger || !linuxPickerMenu) return;
+  linuxPickerMenu.hidden = !open;
+  linuxPickerTrigger.setAttribute('aria-expanded', String(open));
+  linuxPicker.classList.toggle('is-open', open);
+  if (open) requestAnimationFrame(() => linuxSearch?.focus());
+}
+
+linuxPickerTrigger?.addEventListener('click', () => setLinuxPickerOpen(linuxPickerMenu?.hidden));
+linuxSearch?.addEventListener('input', () => {
+  const query = linuxSearch.value.trim().toLowerCase();
+  let visible = 0;
+  linuxDistros.forEach((row) => {
+    const matches = !query || row.dataset.search.includes(query) || row.textContent.toLowerCase().includes(query);
+    row.hidden = !matches;
+    if (matches) visible += 1;
+  });
+  if (linuxEmpty) linuxEmpty.hidden = visible !== 0;
+});
+document.addEventListener('click', (event) => {
+  if (linuxPicker && !linuxPicker.contains(event.target)) setLinuxPickerOpen(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && linuxPicker?.classList.contains('is-open')) {
+    setLinuxPickerOpen(false);
+    linuxPickerTrigger?.focus();
+  }
+});
 
 document.addEventListener('click', (event) => {
   const link = event.target.closest('a[href]');

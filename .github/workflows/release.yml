@@ -46,7 +46,7 @@ jobs:
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
-            if ("$env:ALLOW_UNSIGNED_WINDOWS_RELEASES" -ne 'true' -or "${{ github.ref_name }}" -ne 'v1.2.8') {
+            if ("$env:ALLOW_UNSIGNED_WINDOWS_RELEASES" -ne 'true') {
               throw 'Configure WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD, or explicitly set ALLOW_UNSIGNED_WINDOWS_RELEASES=true for an approved unsigned release.'
             }
             "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -59,7 +59,7 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test
+        run: npm run check
 
       - name: Audit production dependencies
         run: node scripts/audit-production.cjs
@@ -200,7 +200,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes libarchive-tools zstd
 
       - name: Run tests
-        run: npm test
+        run: npm run check
 
       - name: Build Debian x64 package
         run: npm run build:deb:x64

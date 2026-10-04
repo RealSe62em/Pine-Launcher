@@ -7,13 +7,18 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
-const renderer = read('renderer/script.js');
+const renderer = [
+  'renderer/script.js',
+  'renderer/accessibility.js',
+  'renderer/memory-range.js',
+  'renderer/window-chrome.js',
+].map(read).join('\n');
 const html = read('renderer/index.html');
 const styles = read('renderer/style.css');
 const components = read('renderer/styles/components.css');
 const features = read('renderer/styles/features.css');
 const preload = read('preload.js');
-const main = read('main.js');
+const main = ['main.js', 'lib/launcher-window.js'].map(read).join('\n');
 const website = read('website/index.html');
 
 test('custom install location keeps browse controls visually separate from the path field', () => {
@@ -311,9 +316,16 @@ test('share recipes resolve resource packs and present reviewable download cards
   assert.match(featureStyles, /\.recipe-candidate\.selected/);
 });
 
-test('instance settings keeps consistent space between form sections', () => {
-  assert.match(components, /#edit-sheet-body\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*gap:\s*var\(--s-4\)/s);
-  assert.match(components, /#edit-sheet-body > \.upload-grid\s*\{\s*margin-bottom:\s*0/);
+test('instance settings uses the standard bottom-origin popup layout with grouped sections', () => {
+  assert.match(html, /class="sheet-root instance-settings-root"/);
+  assert.match(html, /class="sheet instance-settings-popup"/);
+  for (const section of ['Identity', 'Artwork', 'Storage']) assert.match(html, new RegExp(`>${section}<`));
+  assert.match(components, /\.instance-settings-root\s*\{[^}]*place-items:\s*end center/s);
+  assert.match(components, /\.instance-settings-section\s*\{[^}]*grid-template-columns:\s*154px minmax\(0, 1fr\)/s);
+  assert.match(components, /\.instance-settings-footer-actions/);
+  assert.match(components, /\.instance-settings-heading-icon\s*\{[^}]*width:\s*26px[^}]*box-shadow:\s*none/s);
+  assert.match(components, /\.instance-settings-popup\s*\{[^}]*animation:\s*sheet-up/s);
+  assert.match(renderer, /if \(currentArtwork\) showAnimatedImagePreview\(preview, currentArtwork\)/);
 });
 
 test('launcher folder imports preserve complete gameplay state with progress and cancellation', () => {
@@ -348,6 +360,15 @@ test('async mod update checks immediately re-render the visible list', () => {
   assert.match(renderer, /async function checkForModUpdates[\s\S]*?renderContentList\(\);/);
 });
 
+test('mod updates replace old files and keep row actions tied to unique filenames', () => {
+  assert.match(renderer, /replaceFiles:\s*\[mod\.filename\]/);
+  assert.match(renderer, /const itemKey = m\.key \|\| m\.filename/);
+  assert.match(renderer, /cachedMods\.find\(\(m\) => \(m\.key \|\| m\.filename\) === pid\)/);
+  assert.match(renderer, /Pending update/);
+  assert.match(renderer, /updateRequestId !== state\.modUpdateRequestId/);
+  assert.match(main, /removeFiles:\s*removed/);
+});
+
 test('content offers an actionable whole-instance mod compatibility check', () => {
   assert.match(html, /id="check-mod-compatibility"[\s\S]*?Check compatibility/);
   assert.match(preload, /checkModCompatibility:\s*\(instanceName\)/);
@@ -360,8 +381,25 @@ test('content offers an actionable whole-instance mod compatibility check', () =
   assert.match(main, /DECLARED_CONFLICT/);
   assert.match(renderer, /function openModCompatibilityCheck\(\)/);
   assert.match(renderer, /function applyCompatibilityAction\(action, finding, overlay\)/);
+  assert.match(renderer, /async function makeModsCompatible\(overlay\)/);
+  assert.match(renderer, /data-make-compatible/);
+  assert.match(renderer, /upgrade or downgrade these mods to compatible versions/);
+  assert.match(renderer, /replaceFiles:\s*\[\.\.\.new Set\(replaceFiles\)\]/);
+  assert.match(renderer, /selectedProjectVersions/);
+  assert.match(main, /requiredDependencies:\s*resolvedRequired/);
+  assert.match(main, /buildCompatibilityRepairPlan\(findings\)/);
   assert.match(renderer, /createBackup:\s*true, backupReason:/);
   assert.match(components, /\.compatibility-finding\s*\{/);
+});
+
+test('Fabric Loader compatibility can offer verified mod updates and downgrades', () => {
+  assert.match(main, /findFabricReplacement\(instance, mod, targetLoaderVersion\)/);
+  assert.match(main, /candidateSupportsFabricLoader\(candidatePath, targetLoaderVersion\)/);
+  assert.match(main, /fabricReplacementDirection[\s\S]*?'update'[\s\S]*?'downgrade'/);
+  assert.match(renderer, /data-fabric-replacement/);
+  assert.match(renderer, /replacement\.direction === 'downgrade'/);
+  assert.match(renderer, /checkInstallFeasibility\(instance\.name, replacement\.projectId/);
+  assert.match(renderer, /replaceFilename: replacement\.filename/);
 });
 
 test('pride account matching is case-insensitive', () => {
@@ -386,6 +424,11 @@ test('frequently visited cards use real metadata and bottom-nav actions', () => 
   assert.match(main, /normalizeServerIcon\(saved\.icon\)/);
   assert.match(main, /listWorlds\(path\.join\(instanceDir, 'saves'\)\)/);
   assert.match(components, /grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
+});
+
+test('server activity tracking keeps its address formatter after presence refactors', () => {
+  assert.match(main, /const \{[^}]*serverDisplayAddress[^}]*\} = require\('\.\/lib\/discord-presence'\)/);
+  assert.match(main, /const address = serverDisplayAddress\(activity\.address, activity\.port\)/);
 });
 
 test('destination cards support deleted instances, copy, rename, and smooth detail reveal', () => {
@@ -432,13 +475,12 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /Creative\s*<i>Forge<\/i>/);
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-archlinux-x64\.pacman/);
-  assert.match(website, /data-hash="9437104F80FA048CB4638E214CB091ECC4172F41F36746BA40CCA5D1B5A12377"/);
-  assert.match(website, /virustotal\.com\/gui\/file\/9437104f80fa048cb4638e214cb091ecc4172f41f36746ba40cca5d1b5a12377/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-archlinux-x64\.pacman/);
+  assert.match(website, /data-verify-download hidden/);
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
@@ -606,9 +648,9 @@ test('Library sorting and instance actions use Pine navigation surfaces', () => 
   assert.match(html, /class="library-sort-option active"/);
   assert.doesNotMatch(html, /<select id="library-sort"/);
   assert.match(renderer, /function moveLibrarySortIndicator\(\)/);
-  assert.match(html, /class="sheet-action-dock"/);
+  assert.match(html, /class="sheet-footer instance-settings-footer"/);
   assert.match(components, /\.library-sort-indicator/);
-  assert.match(components, /\.sheet-action-indicator/);
+  assert.match(components, /\.instance-settings-popup/);
 });
 
 test('Library groups persist independently and render as four-tile mosaics', () => {
@@ -624,6 +666,34 @@ test('Library groups persist independently and render as four-tile mosaics', () 
   assert.match(renderer, /Array\.from\(\{ length: 4 \}/);
   assert.match(components, /\.group-card\s*\{[\s\S]*?aspect-ratio:\s*1/);
   assert.match(components, /\.group-mosaic\s*\{[\s\S]*?grid-template-columns:\s*1fr 1fr/);
+});
+
+test('Library instances can be dragged directly into groups', () => {
+  assert.match(html, /Drag an instance onto a group to move it/);
+  assert.match(renderer, /const LIBRARY_INSTANCE_DRAG_TYPE = 'application\/x-pine-library-instance'/);
+  assert.match(renderer, /const draggable = \(groupDrag \|\| Boolean\(reorderGroup\)\) && !state\.librarySelectionMode/);
+  assert.match(renderer, /card\.draggable = false/);
+  assert.match(renderer, /function beginLibraryPointerDrag\(card, name, event, pending\)/);
+  assert.match(renderer, /positionLibraryDragPreview\(libraryPointerDrag, event\.clientX, event\.clientY\)/);
+  assert.match(renderer, /updateLibraryPointerDropTarget\(event\.clientX, event\.clientY\)/);
+  assert.match(renderer, /finishLibraryPointerDrag\(event\)/);
+  assert.match(renderer, /event\.dataTransfer\.setData\(LIBRARY_INSTANCE_DRAG_TYPE, name\)/);
+  assert.match(renderer, /function bindLibraryGroupDropTargets\(groupsGrid\)/);
+  assert.match(renderer, /await api\.updateInstance\(instance\.name, \{ group: groupName \}\)/);
+  assert.match(renderer, /toast\(`Moved \$\{instance\.name\} to \$\{groupName\}`/);
+  assert.match(components, /\.group-card\.library-drop-target\s*\{/);
+  assert.match(components, /content:\s*'\+'/);
+  assert.match(components, /\.instance-card\.library-drag-preview\s*\{/);
+  assert.match(components, /\.instance-card\.is-dragging\s*\{/);
+  assert.match(renderer, /function sortGroupInstances\(instances\)/);
+  assert.match(renderer, /function updateGroupReorderTarget\(clientX, clientY, sourceCard\)/);
+  assert.match(renderer, /await api\.reorderGroupInstances\(groupName, order\)/);
+  assert.match(preload, /reorderGroupInstances:[\s\S]*?ipcRenderer\.invoke\('reorder-group-instances'/);
+  assert.match(main, /ipcMain\.handle\('reorder-group-instances'/);
+  assert.match(renderer, /data-act="move-out"/);
+  assert.match(renderer, /await api\.updateInstance\(name, \{ group: '' \}\)/);
+  assert.match(renderer, /if \(btn\.dataset\.view === 'library'\) state\.activeLibraryGroup = null/);
+  assert.match(components, /\.instance-card\.library-reorder-before\s*\{/);
 });
 
 test('deleting a group keeps its instances and returns them to the main Library', () => {
@@ -695,6 +765,7 @@ test('NeoForge has verified installation, exact compatibility, and a complete lo
 });
 
 test('Fabric Loader updates scan installed mods before changing the loader', () => {
+  const mutationChannels = main.match(/const REGISTRY_MUTATION_CHANNELS = new Set\(\[([\s\S]*?)\]\);/)?.[1] || '';
   assert.match(preload, /getFabricStatus/);
   assert.match(preload, /previewFabricVersion/);
   assert.match(preload, /changeFabricVersion/);
@@ -703,8 +774,13 @@ test('Fabric Loader updates scan installed mods before changing the loader', () 
   assert.match(main, /ipcMain\.handle\('get-fabric-status'/);
   assert.match(main, /ipcMain\.handle\('preview-fabric-version'/);
   assert.match(main, /ipcMain\.handle\('change-fabric-version'/);
-  assert.match(main, /createAutomaticInstanceBackup\(instance, reason\)/);
+  assert.match(main, /createAutomaticInstanceBackup\(instance, reason, 'loader'\)/);
   assert.match(main, /classifyFabricLoaderCompatibility\(scan\.records \|\| \[\], targetVersion\)/);
+  assert.match(main, /operation: 'fabric-loader'/);
+  assert.match(main, /Creating a quick loader restore point/);
+  assert.match(renderer, /update\.operation === 'fabric-loader'/);
+  assert.match(renderer, /kind: 'loader'/);
+  assert.doesNotMatch(mutationChannels, /launch-instance|change-fabric-version|repair-fabric|rollback-fabric/);
   assert.match(renderer, /function loadFabricPanel/);
   assert.match(renderer, /Scanning installed mods/);
   assert.match(renderer, /data-fabric-change/);
@@ -734,10 +810,20 @@ test('instance settings offer safe beta version migration into a separate copy',
   assert.match(main, /ipcMain\.handle\('migrate-instance-version'/);
   assert.match(main, /include: createMigrationFilter\(\)/);
   assert.match(main, /migratedFrom:/);
+  assert.match(main, /const FABRIC_API_PROJECT = 'P7dR8mSH'/);
+  assert.match(main, /await buildLoaderUrl\(entry, destinationDir\)/);
+  assert.match(main, /Fabric Loader and Fabric API are ready/);
+  assert.match(main, /migrationFabricApi/);
   assert.match(renderer, /id="migrate-instance-version"/);
   assert.match(renderer, /Beta testing/);
   assert.match(renderer, /function openVersionMigrationDialog/);
   assert.match(read('renderer\/styles\/features.css'), /\.migration-beta-warning/);
+});
+
+test('intentional mod replacements do not surface the expected duplicate as an error', () => {
+  assert.match(renderer, /const replacementFiles = new Set\(\(backupOptions\.replaceFiles \|\| \[\]\)/);
+  assert.match(renderer, /w\.code === 'DUPLICATE' && replacementFiles\.has\(existingFile\)[\s\S]*?continue/);
+  assert.match(main, /the previous project file will be replaced after verification/);
 });
 
 test('play statistics have a dedicated navigation view backed by recorded sessions', () => {
@@ -865,6 +951,11 @@ test('appearance colors persist and support presets plus a custom picker', () =>
 
 test('wardrobe, screenshot viewer, and sync controls keep their interactive states visible', () => {
   assert.match(main, /textures\.minecraft\.net/);
+  assert.match(main, /mergeCapeInventory\(cachedCapes, profile\.capes\)/);
+  assert.match(main, /'Cache-Control': 'no-cache, no-store'/);
+  assert.match(renderer, /data-refresh-capes/);
+  assert.match(renderer, /Showing your last known owned capes/);
+  assert.match(features, /\.cape-title-actions/);
   assert.match(renderer, /host\.addEventListener\('pointermove'/);
   assert.match(renderer, /new lib\.SkinViewer/);
   assert.match(renderer, /viewer\.controls\.enableRotate = true/);
@@ -876,4 +967,21 @@ test('wardrobe, screenshot viewer, and sync controls keep their interactive stat
   assert.match(features, /\.skin-card-actions \{[^}]*align-items:center/);
   assert.match(features, /\.sync-choice input:checked \+ \.check-visual svg/);
   assert.match(features, /@keyframes wardrobe-fallout/);
+});
+
+test('offline accounts can apply private local skins without changing Microsoft skin behavior', () => {
+  assert.match(main, /prepareOfflineLocalSkin\(instance, authData/);
+  assert.match(main, /CUSTOM_SKIN_LOADER_PROJECT = 'idMHQ4n2'/);
+  assert.match(main, /operation: 'local-skin'/);
+  assert.match(main, /if \(auth\.meta\?\.type === 'offline'\) \{[\s\S]*?setActiveLocalSkin\(library, account, id\)/);
+  assert.match(main, /else await uploadMinecraftSkin\(auth, buffer, record\.variant\)/);
+  assert.match(renderer, /Local skin · visible only to you in supported modded instances/);
+  assert.match(renderer, /toast\(result\?\.message \|\| 'Skin applied'/);
+  assert.match(features, /\.skin-card\.selected\s*\{/);
+});
+
+test('Fabric Loader actions retain their button after the asynchronous confirmation dialog', () => {
+  assert.match(renderer, /changeButton\?\.addEventListener\('click', async event => \{\s*const actionButton = event\.currentTarget;[\s\S]*?await backupConfirmation[\s\S]*?actionButton\.textContent = 'Installing…'/);
+  assert.match(renderer, /\[data-fabric-repair\][\s\S]*?const actionButton = event\.currentTarget;[\s\S]*?await backupConfirmation[\s\S]*?actionButton\.textContent = 'Reinstalling…'/);
+  assert.match(renderer, /\[data-fabric-rollback\][\s\S]*?const actionButton = event\.currentTarget;[\s\S]*?await backupConfirmation[\s\S]*?actionButton\.textContent = 'Rolling back…'/);
 });

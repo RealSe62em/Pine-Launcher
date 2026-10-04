@@ -23,7 +23,7 @@ jobs:
           node-version: 22.12.0
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run check
       - name: Renderer and IPC smoke test (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:smoke -- --no-sandbox

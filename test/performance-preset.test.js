@@ -38,3 +38,9 @@ test('curated presets combine their own utilities with the shared performance ba
   assert.ok(SHARED_PERFORMANCE_MODS.includes('immediatelyfast'));
   assert.deepEqual(presetModsForVersion('unknown', '1.21.11'), []);
 });
+
+test('builder preset includes the curated building tools', () => {
+  const mods = presetModsForVersion('builder', '1.21.11');
+  assert.ok(mods.includes('effortless-building'));
+  assert.ok(mods.includes('axiom'));
+});

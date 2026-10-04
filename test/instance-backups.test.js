@@ -53,6 +53,40 @@ test('world-only restore leaves mods untouched', () => {
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
+test('loader-only restore points replace profiles without copying instance content', () => {
+  const value = fixture();
+  try {
+    fs.mkdirSync(path.join(value.instanceDir, 'versions', 'fabric-old'), { recursive: true });
+    fs.writeFileSync(path.join(value.instanceDir, 'versions', 'fabric-old', 'fabric-old.json'), 'old-profile');
+    const backup = createBackup({ ...value, scope: 'loader', kind: 'automatic', reason: 'Before changing Fabric Loader' });
+    assert.equal(backup.scope, 'loader');
+    assert.ok(backup.bytes < 1024);
+    fs.rmSync(path.join(value.instanceDir, 'versions'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(value.instanceDir, 'versions', 'fabric-new'), { recursive: true });
+    fs.writeFileSync(path.join(value.instanceDir, 'versions', 'fabric-new', 'fabric-new.json'), 'new-profile');
+    fs.writeFileSync(path.join(value.instanceDir, 'mods', 'example.jar'), 'mod-after-backup');
+    restoreBackup({ ...value, id: backup.id });
+    assert.equal(fs.readFileSync(path.join(value.instanceDir, 'versions', 'fabric-old', 'fabric-old.json'), 'utf8'), 'old-profile');
+    assert.equal(fs.existsSync(path.join(value.instanceDir, 'versions', 'fabric-new')), false);
+    assert.equal(fs.readFileSync(path.join(value.instanceDir, 'mods', 'example.jar'), 'utf8'), 'mod-after-backup');
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test('loader-only restore points support instances whose loader profile has not been prepared yet', () => {
+  const value = fixture();
+  try {
+    assert.equal(fs.existsSync(path.join(value.instanceDir, 'versions')), false);
+    const backup = createBackup({ ...value, scope: 'loader', kind: 'automatic', reason: 'Before first loader preparation' });
+    assert.equal(backup.scope, 'loader');
+    assert.equal(backup.files, 0);
+    fs.mkdirSync(path.join(value.instanceDir, 'versions', 'fabric-new'), { recursive: true });
+    fs.writeFileSync(path.join(value.instanceDir, 'versions', 'fabric-new', 'fabric-new.json'), 'new-profile');
+    restoreBackup({ ...value, id: backup.id });
+    assert.equal(fs.existsSync(path.join(value.instanceDir, 'versions', 'fabric-new')), false);
+    assert.equal(fs.existsSync(path.join(value.instanceDir, 'versions')), true);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
 test('automatic retention never removes manual restore points', async () => {
   const value = fixture();
   try {

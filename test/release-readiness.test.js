@@ -33,7 +33,8 @@ test('Windows builds publish GitHub updater metadata and differential packages',
   assert.match(workflow, /latest\.yml' -Pattern '\^path: PineLauncherSetup-x64\\\.exe\$'/);
   assert.match(workflow, /latest-arm64\.yml' -Pattern '\^path: PineLauncherSetup-arm64\\\.exe\$'/);
   assert.match(workflow, /ALLOW_UNSIGNED_WINDOWS_RELEASES/);
-  assert.match(workflow, /github\.ref_name.*-ne 'v1\.2\.8'/);
+  assert.match(workflow, /ALLOW_UNSIGNED_WINDOWS_RELEASES" -ne 'true'/);
+  assert.doesNotMatch(workflow, /github\.ref_name.*-ne 'v1\.2\.8'/);
   assert.match(workflow, /steps\.windows-signing\.outputs\.enabled == 'true'/);
   assert.match(workflow, /Publishing explicitly approved unsigned Windows installers/);
 });
@@ -60,14 +61,23 @@ test('Linux windows and packages share the Pine taskbar identity and icon', () =
   }
 });
 
-test('website fallbacks point at every 1.2.8 native installer', () => {
-  assert.match(website, /data-release-version>1\.2\.8</);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.8\/PineLauncher-1\.2\.8-archlinux-x64\.pacman/);
-  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.8'/);
+test('website fallbacks point at every 1.2.9 native installer', () => {
+  assert.match(website, /data-release-version>1\.2\.9</);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-archlinux-x64\.pacman/);
+  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.9'/);
   assert.match(websiteScript, /Object\.values\(names\)\.some\(name => !assets\.get\(name\)\?\.browser_download_url\)/);
-  assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.3/);
+  assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.8/);
+});
+
+test('website uses one searchable Linux distro picker', () => {
+  assert.equal((website.match(/class="button secondary large linux-picker-trigger"/g) || []).length, 1);
+  assert.match(website, /data-linux-search/);
+  assert.match(website, /Debian[\s\S]*Ubuntu[\s\S]*Linux Mint[\s\S]*Pop!_OS/);
+  assert.match(website, /Arch Linux[\s\S]*Manjaro[\s\S]*EndeavourOS[\s\S]*CachyOS/);
+  assert.match(websiteScript, /function setLinuxPickerOpen\(open\)/);
+  assert.match(websiteScript, /row\.dataset\.search\.includes\(query\)/);
 });

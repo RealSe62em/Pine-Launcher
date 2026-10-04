@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { beginContentInstall, queueContentInstall, applyContentInstalls } = require('../lib/content-install');
+const { beginContentInstall, queueContentInstall, applyContentInstalls, pendingContentInstalls } = require('../lib/content-install');
 const instance = { gameVersion: '1.21.1', loader: 'fabric' };
 
 function fixture(t) {
@@ -68,4 +68,57 @@ test('multiple queued installs merge metadata instead of losing previous entries
   queue(root, 'two.jar');
   assert.equal(applyContentInstalls(root, instance), 2);
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'mods_meta.json')))).sort(), ['one.jar', 'two.jar']);
+});
+
+test('mod updates replace the previous file and stale metadata instead of creating a disabled duplicate', t => {
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, 'mods_meta.json'), JSON.stringify({
+    'old.jar': { projectId: 'same-project', installedVersion: 'old-version' },
+  }));
+  fs.writeFileSync(path.join(root, 'content_meta.json'), JSON.stringify({
+    'mod:old.jar': { projectId: 'same-project', installedVersion: 'old-version' },
+  }));
+  const staging = beginContentInstall(root);
+  fs.mkdirSync(path.join(staging, 'mods'));
+  fs.writeFileSync(path.join(staging, 'mods', 'new.jar'), 'verified update');
+  queueContentInstall(root, staging, {
+    ...instance,
+    files: ['mods/new.jar'],
+    removeFiles: ['mods/old.jar'],
+    metadata: {
+      'mods_meta.json': { 'new.jar': { projectId: 'same-project', installedVersion: 'new-version' } },
+      'content_meta.json': { 'mod:new.jar': { projectId: 'same-project', installedVersion: 'new-version' } },
+    },
+  });
+
+  assert.deepEqual(pendingContentInstalls(root)[0].projectIds, ['same-project']);
+  applyContentInstalls(root, instance);
+  assert.equal(fs.existsSync(path.join(root, 'mods/old.jar')), false);
+  assert.equal(fs.existsSync(path.join(root, 'mods/old.jar.disabled')), false);
+  assert.equal(fs.readFileSync(path.join(root, 'mods/new.jar'), 'utf8'), 'verified update');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'mods_meta.json'))), {
+    'new.jar': { projectId: 'same-project', installedVersion: 'new-version' },
+  });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'content_meta.json'))), {
+    'mod:new.jar': { projectId: 'same-project', installedVersion: 'new-version' },
+  });
+});
+
+test('same-project installs automatically replace older filenames even without an explicit replacement list', t => {
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, 'mods_meta.json'), JSON.stringify({
+    'old.jar': { projectId: 'same-project', installedVersion: 'old-version' },
+  }));
+  const staging = beginContentInstall(root);
+  fs.mkdirSync(path.join(staging, 'mods'));
+  fs.writeFileSync(path.join(staging, 'mods', 'new.jar'), 'verified update');
+  queueContentInstall(root, staging, {
+    ...instance,
+    files: ['mods/new.jar'],
+    metadata: { 'mods_meta.json': { 'new.jar': { projectId: 'same-project', installedVersion: 'new-version' } } },
+  });
+
+  applyContentInstalls(root, instance);
+  assert.equal(fs.existsSync(path.join(root, 'mods/old.jar')), false);
+  assert.equal(fs.existsSync(path.join(root, 'mods/old.jar.disabled')), false);
 });

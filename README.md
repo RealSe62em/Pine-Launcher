@@ -11,7 +11,7 @@
 
 Pine Launcher is a Windows and Linux Minecraft launcher with isolated instances, Microsoft and offline accounts, Modrinth content management, verified shared caching, and an iOS-inspired glass interface.
 
-Windows 10/11, Debian-based Linux distributions, and Arch Linux are supported.
+Windows 10/11, Debian-family Linux distributions, and Arch-family Linux distributions are supported. The website’s searchable Linux picker maps supported distributions to the matching DEB or Pacman installer.
 
 ## Download and install
 
@@ -22,13 +22,13 @@ Windows 10/11, Debian-based Linux distributions, and Arch Linux are supported.
 3. On Debian, Ubuntu, Linux Mint, or another Debian-based distribution, install the x64 package:
 
 ```bash
-sudo apt install ./PineLauncher-1.2.8-linux-amd64.deb
+sudo apt install ./PineLauncher-*-linux-amd64.deb
 ```
 
 4. On Arch Linux, install the native x64 package:
 
 ```bash
-sudo pacman -U ./PineLauncher-1.2.8-archlinux-x64.pacman
+sudo pacman -U ./PineLauncher-*-archlinux-x64.pacman
 ```
 
 Then open Pine Launcher from the application menu or run `pine-launcher`.

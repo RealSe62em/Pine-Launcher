@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listGroups: () => ipcRenderer.invoke('list-groups'),
   createGroup: (name) => ipcRenderer.invoke('create-group', name),
   deleteGroup: (name) => ipcRenderer.invoke('delete-group', name),
+  reorderGroupInstances: (name, instanceNames) => ipcRenderer.invoke('reorder-group-instances', name, instanceNames),
   deleteInstance: (name) => ipcRenderer.invoke('delete-instance', name),
   updateInstance: (name, data) => ipcRenderer.invoke('update-instance', name, data),
   listInstanceBackups: (name) => ipcRenderer.invoke('list-instance-backups', name),

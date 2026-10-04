@@ -323,7 +323,7 @@
         <div id="library-group-context" class="library-group-context" hidden></div>
         <section id="library-groups-section" class="library-groups-section" hidden>
           <div class="library-section-heading">
-            <div><h2>Groups</h2><p>Keep related instances together.</p></div>
+            <div><h2>Groups</h2><p>Drag an instance onto a group to move it.</p></div>
           </div>
           <div id="library-groups-grid" class="library-groups-grid"></div>
         </section>
@@ -654,88 +654,91 @@
     </div>
   </div>
 
-  <!-- EDIT INSTANCE SHEET ────────────────────────────────── -->
-  <div id="edit-sheet-root" class="sheet-root" hidden role="dialog" aria-modal="true" aria-labelledby="edit-sheet-title">
-    <div class="sheet">
-      <div class="sheet-header">
-        <h2 id="edit-sheet-title" class="sheet-title">Instance Settings</h2>
+  <!-- INSTANCE SETTINGS POPUP ─────────────────────────────── -->
+  <div id="edit-sheet-root" class="sheet-root instance-settings-root" hidden role="dialog" aria-modal="true" aria-labelledby="edit-sheet-title" aria-describedby="edit-sheet-subtitle">
+    <div class="sheet instance-settings-popup">
+      <div class="sheet-header instance-settings-header">
+        <div class="instance-settings-heading">
+          <span class="instance-settings-heading-icon" aria-hidden="true"><svg><use href="#i-settings"/></svg></span>
+          <span>
+            <h2 id="edit-sheet-title" class="sheet-title">Instance settings</h2>
+            <p id="edit-sheet-subtitle">Personalize this instance and manage its files.</p>
+          </span>
+        </div>
         <button class="modal-close" type="button" id="edit-sheet-close" aria-label="Close">
           <svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg>
         </button>
       </div>
       <div class="sheet-body" id="edit-sheet-body">
-        <div class="form-row">
-          <label for="edit-name">Instance name</label>
-          <input id="edit-name" class="input" autocomplete="off">
-        </div>
-        <div class="form-grid-2">
-          <div class="form-row"><label for="edit-group">Group <span class="text-muted">(optional)</span></label><select id="edit-group" class="input"><option value="">No group</option></select></div>
-          <div class="form-row"><label for="edit-tags">Tags</label><input id="edit-tags" class="input" maxlength="240" placeholder="performance, friends"></div>
-        </div>
-        <div class="form-row form-grid-2 upload-grid">
-          <div class="upload-field">
-            <div class="upload-area" id="edit-icon-upload">
-              <input type="file" id="edit-icon" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
-              <div class="upload-placeholder">
-                <svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 0 1 2.828 0L16 16m-2-2l1.586-1.586a2 2 0 0 1 2.828 0L20 14m-6-6h.01M6 20h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
-                <span>Icon image</span>
-              </div>
-              <div class="upload-preview" id="edit-icon-preview" hidden></div>
+        <section class="instance-settings-section">
+          <div class="instance-settings-section-head"><span>Identity</span><small>How this instance appears in your library</small></div>
+          <div class="instance-settings-section-body">
+            <div class="form-row">
+              <label for="edit-name">Instance name</label>
+              <input id="edit-name" class="input" autocomplete="off">
+            </div>
+            <div class="form-grid-2">
+              <div class="form-row"><label for="edit-group">Group <span class="text-muted">(optional)</span></label><select id="edit-group" class="input"><option value="">No group</option></select></div>
+              <div class="form-row"><label for="edit-tags">Tags</label><input id="edit-tags" class="input" maxlength="240" placeholder="performance, friends"></div>
             </div>
           </div>
-          <div class="upload-field">
-            <div class="upload-area" id="edit-banner-upload">
-              <input type="file" id="edit-banner" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
-              <div class="upload-placeholder">
-                <svg width="24" height="24" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"></rect><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"></circle></svg>
-                <span>Banner image</span>
+        </section>
+        <section class="instance-settings-section">
+          <div class="instance-settings-section-head"><span>Artwork</span><small>Choose an icon and wide library banner</small></div>
+          <div class="instance-settings-section-body">
+            <div class="form-row form-grid-2 upload-grid">
+              <div class="upload-field">
+                <span class="instance-upload-label">Icon</span>
+                <div class="upload-area" id="edit-icon-upload">
+                  <input type="file" id="edit-icon" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+                  <div class="upload-placeholder">
+                    <svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 0 1 2.828 0L16 16m-2-2l1.586-1.586a2 2 0 0 1 2.828 0L20 14m-6-6h.01M6 20h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z" fill="none" stroke="currentColor" stroke-width="2"></path></svg>
+                    <span>Choose icon</span><small>Square images work best</small>
+                  </div>
+                  <div class="upload-preview" id="edit-icon-preview" hidden></div>
+                </div>
               </div>
-              <div class="upload-preview" id="edit-banner-preview" hidden></div>
-            </div>
-            <div class="blur-dir" id="edit-blur-dir-wrap" hidden>
-              <label class="blur-dir-label">Blur direction</label>
-              <div class="blur-dir-options">
-                <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="left" checked><span>Left</span></label>
-                <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="right"><span>Right</span></label>
-                <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="none"><span>None</span></label>
+              <div class="upload-field">
+                <span class="instance-upload-label">Banner</span>
+                <div class="upload-area" id="edit-banner-upload">
+                  <input type="file" id="edit-banner" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+                  <div class="upload-placeholder">
+                    <svg width="24" height="24" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"></rect><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"></circle></svg>
+                    <span>Choose banner</span><small>Wide images work best</small>
+                  </div>
+                  <div class="upload-preview" id="edit-banner-preview" hidden></div>
+                </div>
+                <div class="blur-dir" id="edit-blur-dir-wrap" hidden>
+                  <label class="blur-dir-label">Fade direction</label>
+                  <div class="blur-dir-options">
+                    <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="left" checked><span>Left</span></label>
+                    <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="right"><span>Right</span></label>
+                    <label class="blur-dir-opt"><input type="radio" name="edit-blur-dir" value="none"><span>None</span></label>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        <div class="form-row">
-          <label>Instance folder</label>
-          <div class="sheet-folder-row">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5z"/></svg>
-            <span id="edit-folder-path"></span>
-            <button class="btn-icon" id="edit-open-folder" type="button" title="Open instance folder" aria-label="Open instance folder">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 18V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M14 15h7m-3-3 3 3-3 3"/><path d="M3 18h11"/>
-              </svg>
-            </button>
-            <button class="btn-icon" id="edit-copy-path" type="button" title="Copy path" aria-label="Copy instance folder path">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            </button>
+        </section>
+        <section class="instance-settings-section">
+          <div class="instance-settings-section-head"><span>Storage</span><small>Open or copy this instance's local folder</small></div>
+          <div class="instance-settings-section-body">
+            <div class="sheet-folder-row">
+              <span class="instance-folder-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5z"/></svg></span>
+              <span id="edit-folder-path"></span>
+              <button class="btn-icon" id="edit-open-folder" type="button" title="Open instance folder" aria-label="Open instance folder"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M14 15h7m-3-3 3 3-3 3"/><path d="M3 18h11"/></svg></button>
+              <button class="btn-icon" id="edit-copy-path" type="button" title="Copy path" aria-label="Copy instance folder path"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            </div>
           </div>
-        </div>
+        </section>
       </div>
-      <div class="sheet-footer">
-        <div class="sheet-action-dock" aria-label="Instance actions">
-        <button class="sheet-action sheet-action-danger" type="button" id="edit-sheet-delete">
-          <svg aria-hidden="true"><use href="#i-trash"/></svg><span>Delete</span>
-        </button>
-        <button class="sheet-action" type="button" id="edit-sheet-duplicate">
-          <svg aria-hidden="true"><use href="#i-copy"/></svg><span>Duplicate</span>
-        </button>
-        <button class="sheet-action" type="button" id="edit-sheet-export">
-          <svg aria-hidden="true"><use href="#i-download"/></svg><span>Export</span>
-        </button>
-        <button class="sheet-action" type="button" id="edit-sheet-cancel">
-          <svg aria-hidden="true"><use href="#i-x"/></svg><span>Cancel</span>
-        </button>
-        <button class="sheet-action sheet-action-primary" type="button" id="edit-sheet-save">
-          <svg aria-hidden="true"><use href="#i-check"/></svg><span>Save</span>
-        </button>
-        <div class="sheet-action-indicator" aria-hidden="true"></div>
+      <div class="sheet-footer instance-settings-footer">
+        <button class="btn btn-ghost instance-settings-delete" type="button" id="edit-sheet-delete"><svg aria-hidden="true"><use href="#i-trash"/></svg><span>Delete instance</span></button>
+        <div class="instance-settings-footer-actions">
+          <button class="btn btn-ghost" type="button" id="edit-sheet-duplicate"><svg aria-hidden="true"><use href="#i-copy"/></svg><span>Duplicate</span></button>
+          <button class="btn btn-ghost" type="button" id="edit-sheet-export"><svg aria-hidden="true"><use href="#i-download"/></svg><span>Export</span></button>
+          <button class="btn btn-secondary" type="button" id="edit-sheet-cancel">Cancel</button>
+          <button class="btn btn-primary" type="button" id="edit-sheet-save"><svg aria-hidden="true"><use href="#i-check"/></svg><span>Save changes</span></button>
         </div>
       </div>
     </div>

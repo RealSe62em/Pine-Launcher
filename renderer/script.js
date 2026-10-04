@@ -5,6 +5,9 @@
 import { tweenNumber, formatBytes, formatDuration, escHtml, debounce, stagger, pulseOnce, successRing, toast } from './animations.js';
 import { initFeatures, previewPackUpdate } from './features.js';
 import { classifyLine, stageLabel, shortFile, parseDownloadLine } from './launch-stages.js';
+import { bindAccessibleLayers as bindAccessibleLayerBehavior } from './accessibility.js';
+import { bindWindowChrome as bindWindowChromeBehavior } from './window-chrome.js';
+import { bindMemoryRange as bindMemoryRangeBehavior, memoryRangeMarkup as buildMemoryRangeMarkup } from './memory-range.js';
 
 const api = window.electronAPI;
 document.documentElement.dataset.platform = api?.platform || 'unknown';
@@ -173,26 +176,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   await consumeDesktopShortcut();
 });
 
-function setWindowMaximized(maximized) {
-  const button = document.querySelector('[data-window-action="maximize"]');
-  if (!button) return;
-  button.dataset.maximized = String(Boolean(maximized));
-  button.setAttribute('aria-label', maximized ? 'Restore window' : 'Maximize');
-  button.title = maximized ? 'Restore window' : 'Maximize';
-}
-
 function bindWindowChrome() {
-  document.querySelectorAll('[data-window-action]').forEach(button => {
-    button.addEventListener('click', async () => {
-      try {
-        const result = await api.windowControl(button.dataset.windowAction);
-        if (button.dataset.windowAction === 'maximize') setWindowMaximized(result?.maximized);
-      } catch (error) {
-        console.error('Window control failed:', error);
-      }
-    });
-  });
-  api.onWindowMaximizedChanged?.(setWindowMaximized);
+  bindWindowChromeBehavior(api);
 }
 
 function loadStoredActivities() {
@@ -294,6 +279,7 @@ function activityIcon(activity) {
   if (activity.status === 'failed' || activity.status === 'cancelled') return '<path d="M12 8v5m0 3h.01"/><path d="M10.3 3.9 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>';
   if (activity.kind === 'instance') return '<path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/>';
   if (activity.kind === 'java') return '<path d="M8 18h8M9 14h6l1-8H8z"/><path d="M10 3c1 1 3 1 3 3"/>';
+  if (activity.kind === 'loader') return '<path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/><circle cx="12" cy="12" r="4"/>';
   return '<path d="M12 3v12m-4-4 4 4 4-4"/><path d="M5 19h14"/>';
 }
 
@@ -389,6 +375,15 @@ function handleInstallActivity(update = {}) {
     return;
   }
   const status = done ? 'done' : update.phase === 'failed' ? 'failed' : 'active';
+  if (update.operation === 'fabric-loader') {
+    const action = ['repair', 'rollback', 'downgrade'].includes(update.action) ? update.action : 'update';
+    const actionLabel = action === 'repair' ? 'Reinstalling' : action === 'rollback' ? 'Rolling back' : action === 'downgrade' ? 'Downgrading' : 'Updating';
+    const doneLabel = action === 'repair' ? 'Reinstalled' : action === 'rollback' ? 'Rolled back' : action === 'downgrade' ? 'Downgraded' : 'Updated';
+    const id = channelActivityId(`fabric-loader:${instanceName}`, status);
+    const title = done ? `Fabric Loader ${update.version || ''} ready in ${instanceName}` : status === 'failed' ? `Fabric Loader change failed in ${instanceName}` : `${actionLabel} Fabric Loader in ${instanceName}`;
+    upsertActivity({ id, kind: 'loader', title, detail: update.message || `${actionLabel} Fabric Loader`, status, progress: update.percent, doneLabel, activeLabel: actionLabel });
+    return;
+  }
   const id = channelActivityId(`install:${instanceName}`, status);
   upsertActivity({ id, kind: 'install', title: `Installing into ${instanceName}`, detail: update.message || 'Preparing content', status, progress: update.percent, doneLabel: 'Installed', items: update.items });
 }
@@ -455,89 +450,11 @@ function emptyStateMarkup(title, copy, icon = 'i-info') {
   return `<div class="empty-state empty-state-compact"><div class="empty-state-icon"><svg width="22" height="22" aria-hidden="true"><use href="#${icon}"/></svg></div><div class="empty-state-title">${escHtml(title)}</div>${copy ? `<div class="empty-state-sub">${escHtml(copy)}</div>` : ''}</div>`;
 }
 
-const layerFocus = new WeakMap();
-function layerIsOpen(layer) {
-  return layer?.matches('.modal-root.visible:not([hidden]), .sheet-root.visible:not([hidden])');
-}
-function focusableIn(layer) {
-  return [...layer.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
-    .filter(element => element.getClientRects().length > 0 && !element.hidden);
-}
-function prepareAccessibleLayer(layer) {
-  if (!layerIsOpen(layer) || layerFocus.get(layer)?.active) return;
-  const panel = layer.querySelector('.modal, .sheet');
-  if (panel) {
-    if (!panel.hasAttribute('role')) panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-modal', 'true');
-    const title = panel.querySelector('.modal-title, .sheet-title');
-    if (title && !panel.hasAttribute('aria-labelledby')) {
-      if (!title.id) title.id = `pine-dialog-title-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      panel.setAttribute('aria-labelledby', title.id);
-    }
-  }
-  layer.querySelectorAll('.modal-close:not([aria-label])')
-    .forEach(button => button.setAttribute('aria-label', 'Close dialog'));
-  layerFocus.set(layer, { active: true, previous: document.activeElement });
-  requestAnimationFrame(() => {
-    const preferred = layer.querySelector('[autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), .btn-primary:not([disabled]), .modal-close:not([disabled])');
-    preferred?.focus?.();
-  });
-}
-function releaseAccessibleLayer(layer) {
-  const state = layerFocus.get(layer);
-  if (!state?.active) return;
-  layerFocus.set(layer, { ...state, active: false });
-  if (state.previous?.isConnected) requestAnimationFrame(() => state.previous.focus?.());
-}
-function topOpenLayer() {
-  return [...document.querySelectorAll('.modal-root.visible:not([hidden]), .sheet-root.visible:not([hidden])')]
-    .sort((a, b) => (Number.parseInt(getComputedStyle(a).zIndex, 10) || 0) - (Number.parseInt(getComputedStyle(b).zIndex, 10) || 0)).at(-1);
-}
-function closeAccessibleLayer(layer) {
-  if (!layer) return;
-  if (layer.id === 'modal-overlay') return closeModal();
-  if (layer.id === 'edit-sheet-root') return $('edit-sheet-cancel')?.click();
-  const close = layer.querySelector('[data-close], [data-cancel], #confirm-cancel, .modal-close');
-  if (close) close.click();
-}
 function bindAccessibleLayers() {
-  document.querySelectorAll('.modal-root, .sheet-root').forEach(prepareAccessibleLayer);
-  const observer = new MutationObserver(records => {
-    records.forEach(record => {
-      if (record.type === 'attributes') {
-        if (layerIsOpen(record.target)) prepareAccessibleLayer(record.target);
-        else releaseAccessibleLayer(record.target);
-      }
-      record.addedNodes.forEach(node => {
-        if (!(node instanceof Element)) return;
-        if (node.matches('.modal-root, .sheet-root')) prepareAccessibleLayer(node);
-        node.querySelectorAll?.('.modal-root, .sheet-root').forEach(prepareAccessibleLayer);
-      });
-      record.removedNodes.forEach(node => {
-        if (!(node instanceof Element)) return;
-        if (node.matches('.modal-root, .sheet-root')) releaseAccessibleLayer(node);
-        node.querySelectorAll?.('.modal-root, .sheet-root').forEach(releaseAccessibleLayer);
-      });
-    });
+  bindAccessibleLayerBehavior({
+    closeMainModal: closeModal,
+    cancelEditSheet: () => $('edit-sheet-cancel')?.click(),
   });
-  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden'] });
-  document.addEventListener('keydown', event => {
-    const layer = topOpenLayer();
-    if (!layer) return;
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      closeAccessibleLayer(layer);
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const focusable = focusableIn(layer);
-    if (!focusable.length) return event.preventDefault();
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-  }, true);
 }
 
 function bindTabKeys(host, selector) {
@@ -566,47 +483,11 @@ function memoryToGigabytes(value, fallback) {
   return (match[2] || 'G').toUpperCase() === 'M' ? Math.max(1, Math.round(amount / 1024)) : amount;
 }
 function memoryRangeMarkup(prefix, minValue, maxValue) {
-  const currentMin = Math.min(128, Math.max(1, Number(minValue) || 1));
-  const currentMax = Math.min(128, Math.max(currentMin, Number(maxValue) || currentMin));
-  const limit = Math.min(128, Math.max(8, Number(state.systemMemoryGb) || 16, currentMax));
-  const position = value => ((value - 1) / Math.max(1, limit - 1)) * 100;
-  return `<div class="settings-row settings-row-col memory-range-row"><label>Memory allocation</label><div class="memory-range-control" data-memory-range="${prefix}" style="--memory-min:${position(currentMin)};--memory-max:${position(currentMax)}">
-    <div class="memory-range-labels" aria-hidden="true"><output class="memory-handle-label memory-min-label" data-memory-min-label><b>Min</b><span>${currentMin} GB</span></output><output class="memory-handle-label memory-max-label" data-memory-max-label><b>Max</b><span>${currentMax} GB</span></output></div>
-    <div class="memory-range-track" aria-hidden="true"><i></i></div>
-    <input id="${prefix}-min-mem" class="memory-range-input memory-range-input-min" type="range" min="1" max="${limit}" step="1" value="${currentMin}" aria-label="Minimum Java memory in gigabytes">
-    <input id="${prefix}-max-mem" class="memory-range-input memory-range-input-max" type="range" min="1" max="${limit}" step="1" value="${currentMax}" aria-label="Maximum Java memory in gigabytes">
-    <div class="memory-range-scale" aria-hidden="true"><span>1 GB</span><span>${limit} GB${limit === state.systemMemoryGb ? ' installed' : ''}</span></div>
-  </div></div>`;
+  return buildMemoryRangeMarkup(prefix, minValue, maxValue, state.systemMemoryGb);
 }
 
 function bindMemoryRange(prefix) {
-  const control = document.querySelector(`[data-memory-range="${prefix}"]`);
-  const minInput = $(`${prefix}-min-mem`);
-  const maxInput = $(`${prefix}-max-mem`);
-  if (!control || !minInput || !maxInput) return;
-  const sync = changed => {
-    let min = Number(minInput.value);
-    let max = Number(maxInput.value);
-    if (min > max) {
-      if (changed === minInput) { max = min; maxInput.value = String(max); }
-      else { min = max; minInput.value = String(min); }
-    }
-    const limit = Number(minInput.max) || 128;
-    const position = value => ((value - 1) / Math.max(1, limit - 1)) * 100;
-    control.style.setProperty('--memory-min', String(position(min)));
-    control.style.setProperty('--memory-max', String(position(max)));
-    control.classList.toggle('handles-close', Math.abs(position(max) - position(min)) < 18);
-    const minLabel = control.querySelector('[data-memory-min-label] span');
-    const maxLabel = control.querySelector('[data-memory-max-label] span');
-    if (minLabel) minLabel.textContent = `${min} GB`;
-    if (maxLabel) maxLabel.textContent = `${max} GB`;
-  };
-  minInput.addEventListener('input', () => sync(minInput));
-  maxInput.addEventListener('input', () => sync(maxInput));
-  minInput.addEventListener('pointerdown', () => control.classList.add('dragging-min'));
-  maxInput.addEventListener('pointerdown', () => control.classList.add('dragging-max'));
-  for (const input of [minInput, maxInput]) input.addEventListener('pointerup', () => control.classList.remove('dragging-min', 'dragging-max'));
-  sync();
+  bindMemoryRangeBehavior(prefix);
 }
 function staggerInto(els) { els.forEach((el, i) => el.style.setProperty('--i', i)); }
 
@@ -993,7 +874,10 @@ function bindTabBar() {
   });
 
   document.querySelectorAll('.tabbar-item[data-view]').forEach((btn) => {
-    btn.addEventListener('click', () => switchView(btn.dataset.view));
+    btn.addEventListener('click', () => {
+      if (btn.dataset.view === 'library') state.activeLibraryGroup = null;
+      switchView(btn.dataset.view);
+    });
   });
 
   $('content-search')?.addEventListener('input', debounce(renderContentList, 80));
@@ -1017,7 +901,8 @@ function bindTabBar() {
     try {
       for (let index = 0; index < updates.length; index++) {
         const update = updates[index];
-        const mod = cachedMods.find(item => item.projectId === update.projectId);
+        const mod = cachedMods.find(item => item.filename === update.filename)
+          || cachedMods.find(item => item.projectId === update.projectId && !item.disabled);
         if (!mod) continue;
         button.textContent = `Updating ${index + 1} of ${updates.length}`;
         await updateMod(state.currentInstance, mod);
@@ -1915,7 +1800,7 @@ function renderRecentCard(inst) {
   </div>`;
 }
 
-function renderInstanceCard(inst) {
+function renderInstanceCard(inst, { showMoveOut = false } = {}) {
   const initial = (inst.name || '?')[0].toUpperCase();
   const sub = `${inst.loader || 'vanilla'} ${inst.gameVersion || ''}`;
   const isLaunching = state.launchingName === inst.name;
@@ -1953,7 +1838,8 @@ function renderInstanceCard(inst) {
         : `<button class="btn btn-primary btn-sm" data-act="play">
              <svg width="12" height="12" aria-hidden="true"><use href="#i-play"/></svg> Play
            </button>
-           <button class="btn btn-secondary btn-sm" data-act="open">Open</button>`
+           <button class="btn btn-secondary btn-sm" data-act="open">Open</button>
+           ${showMoveOut ? '<button class="btn btn-ghost btn-sm instance-move-out" data-act="move-out" type="button"><svg width="12" height="12" aria-hidden="true"><use href="#i-chevron-left"/></svg>Move out of group</button>' : ''}`
       }
     </div>
   </div>`;
@@ -1971,6 +1857,16 @@ function sortLibraryInstances(instances) {
   });
 }
 
+function sortGroupInstances(instances) {
+  return [...instances].sort((a, b) => {
+    const aOrdered = Number.isInteger(a.groupOrder);
+    const bOrdered = Number.isInteger(b.groupOrder);
+    if (aOrdered !== bOrdered) return aOrdered ? -1 : 1;
+    if (aOrdered && a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder;
+    return new Date(a.created || 0) - new Date(b.created || 0) || a.name.localeCompare(b.name);
+  });
+}
+
 function renderGroupTile(instance, index, extraCount = 0) {
   if (extraCount > 0) return `<span class="group-mosaic-tile group-mosaic-more"><b>+${extraCount}</b><small>more</small></span>`;
   if (!instance) return '<span class="group-mosaic-tile group-mosaic-empty"><svg aria-hidden="true"><use href="#i-folder"/></svg></span>';
@@ -1979,7 +1875,7 @@ function renderGroupTile(instance, index, extraCount = 0) {
 }
 
 function renderGroupCard(group) {
-  const members = sortLibraryInstances(state.instances.filter(instance => String(instance.group || '').toLowerCase() === group.name.toLowerCase()));
+  const members = sortGroupInstances(state.instances.filter(instance => String(instance.group || '').toLowerCase() === group.name.toLowerCase()));
   const tiles = members.length > 4
     ? [renderGroupTile(members[0], 0), renderGroupTile(members[1], 1), renderGroupTile(members[2], 2), renderGroupTile(null, 3, members.length - 3)]
     : Array.from({ length: 4 }, (_, index) => renderGroupTile(members[index], index));
@@ -1994,10 +1890,215 @@ function renderGroupCard(group) {
   </article>`;
 }
 
-function bindLibraryInstanceCards(grid) {
+const LIBRARY_INSTANCE_DRAG_TYPE = 'application/x-pine-library-instance';
+let libraryDraggedInstance = null;
+let libraryDragFinishedAt = 0;
+let libraryPointerDrag = null;
+
+function clearLibraryDropState({ preserveBusy = false } = {}) {
+  document.documentElement.classList.remove('library-instance-dragging');
+  document.querySelectorAll('.group-card.library-drop-target, .group-card.library-drop-busy').forEach(card => {
+    card.classList.remove('library-drop-target');
+    if (!preserveBusy) card.classList.remove('library-drop-busy');
+  });
+  document.querySelectorAll('.instance-card.library-reorder-before, .instance-card.library-reorder-after').forEach(card => {
+    card.classList.remove('library-reorder-before', 'library-reorder-after');
+  });
+}
+
+async function moveLibraryInstanceToGroup(instanceName, groupName, groupCard) {
+  const instance = state.instances.find(item => item.name === instanceName);
+  if (!instance || !groupName) return clearLibraryDropState();
+  if (String(instance.group || '').toLowerCase() === groupName.toLowerCase()) {
+    clearLibraryDropState();
+    return void toast(`${instance.name} is already in ${groupName}`, 'info');
+  }
+  groupCard?.classList.remove('library-drop-target');
+  groupCard?.classList.add('library-drop-busy');
+  try {
+    await api.updateInstance(instance.name, { group: groupName });
+    libraryDraggedInstance = null;
+    await loadInstances();
+    toast(`Moved ${instance.name} to ${groupName}`, 'success');
+  } catch (error) {
+    clearLibraryDropState();
+    toast(`Could not move ${instance.name}: ${error.message || error}`, 'error');
+  }
+}
+
+function positionLibraryDragPreview(drag, clientX, clientY) {
+  drag.preview.style.left = `${clientX - drag.offsetX}px`;
+  drag.preview.style.top = `${clientY - drag.offsetY}px`;
+}
+
+function updateLibraryPointerDropTarget(clientX, clientY) {
+  const target = document.elementFromPoint(clientX, clientY)?.closest('.group-card');
+  document.querySelectorAll('.group-card.library-drop-target').forEach(card => card.classList.toggle('library-drop-target', card === target));
+  return target;
+}
+
+function updateGroupReorderTarget(clientX, clientY, sourceCard) {
+  const card = document.elementFromPoint(clientX, clientY)?.closest('#library-grid .instance-card');
+  document.querySelectorAll('.instance-card.library-reorder-before, .instance-card.library-reorder-after').forEach(item => {
+    item.classList.remove('library-reorder-before', 'library-reorder-after');
+  });
+  if (!card || card === sourceCard) return null;
+  const rect = card.getBoundingClientRect();
+  const sameRow = Math.abs(clientY - (rect.top + rect.height / 2)) < rect.height * .42;
+  const after = sameRow ? clientX > rect.left + rect.width / 2 : clientY > rect.top + rect.height / 2;
+  card.classList.add(after ? 'library-reorder-after' : 'library-reorder-before');
+  return { card, name: card.dataset.name, after };
+}
+
+async function persistGroupInstanceOrder(groupName, sourceName, target) {
+  if (!target?.name || target.name === sourceName) return;
+  const members = sortGroupInstances(state.instances.filter(instance => String(instance.group || '').toLowerCase() === groupName.toLowerCase()));
+  const order = members.map(instance => instance.name).filter(name => name !== sourceName);
+  const targetIndex = order.indexOf(target.name);
+  if (targetIndex < 0) return;
+  order.splice(targetIndex + (target.after ? 1 : 0), 0, sourceName);
+  try {
+    await api.reorderGroupInstances(groupName, order);
+    await loadInstances();
+    toast(`Updated ${groupName} order`, 'success');
+  } catch (error) {
+    clearLibraryDropState();
+    toast(`Could not reorder ${groupName}: ${error.message || error}`, 'error');
+  }
+}
+
+function beginLibraryPointerDrag(card, name, event, pending) {
+  const preview = card.cloneNode(true);
+  preview.className = `${card.className} library-drag-preview`;
+  preview.removeAttribute('data-name');
+  preview.removeAttribute('draggable');
+  preview.querySelectorAll('button').forEach(button => button.setAttribute('tabindex', '-1'));
+  preview.style.width = `${pending.rect.width}px`;
+  preview.style.height = `${pending.rect.height}px`;
+  document.body.appendChild(preview);
+  libraryPointerDrag = { ...pending, card, name, preview, active: true };
+  libraryDraggedInstance = name;
+  card.classList.add('is-dragging');
+  document.documentElement.classList.add('library-instance-dragging');
+  positionLibraryDragPreview(libraryPointerDrag, event.clientX, event.clientY);
+  if (libraryPointerDrag.mode === 'reorder') updateGroupReorderTarget(event.clientX, event.clientY, card);
+  else updateLibraryPointerDropTarget(event.clientX, event.clientY);
+}
+
+function finishLibraryPointerDrag(event, cancelled = false) {
+  const drag = libraryPointerDrag;
+  if (!drag) return;
+  const target = !cancelled && drag.active
+    ? drag.mode === 'reorder'
+      ? updateGroupReorderTarget(event.clientX, event.clientY, drag.card)
+      : updateLibraryPointerDropTarget(event.clientX, event.clientY)
+    : null;
+  libraryDragFinishedAt = drag.active ? Date.now() : libraryDragFinishedAt;
+  drag.preview?.remove();
+  drag.card?.classList.remove('is-dragging');
+  libraryPointerDrag = null;
+  libraryDraggedInstance = null;
+  clearLibraryDropState({ preserveBusy: Boolean(target) && drag.mode !== 'reorder' });
+  if (target && drag.mode === 'reorder') void persistGroupInstanceOrder(drag.groupName, drag.name, target);
+  else if (target) void moveLibraryInstanceToGroup(drag.name, target.dataset.group, target);
+}
+
+function bindLibraryGroupDropTargets(groupsGrid) {
+  groupsGrid.querySelectorAll('.group-card').forEach(card => {
+    card.addEventListener('dragenter', event => {
+      if (!libraryDraggedInstance || state.librarySelectionMode) return;
+      event.preventDefault();
+      groupsGrid.querySelectorAll('.group-card.library-drop-target').forEach(item => item.classList.remove('library-drop-target'));
+      card.classList.add('library-drop-target');
+    });
+    card.addEventListener('dragover', event => {
+      if (!libraryDraggedInstance || state.librarySelectionMode) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      if (!card.classList.contains('library-drop-target')) {
+        groupsGrid.querySelectorAll('.group-card.library-drop-target').forEach(item => item.classList.remove('library-drop-target'));
+        card.classList.add('library-drop-target');
+      }
+    });
+    card.addEventListener('dragleave', event => {
+      if (!card.contains(event.relatedTarget)) card.classList.remove('library-drop-target');
+    });
+    card.addEventListener('drop', async event => {
+      if (!libraryDraggedInstance || state.librarySelectionMode) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const instanceName = event.dataTransfer.getData(LIBRARY_INSTANCE_DRAG_TYPE) || libraryDraggedInstance;
+      const groupName = card.dataset.group;
+      await moveLibraryInstanceToGroup(instanceName, groupName, card);
+    });
+  });
+}
+
+function bindLibraryInstanceCards(grid, { groupDrag = false, reorderGroup = '' } = {}) {
   grid.querySelectorAll('.instance-card').forEach((card) => {
     const name = card.dataset.name;
+    const draggable = (groupDrag || Boolean(reorderGroup)) && !state.librarySelectionMode;
+    card.draggable = false;
+    card.querySelectorAll('img').forEach(image => { image.draggable = false; });
+    card.classList.toggle('library-draggable', draggable);
+    if (draggable) card.setAttribute('aria-description', reorderGroup ? 'Drag this instance before or after another card to reorder the group' : 'Drag this instance onto a group to move it');
+    else card.removeAttribute('aria-description');
+    card.addEventListener('dragstart', event => {
+      if (!draggable || event.target.closest('button')) return event.preventDefault();
+      libraryDraggedInstance = name;
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData(LIBRARY_INSTANCE_DRAG_TYPE, name);
+      event.dataTransfer.setData('text/plain', name);
+      card.classList.add('is-dragging');
+      document.documentElement.classList.add('library-instance-dragging');
+    });
+    card.addEventListener('dragend', () => {
+      libraryDragFinishedAt = Date.now();
+      libraryDraggedInstance = null;
+      card.classList.remove('is-dragging');
+      clearLibraryDropState({ preserveBusy: true });
+    });
+    card.addEventListener('pointerdown', event => {
+      if (!draggable || event.button !== 0 || event.target.closest('button')) return;
+      const rect = card.getBoundingClientRect();
+      libraryPointerDrag = {
+        active: false,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+        rect,
+        card,
+        name,
+        mode: reorderGroup ? 'reorder' : 'group',
+        groupName: reorderGroup,
+        preview: null,
+      };
+      try { card.setPointerCapture?.(event.pointerId); } catch {}
+    });
+    card.addEventListener('pointermove', event => {
+      const drag = libraryPointerDrag;
+      if (!drag || drag.pointerId !== event.pointerId || drag.card !== card) return;
+      if (!drag.active) {
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 7) return;
+        beginLibraryPointerDrag(card, name, event, drag);
+      }
+      event.preventDefault();
+      positionLibraryDragPreview(libraryPointerDrag, event.clientX, event.clientY);
+      if (libraryPointerDrag.mode === 'reorder') updateGroupReorderTarget(event.clientX, event.clientY, card);
+      else updateLibraryPointerDropTarget(event.clientX, event.clientY);
+    });
+    card.addEventListener('pointerup', event => {
+      if (libraryPointerDrag?.pointerId !== event.pointerId || libraryPointerDrag.card !== card) return;
+      if (libraryPointerDrag.active) event.preventDefault();
+      finishLibraryPointerDrag(event);
+    });
+    card.addEventListener('pointercancel', event => {
+      if (libraryPointerDrag?.pointerId === event.pointerId && libraryPointerDrag.card === card) finishLibraryPointerDrag(event, true);
+    });
     card.addEventListener('click', () => {
+      if (Date.now() - libraryDragFinishedAt < 250) return;
       if (state.librarySelectionMode) {
         if (state.selectedInstances.has(name)) state.selectedInstances.delete(name); else state.selectedInstances.add(name);
         renderLibrary();
@@ -2005,6 +2106,20 @@ function bindLibraryInstanceCards(grid) {
     });
     card.querySelector('[data-act="play"]')?.addEventListener('click', (e) => { e.stopPropagation(); if (!state.librarySelectionMode) launchInstance(name); });
     card.querySelector('[data-act="open"]')?.addEventListener('click', (e) => { e.stopPropagation(); if (!state.librarySelectionMode) selectInstance(name); });
+    card.querySelector('[data-act="move-out"]')?.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (state.librarySelectionMode) return;
+      const button = e.currentTarget;
+      button.disabled = true;
+      try {
+        await api.updateInstance(name, { group: '' });
+        await loadInstances();
+        toast(`Moved ${name} back to the Library`, 'success');
+      } catch (error) {
+        button.disabled = false;
+        toast(`Could not move ${name}: ${error.message || error}`, 'error');
+      }
+    });
     card.querySelector('[data-act="favorite"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (state.librarySelectionMode) return;
@@ -2039,9 +2154,9 @@ function renderLibrary() {
     groupContext.innerHTML = `<button class="library-group-back" type="button" data-library-group-back>
         <svg aria-hidden="true"><use href="#i-chevron-left"/></svg><span>All groups</span>
       </button>
-      <div class="library-group-title"><span class="library-group-title-icon"><svg aria-hidden="true"><use href="#i-folder"/></svg></span><div><h2>${escHtml(activeGroup.name)}</h2><p>${memberCount} instance${memberCount === 1 ? '' : 's'}</p></div></div>
+      <div class="library-group-title"><span class="library-group-title-icon"><svg aria-hidden="true"><use href="#i-folder"/></svg></span><div><h2>${escHtml(activeGroup.name)}</h2><p>${memberCount} instance${memberCount === 1 ? '' : 's'} · Drag cards to reorder the preview</p></div></div>
       <button class="btn btn-ghost library-group-delete" type="button" data-delete-group="${escHtml(activeGroup.name)}"><svg width="15" height="15" aria-hidden="true"><use href="#i-trash"/></svg>Delete group</button>`;
-    const members = sortLibraryInstances(state.instances.filter(instance => String(instance.group || '').toLowerCase() === activeGroup.name.toLowerCase()));
+    const members = sortGroupInstances(state.instances.filter(instance => String(instance.group || '').toLowerCase() === activeGroup.name.toLowerCase()));
     if (!members.length) {
       grid.innerHTML = `<div class="empty-state library-group-empty">
         <div class="empty-state-icon"><svg width="24" height="24" aria-hidden="true"><use href="#i-folder"/></svg></div>
@@ -2052,9 +2167,9 @@ function renderLibrary() {
       grid.querySelector('[data-create-in-group]')?.addEventListener('click', openCreateModal);
       return;
     }
-    grid.innerHTML = members.map(renderInstanceCard).join('');
+    grid.innerHTML = members.map(instance => renderInstanceCard(instance, { showMoveOut: true })).join('');
     staggerInto(grid.querySelectorAll('.instance-card'));
-    bindLibraryInstanceCards(grid);
+    bindLibraryInstanceCards(grid, { reorderGroup: activeGroup.name });
     return;
   }
 
@@ -2062,6 +2177,7 @@ function renderLibrary() {
   groupsSection.hidden = !state.groups.length;
   groupsGrid.innerHTML = state.groups.map(renderGroupCard).join('');
   staggerInto(groupsGrid.querySelectorAll('.group-card'));
+  bindLibraryGroupDropTargets(groupsGrid);
   groupsGrid.querySelectorAll('.group-card').forEach(card => {
     const open = () => {
       state.activeLibraryGroup = card.dataset.group;
@@ -2069,6 +2185,7 @@ function renderLibrary() {
       $('content')?.scrollTo({ top: 0, behavior: 'smooth' });
     };
     card.addEventListener('click', event => {
+      if (Date.now() - libraryDragFinishedAt < 250) return;
       const deleteButton = event.target.closest('[data-delete-group]');
       if (deleteButton) {
         event.stopPropagation();
@@ -2103,7 +2220,7 @@ function renderLibrary() {
   }
   grid.innerHTML = instances.map(renderInstanceCard).join('');
   staggerInto(grid.querySelectorAll('.instance-card'));
-  bindLibraryInstanceCards(grid);
+  bindLibraryInstanceCards(grid, { groupDrag: state.groups.length > 0 });
 }
 
 // ── Split workspace ────────────────────────────────────────
@@ -2118,6 +2235,7 @@ function newSplitPane() {
     section: 'content',
     contentType: 'mod',
     itemQuery: '',
+    uncommon: {},
     items: [],
     loading: false,
     loadedKey: '',
@@ -2133,7 +2251,7 @@ function saveSplitWorkspace() {
       nextPaneId: state.splitNextPaneId,
       columnPercent: state.splitColumnPercent,
       rowPercent: state.splitRowPercent,
-      panes: state.splitPanes.map(({ id, mode, instanceName, sort, group, query, section, contentType, itemQuery }) => ({ id, mode, instanceName, sort, group, query, section, contentType, itemQuery })),
+      panes: state.splitPanes.map(({ id, mode, instanceName, sort, group, query, section, contentType, itemQuery, uncommon }) => ({ id, mode, instanceName, sort, group, query, section, contentType, itemQuery, uncommon })),
     }));
   } catch {}
 }
@@ -2157,6 +2275,7 @@ function restoreSplitWorkspace() {
         section: validSections.has(pane.section) ? pane.section : 'content',
         contentType: validContent.has(pane.contentType) ? pane.contentType : 'mod',
         itemQuery: typeof pane.itemQuery === 'string' ? pane.itemQuery.slice(0, 100) : '',
+        uncommon: pane.uncommon && typeof pane.uncommon === 'object' ? pane.uncommon : {},
         items: [], loading: false, loadedKey: '', requestId: 0,
       };
     });
@@ -2260,6 +2379,30 @@ function splitItemMarkup(pane, item, index) {
   return `<article class="split-item" draggable="true" data-split-item="${index}"><span class="split-item-icon">${icon}</span><span><b>${escHtml(item.title || item.filename)}</b><small>${escHtml(item.world ? `${item.world} · ${item.filename}` : item.filename)}</small></span><svg class="split-drag-mark"><use href="#i-copy"/></svg></article>`;
 }
 
+const splitComparisonCache = new Map();
+
+function splitContentMatches(a, b) {
+  if (a.projectId && b.projectId) return String(a.projectId) === String(b.projectId);
+  const filename = item => String(item.filename || item.key || '').replace(/\.disabled$/i, '').toLowerCase();
+  return Boolean(filename(a) && filename(a) === filename(b));
+}
+
+function splitComparison(pane) {
+  const names = [...new Set(state.splitPanes.filter(other => other.mode === 'instance' && other.instanceName !== pane.instanceName).map(other => other.instanceName))];
+  const records = names.map(name => {
+    const key = JSON.stringify([name, pane.contentType]);
+    if (!splitComparisonCache.has(key)) {
+      const record = { loading: true, items: [], error: false };
+      splitComparisonCache.set(key, record);
+      api.getInstanceContent(name, pane.contentType).then(items => { record.items = Array.isArray(items) ? items : []; })
+        .catch(() => { record.error = true; })
+        .finally(() => { record.loading = false; renderSplitWorkspace(); });
+    }
+    return splitComparisonCache.get(key);
+  });
+  return { records, ready: records.length > 0 && records.every(record => !record.loading && !record.error), loading: records.some(record => record.loading), error: records.some(record => record.error) };
+}
+
 function renderSplitInstancePane(pane) {
   const instance = state.instances.find(item => item.name === pane.instanceName);
   if (!instance) { pane.mode = 'library'; pane.instanceName = null; return renderSplitLibraryPane(pane); }
@@ -2267,15 +2410,19 @@ function renderSplitInstancePane(pane) {
   const sectionTabs = [['content', 'Content'], ['worlds', 'Worlds'], ['screenshots', 'Screenshots']].map(([value, label]) => `<button class="${pane.section === value ? 'active' : ''}" type="button" data-split-section="${value}" data-pane-id="${pane.id}">${label}</button>`).join('');
   const contentTabs = pane.section === 'content' ? `<div class="split-content-tabs">${[['mod', 'Mods'], ['resourcepack', 'Packs'], ['shader', 'Shaders'], ['datapack', 'Data packs']].map(([value, label]) => `<button class="${pane.contentType === value ? 'active' : ''}" type="button" data-split-content="${value}" data-pane-id="${pane.id}">${label}</button>`).join('')}</div>` : '';
   const itemQuery = String(pane.itemQuery || '').trim().toLowerCase();
-  const visibleItems = pane.items.map((item, index) => ({ item, index })).filter(({ item }) => !itemQuery || [item.title, item.filename, item.name, item.identifier, item.world, item.version].filter(Boolean).join(' ').toLowerCase().includes(itemQuery));
+  const uncommonEnabled = pane.section === 'content' && Boolean(pane.uncommon?.[pane.contentType]);
+  const comparison = uncommonEnabled ? splitComparison(pane) : null;
+  const visibleItems = pane.items.map((item, index) => ({ item, index })).filter(({ item }) => !uncommonEnabled || (comparison.ready && comparison.records.some(record => !record.items.some(other => splitContentMatches(item, other))))).filter(({ item }) => !itemQuery || [item.title, item.filename, item.name, item.identifier, item.world, item.version].filter(Boolean).join(' ').toLowerCase().includes(itemQuery));
   const searchLabel = pane.section === 'worlds' ? 'worlds' : pane.section === 'screenshots' ? 'screenshots' : pane.contentType === 'resourcepack' ? 'resource packs' : pane.contentType === 'shader' ? 'shaders' : pane.contentType === 'datapack' ? 'data packs' : 'mods';
   let items = `<div class="split-pane-loading"><span class="spinner"></span><span>Reading ${pane.section}…</span></div>`;
   if (!pane.loading && pane.loadedKey) items = visibleItems.length
     ? visibleItems.map(({ item, index }) => splitItemMarkup(pane, item, index)).join('')
     : `<div class="split-empty"><svg><use href="#${pane.section === 'worlds' ? 'i-globe' : pane.section === 'screenshots' ? 'i-monitor' : 'i-library'}"/></svg><b>${itemQuery && pane.items.length ? 'No matching items' : 'Nothing here yet'}</b><span>${itemQuery && pane.items.length ? `Try another ${searchLabel} search.` : 'This pane will refresh after a copy.'}</span></div>`;
+  if (uncommonEnabled && !visibleItems.length && !pane.loading) items = `<div class="split-empty"><b>${comparison.loading ? 'Comparing instances…' : comparison.error ? 'Could not compare instances' : !comparison.records.length ? 'Open another instance to compare' : 'No uncommon items'}</b><span>${comparison.error ? 'Turn this filter off and on to retry.' : 'Shows items missing from at least one other open instance.'}</span></div>`;
   return splitPaneFrame(pane, `<header class="split-pane-header split-instance-header" draggable="true" data-split-reorder="${pane.id}" title="Drag to swap this pane"><button class="split-back" type="button" data-split-library="${pane.id}" aria-label="Return this pane to the library"><svg><use href="#i-chevron-left"/></svg></button><span class="split-pane-mark">${icon}</span><div><h2>${escHtml(instance.name)}</h2><p>${escHtml(instance.loader || 'vanilla')} · Minecraft ${escHtml(instance.gameVersion || 'Unknown')}</p></div><button class="split-play" type="button" data-split-play="${escHtml(instance.name)}"><svg><use href="#i-play"/></svg><span>Play</span></button></header>
     <div class="split-instance-tabs">${sectionTabs}</div>${contentTabs}
     <div class="split-item-search"><svg><use href="#i-search"/></svg><input data-split-item-query="${pane.id}" value="${escHtml(pane.itemQuery || '')}" placeholder="Search ${searchLabel}…" autocomplete="off"><span>${pane.loading ? '' : `${visibleItems.length}/${pane.items.length}`}</span></div>
+    ${pane.section === 'content' ? `<label class="split-uncommon-filter"><input type="checkbox" data-split-uncommon="${pane.id}" ${uncommonEnabled ? 'checked' : ''}>Show only uncommon ${searchLabel}</label>` : ''}
     <div class="split-drop-hint"><svg><use href="#i-copy"/></svg>Drag an item into another instance pane to copy it</div>
     <div class="split-item-list">${items}</div>`);
 }
@@ -2462,6 +2609,17 @@ function bindSplitWorkspace() {
     }
   });
   workspace.addEventListener('change', event => {
+    const uncommon = event.target.closest('[data-split-uncommon]');
+    if (uncommon) {
+      const pane = state.splitPanes.find(item => item.id === Number(uncommon.dataset.splitUncommon));
+      if (!pane) return;
+      pane.uncommon ||= {};
+      pane.uncommon[pane.contentType] = uncommon.checked;
+      splitComparisonCache.clear();
+      saveSplitWorkspace();
+      renderSplitWorkspace();
+      return;
+    }
     const sort = event.target.closest('[data-split-sort]');
     const group = event.target.closest('[data-split-group]');
     const control = sort || group;
@@ -2550,6 +2708,7 @@ function bindSplitWorkspace() {
     targetElement.classList.add('split-copying');
     try {
       const result = await api.copyInstanceItems(payload.sourceInstance, target.instanceName, [payload.item]);
+      splitComparisonCache.clear();
       target.loadedKey = '';
       target.items = [];
       renderSplitWorkspace();
@@ -2831,24 +2990,31 @@ async function openSkinStudio() {
     try {
       const [data, textures] = await Promise.all([api.getSkinLibrary(), minecraftTextures ? Promise.resolve(minecraftTextures) : api.getMinecraftUiTextures()]);
       minecraftTextures = textures;
-      const offline = !data.canApply;
+      const offline = data.account?.type === 'offline';
+      const canManageCapes = Boolean(data.canManageCapes);
       const skinPages = Math.max(1, Math.ceil(data.saved.length / 4));
       const capePages = Math.max(1, Math.ceil(data.capes.length / 4));
       skinPage = Math.min(skinPage, skinPages - 1);
       capePage = Math.min(capePage, capePages - 1);
       const shownSkins = data.saved.slice(skinPage * 4, skinPage * 4 + 4);
       const shownCapes = data.capes.slice(capePage * 4, capePage * 4 + 4);
-      body.innerHTML = `<div class="skin-profile-banner"><div><strong>${escHtml(data.account?.name || 'No account selected')}</strong><span>${offline ? 'Local wardrobe · sign in with Microsoft to apply skins in Minecraft' : 'Changes are applied through Minecraft Services'}</span></div><div class="skin-import-actions"><select class="input" data-skin-variant><option value="classic">Classic</option><option value="slim">Slim</option></select><button class="btn btn-primary" data-import-skin type="button">Import skin</button></div></div>
-        <section><div class="studio-section-title"><strong>Saved skins</strong><span>${data.saved.length} · Page ${skinPage + 1}/${skinPages}</span></div><div class="skin-grid">${shownSkins.length ? shownSkins.map(skin => `<article class="skin-card" data-skin="${escHtml(skin.id)}"><button class="skin-texture" data-hit-skin type="button" title="Click the character"><canvas width="128" height="160" data-skin-preview="${escHtml(skin.id)}" aria-label="Rotating preview of ${escHtml(skin.name)}"></canvas><span class="skin-rage-symbol" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M10 25h10c4 0 6-2 6-6V9M54 25H44c-4 0-6-2-6-6V9M10 39h10c4 0 6 2 6 6v10M54 39H44c-4 0-6 2-6 6v10"/></svg></span></button><div><strong>${escHtml(skin.name)}</strong><small>${escHtml(skin.variant)}</small></div><div class="skin-card-actions"><button class="btn btn-primary btn-sm" data-apply-skin ${offline ? 'disabled' : ''}>Apply</button><button class="btn btn-ghost btn-icon" data-delete-skin><svg><use href="#i-trash"/></svg></button></div></article>`).join('') : emptyStateMarkup('Your wardrobe is empty', 'Import a 64×64 or legacy 64×32 PNG skin.', 'i-user')}</div>${skinPages > 1 ? `<nav class="studio-pagination"><button data-skin-prev ${skinPage === 0 ? 'disabled' : ''}><svg><use href="#i-chevron-left"/></svg></button><span>${skinPage + 1} of ${skinPages}</span><button data-skin-next ${skinPage === skinPages - 1 ? 'disabled' : ''}><svg><use href="#i-chevron-right"/></svg></button></nav>` : ''}</section>
-        <section><div class="studio-section-title"><strong>Owned capes</strong><span>${data.capes.length} · Page ${capePage + 1}/${capePages}</span></div><div class="cape-list">${shownCapes.length ? shownCapes.map(cape => `<button class="cape-card${cape.state === 'ACTIVE' ? ' selected' : ''}" data-cape="${escHtml(cape.id)}" ${offline ? 'disabled' : ''}><span class="cape-art">${cape.data ? `<img src="${escHtml(cape.data)}" alt="">` : '<svg><use href="#i-alert"/></svg>'}</span><span><strong>${escHtml(cape.alias || 'Minecraft cape')}</strong><small>${cape.state === 'ACTIVE' ? 'Equipped' : 'Click to equip'}</small></span></button>`).join('') : '<p class="text-muted">No capes are attached to this Minecraft profile.</p>'}</div>${capePages > 1 ? `<nav class="studio-pagination"><button data-cape-prev ${capePage === 0 ? 'disabled' : ''}><svg><use href="#i-chevron-left"/></svg></button><span>${capePage + 1} of ${capePages}</span><button data-cape-next ${capePage === capePages - 1 ? 'disabled' : ''}><svg><use href="#i-chevron-right"/></svg></button></nav>` : ''}<div class="cape-actions"><button class="btn btn-ghost" data-cape="" ${offline ? 'disabled' : ''}>Unequip active cape</button></div></section>`;
+      const activeCape = data.capes.some(cape => cape.state === 'ACTIVE');
+      body.innerHTML = `<div class="skin-profile-banner"><div><strong>${escHtml(data.account?.name || 'No account selected')}</strong><span>${offline ? 'Local skin · visible only to you in supported modded instances' : 'Changes are applied through Minecraft Services'}</span></div><div class="skin-import-actions"><select class="input" data-skin-variant><option value="classic">Classic</option><option value="slim">Slim</option></select><button class="btn btn-primary" data-import-skin type="button">Import skin</button></div></div>
+        <section><div class="studio-section-title"><strong>Saved skins</strong><span>${data.saved.length} · Page ${skinPage + 1}/${skinPages}</span></div><div class="skin-grid">${shownSkins.length ? shownSkins.map(skin => `<article class="skin-card${data.activeSkin?.id === skin.id ? ' selected' : ''}" data-skin="${escHtml(skin.id)}"><button class="skin-texture" data-hit-skin type="button" title="Click the character"><canvas width="128" height="160" data-skin-preview="${escHtml(skin.id)}" aria-label="Rotating preview of ${escHtml(skin.name)}"></canvas><span class="skin-rage-symbol" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M10 25h10c4 0 6-2 6-6V9M54 25H44c-4 0-6-2-6-6V9M10 39h10c4 0 6 2 6 6v10M54 39H44c-4 0-6 2-6 6v10"/></svg></span></button><div><strong>${escHtml(skin.name)}</strong><small>${data.activeSkin?.id === skin.id ? (offline ? 'Applied locally' : 'Active') : escHtml(skin.variant)}</small></div><div class="skin-card-actions"><button class="btn btn-primary btn-sm" data-apply-skin ${!data.canApply ? 'disabled' : ''}>${data.activeSkin?.id === skin.id ? 'Applied' : 'Apply'}</button><button class="btn btn-ghost btn-icon" data-delete-skin><svg><use href="#i-trash"/></svg></button></div></article>`).join('') : emptyStateMarkup('Your wardrobe is empty', 'Import a 64×64 or legacy 64×32 PNG skin.', 'i-user')}</div>${skinPages > 1 ? `<nav class="studio-pagination"><button data-skin-prev ${skinPage === 0 ? 'disabled' : ''}><svg><use href="#i-chevron-left"/></svg></button><span>${skinPage + 1} of ${skinPages}</span><button data-skin-next ${skinPage === skinPages - 1 ? 'disabled' : ''}><svg><use href="#i-chevron-right"/></svg></button></nav>` : ''}</section>
+        <section><div class="studio-section-title"><strong>Owned capes</strong><div class="cape-title-actions"><span>${data.capes.length} · Page ${capePage + 1}/${capePages}</span><button class="btn btn-ghost btn-sm" data-refresh-capes type="button" ${!canManageCapes ? 'disabled' : ''}><svg aria-hidden="true"><use href="#i-refresh"/></svg>Refresh</button></div></div>${data.capeSyncError && canManageCapes ? `<p class="cape-sync-note"><svg aria-hidden="true"><use href="#i-alert"/></svg><span>Could not refresh from Minecraft right now. Showing your last known owned capes.</span></p>` : ''}<div class="cape-list">${shownCapes.length ? shownCapes.map(cape => `<button class="cape-card${cape.state === 'ACTIVE' ? ' selected' : ''}" data-cape="${escHtml(cape.id)}" ${!canManageCapes ? 'disabled' : ''}><span class="cape-art">${cape.data ? `<img src="${escHtml(cape.data)}" alt="">` : '<svg><use href="#i-alert"/></svg>'}</span><span><strong>${escHtml(cape.alias || 'Minecraft cape')}</strong><small>${cape.state === 'ACTIVE' ? 'Equipped' : 'Click to equip'}</small></span></button>`).join('') : `<p class="text-muted">${offline ? 'Local offline skins do not include Minecraft account capes.' : 'No capes are attached to this Minecraft profile. Use Refresh after claiming a new cape.'}</p>`}</div>${capePages > 1 ? `<nav class="studio-pagination"><button data-cape-prev ${capePage === 0 ? 'disabled' : ''}><svg><use href="#i-chevron-left"/></svg></button><span>${capePage + 1} of ${capePages}</span><button data-cape-next ${capePage === capePages - 1 ? 'disabled' : ''}><svg><use href="#i-chevron-right"/></svg></button></nav>` : ''}<div class="cape-actions"><button class="btn btn-ghost" data-cape="" ${!canManageCapes || !activeCape ? 'disabled' : ''}>Unequip active cape</button></div></section>`;
       body.querySelector('[data-import-skin]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; try { await api.importSkin(body.querySelector('[data-skin-variant]').value, false); await render(); } catch (e) { toast(e.message || e, 'error', 6000); event.currentTarget.disabled = false; } });
       for (const skin of shownSkins) renderSkinFigure(body.querySelector(`[data-skin-preview="${CSS.escape(skin.id)}"]`), skin.data, skin.variant, minecraftTextures);
       body.querySelector('[data-skin-prev]')?.addEventListener('click', () => { skinPage--; render(); });
       body.querySelector('[data-skin-next]')?.addEventListener('click', () => { skinPage++; render(); });
       body.querySelector('[data-cape-prev]')?.addEventListener('click', () => { capePage--; render(); });
       body.querySelector('[data-cape-next]')?.addEventListener('click', () => { capePage++; render(); });
+      body.querySelector('[data-refresh-capes]')?.addEventListener('click', async event => {
+        event.currentTarget.disabled = true;
+        event.currentTarget.classList.add('is-loading');
+        await render();
+      });
       body.querySelectorAll('[data-skin]').forEach(card => card.addEventListener('click', async event => {
-        if (event.target.closest('[data-apply-skin]')) { try { await api.applySkin(card.dataset.skin); toast('Skin applied to your Minecraft profile', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }
+        if (event.target.closest('[data-apply-skin]')) { try { const result = await api.applySkin(card.dataset.skin); toast(result?.message || 'Skin applied', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }
         if (event.target.closest('[data-delete-skin]')) { await api.deleteSkin(card.dataset.skin); await render(); }
       }));
       body.querySelectorAll('[data-cape]').forEach(card => card.addEventListener('click', async () => { try { await api.setActiveCape(card.dataset.cape || null); toast(card.dataset.cape ? 'Cape equipped' : 'Cape unequipped', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }));
@@ -3270,6 +3436,7 @@ async function loadContentList() {
   const container = $('content-list');
   if (!container) return;
   const requestId = ++state.contentRequestId;
+  state.modUpdateRequestId = (state.modUpdateRequestId || 0) + 1;
   const category = state.contentCategory;
   container.innerHTML = `<div class="skeleton skeleton-block"></div>`.repeat(3);
   try {
@@ -3277,6 +3444,7 @@ async function loadContentList() {
     const [content, pending] = await Promise.all([api.getInstanceContent(instanceName, category), api.getPendingContent(instanceName)]);
     if (requestId !== state.contentRequestId || category !== state.contentCategory) return;
     cachedMods = content;
+    state.pendingContentProjectIds = new Set(pending.flatMap(item => item.projectIds || []).map(String));
     const pendingBox = $('pending-content');
     if (pendingBox) {
       pendingBox.hidden = !pending.length;
@@ -3315,12 +3483,13 @@ async function refreshContentCounts() {
 }
 
 async function checkForModUpdates(instanceName) {
+  const updateRequestId = ++state.modUpdateRequestId;
   try {
     const updates = await api.checkModUpdates(instanceName);
-    if (state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
-    state.pendingModUpdates = updates || [];
+    if (updateRequestId !== state.modUpdateRequestId || state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
+    state.pendingModUpdates = (updates || []).filter(update => !state.pendingContentProjectIds?.has(String(update.projectId)));
   } catch {
-    if (state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
+    if (updateRequestId !== state.modUpdateRequestId || state.currentInstance?.name !== instanceName || state.contentCategory !== 'mod') return;
     state.pendingModUpdates = [];
   }
   const updateAll = $('update-all-content');
@@ -3343,14 +3512,16 @@ function renderContentList() {
     return;
   }
   container.innerHTML = filtered.map((m) => {
-    const update = !m.compatibilityIssue && state.contentCategory === 'mod' && (state.pendingModUpdates || []).find(u => u.projectId === m.projectId);
+    const pendingUpdate = state.contentCategory === 'mod' && m.projectId && state.pendingContentProjectIds?.has(String(m.projectId));
+    const update = !pendingUpdate && !m.compatibilityIssue && state.contentCategory === 'mod' && (state.pendingModUpdates || []).find(u => u.projectId === m.projectId);
+    const itemKey = m.key || m.filename;
     return `
-    <div class="content-item ${update ? 'has-update' : ''}${m.disabled ? ' is-disabled' : ''}" data-pid="${escHtml(m.projectId || m.filename)}">
+    <div class="content-item ${update ? 'has-update' : ''}${m.disabled ? ' is-disabled' : ''}" data-pid="${escHtml(itemKey)}">
       <div class="content-item-icon">
         ${m.iconUrl ? `<img src="${escHtml(m.iconUrl)}" alt="" loading="lazy" decoding="async">` : escHtml((m.title || m.filename)[0].toUpperCase())}
       </div>
       <div class="content-item-info">
-        <div class="content-item-name">${escHtml(m.title || m.filename)} ${m.disabled ? '<span class="update-badge">Disabled</span>' : (m.compatibilityIssue ? '<span class="update-badge">Incompatible</span>' : (update ? '<span class="update-badge">Update</span>' : ''))}</div>
+        <div class="content-item-name">${escHtml(m.title || m.filename)} ${m.disabled ? '<span class="update-badge">Disabled</span>' : (pendingUpdate ? '<span class="update-badge">Pending update</span>' : (m.compatibilityIssue ? '<span class="update-badge">Incompatible</span>' : (update ? '<span class="update-badge">Update</span>' : '')))}</div>
         <div class="content-item-version">${update ? escHtml(update.latestVersionName) : escHtml(m.world ? `${m.world} · ${m.filename}` : m.filename)}</div>
         ${m.compatibilityIssue ? `<div class="content-compatibility-warning">${escHtml(m.compatibilityIssue)}</div>` : ''}
       </div>
@@ -3372,12 +3543,12 @@ function renderContentList() {
     });
     row.querySelector('[data-act="remove"]')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      const mod = cachedMods.find((m) => (m.projectId || m.filename) === pid);
+      const mod = cachedMods.find((m) => (m.key || m.filename) === pid);
       if (mod) removeContentItem(mod);
     });
     row.querySelector('[data-act="toggle"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const mod = cachedMods.find((m) => (m.projectId || m.filename) === pid);
+      const mod = cachedMods.find((m) => (m.key || m.filename) === pid);
       if (!mod) return;
       try {
         if (state.contentCategory === 'mod') await api.disableMod(state.currentInstance.name, mod.filename);
@@ -3385,14 +3556,19 @@ function renderContentList() {
         await loadContentList();
       } catch (err) { setStatus('Toggle failed: ' + (err.message || err)); }
     });
-    row.querySelector('[data-act="update"]')?.addEventListener('click', (e) => {
+    row.querySelector('[data-act="update"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const mod = cachedMods.find((m) => (m.projectId || m.filename) === pid);
-      if (mod && mod.projectId) updateMod(state.currentInstance, mod);
+      const mod = cachedMods.find((m) => (m.key || m.filename) === pid);
+      if (!mod?.projectId) return;
+      const button = e.currentTarget;
+      button.disabled = true;
+      button.textContent = 'Updating…';
+      try { await updateMod(state.currentInstance, mod); }
+      finally { if (button.isConnected) { button.disabled = false; button.textContent = 'Update'; } }
     });
     row.querySelector('[data-act="freeze"]')?.addEventListener('click', async e => {
       e.stopPropagation();
-      const mod = cachedMods.find(item => (item.projectId || item.filename) === pid);
+      const mod = cachedMods.find(item => (item.key || item.filename) === pid);
       if (!mod?.projectId) return;
       const scrollHost = $('content');
       const scrollTop = scrollHost?.scrollTop || 0;
@@ -3403,7 +3579,7 @@ function renderContentList() {
 }
 
 function mProjectId(_row, pid) {
-  return cachedMods.find(item => (item.projectId || item.filename) === pid)?.projectId || null;
+  return cachedMods.find(item => (item.key || item.filename) === pid)?.projectId || null;
 }
 
 async function removeContentItem(item) {
@@ -3451,7 +3627,7 @@ async function updateMod(inst, mod) {
       toast('Already up to date', 'success', 3000);
       return;
     }
-    await doInstallMod(inst, mod.projectId, { createBackup: true, backupReason: `Before updating ${mod.title || mod.filename}` });
+    await doInstallMod(inst, mod.projectId, { createBackup: true, backupReason: `Before updating ${mod.title || mod.filename}`, replaceFiles: [mod.filename] });
   } catch (e) {
     toast('Update failed: ' + (e.message || e), 'error', 4000);
   }
@@ -3506,6 +3682,77 @@ async function applyCompatibilityAction(action, finding, overlay) {
   await renderCompatibilityResults(overlay);
 }
 
+async function makeModsCompatible(overlay) {
+  const instance = state.currentInstance;
+  const plan = overlay._compatibilityReport?.repairPlan;
+  if (!instance || !plan?.changes?.length) return;
+  const labels = plan.changes.map(change => change.action.label || change.findingTitle).slice(0, 4);
+  const extra = plan.changes.length > labels.length ? `, and ${plan.changes.length - labels.length} more` : '';
+  const remaining = plan.complete ? '' : ` ${plan.unresolved.length} issue${plan.unresolved.length === 1 ? '' : 's'} cannot be fixed safely by changing versions and will remain for review.`;
+  const confirmed = await backupConfirmation({
+    title: `Change ${plan.changes.length} mod version${plan.changes.length === 1 ? '' : 's'}?`,
+    message: `Pine will upgrade or downgrade these mods to compatible versions: ${labels.join(', ')}${extra}. A restore point will be created before any files change.${remaining}`,
+    action: 'Change mod versions',
+  });
+  if (!confirmed) return;
+
+  const loaders = instance.loader === 'vanilla' ? [] : [instance.loader];
+  const modrinthChanges = plan.changes.filter(change => ['replace', 'install'].includes(change.action.type));
+  const curseForgeChanges = plan.changes.filter(change => ['replace-curseforge', 'install-curseforge'].includes(change.action.type));
+  const versionIds = [];
+  const versionSizes = {};
+  const replaceFiles = [];
+  const disableFiles = [];
+  const selectedProjectVersions = new Map();
+
+  for (const change of modrinthChanges) {
+    const action = change.action;
+    const check = await api.checkInstallFeasibility(instance.name, action.projectId, action.versionId, loaders, instance.gameVersion);
+    if (!check.feasible) throw new Error(`${action.label || change.findingTitle}: ${check.errors?.[0]?.message || 'the suggested version is no longer compatible'}`);
+    const requested = [{ projectId: action.projectId, versionId: action.versionId }, ...(check.requiredDependencies || [])];
+    for (const dependency of requested) {
+      const key = String(dependency.projectId).toLowerCase();
+      const selectedVersion = selectedProjectVersions.get(key);
+      if (selectedVersion && selectedVersion !== dependency.versionId) {
+        throw new Error(`${action.label || change.findingTitle} requires a different version of ${dependency.projectId}. No files were changed; review this conflict manually.`);
+      }
+      selectedProjectVersions.set(key, dependency.versionId);
+    }
+    versionIds.push(action.versionId, ...(check.requiredDepVersionIds || []));
+    Object.assign(versionSizes, check.requiredDepSizes || {}, { [action.versionId]: check.file?.size || 0 });
+    if (action.type === 'replace' && action.filename) replaceFiles.push(action.filename);
+    disableFiles.push(...(check.warnings || []).filter(warning => warning.code === 'INCOMPATIBLE_INSTALLED').map(warning => warning.existingFile).filter(Boolean));
+  }
+
+  if (versionIds.length) {
+    await api.installMod(instance.name, {
+      versionIds: [...new Set(versionIds)],
+      versionSizes,
+      replaceFiles: [...new Set(replaceFiles)],
+      disableFiles: [...new Set(disableFiles)].filter(filename => !replaceFiles.includes(filename)),
+      createBackup: true,
+      backupReason: 'Before making installed mods compatible',
+    });
+  }
+
+  for (let index = 0; index < curseForgeChanges.length; index++) {
+    const action = curseForgeChanges[index].action;
+    const replacing = action.type === 'replace-curseforge';
+    await api.installCurseForgeContent(instance.name, {
+      projectId: action.projectId,
+      fileId: Number(action.fileId),
+      type: 'mod',
+      replaceFilename: replacing ? action.filename : null,
+      createBackup: !versionIds.length && index === 0,
+      backupReason: 'Before making installed mods compatible',
+    });
+  }
+
+  toast(plan.complete ? 'Compatible mod versions installed' : 'Version changes applied; review the remaining issues', plan.complete ? 'success' : 'info', 6000);
+  await loadContentList();
+  await renderCompatibilityResults(overlay);
+}
+
 async function renderCompatibilityResults(overlay) {
   const body = overlay.querySelector('[data-compatibility-body]');
   const instance = state.currentInstance;
@@ -3514,6 +3761,13 @@ async function renderCompatibilityResults(overlay) {
   const report = await api.checkModCompatibility(instance.name);
   if (!overlay.isConnected || state.currentInstance?.name !== instance.name) return;
   const healthy = !report.findings.length;
+  const repairButton = overlay.querySelector('[data-make-compatible]');
+  if (repairButton) {
+    const changeCount = report.repairPlan?.changes?.length || 0;
+    repairButton.hidden = changeCount === 0;
+    repairButton.disabled = false;
+    repairButton.innerHTML = `<svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>Make compatible${changeCount ? ` (${changeCount})` : ''}`;
+  }
   body.innerHTML = `<section class="compatibility-summary ${healthy ? 'is-healthy' : ''}">
     <span><svg aria-hidden="true"><use href="#i-${healthy ? 'check' : 'alert-triangle'}"/></svg></span>
     <div><strong>${healthy ? 'Your enabled mods look compatible' : `${report.counts.errors} problem${report.counts.errors === 1 ? '' : 's'} · ${report.counts.warnings} warning${report.counts.warnings === 1 ? '' : 's'}`}</strong><small>${report.checkedMods} enabled mod${report.checkedMods === 1 ? '' : 's'} checked for ${escHtml(report.instance.loader)} · Minecraft ${escHtml(report.instance.gameVersion)}</small></div>
@@ -3537,13 +3791,28 @@ async function openModCompatibilityCheck() {
   overlay.innerHTML = `<div class="modal modal-lg compatibility-modal">
     <div class="modal-header"><div><h2 class="modal-title">Mod compatibility</h2><p class="modal-sub">${escHtml(instance.name)} · actionable checks before you launch</p></div><button class="modal-close" data-close type="button" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-x"/></svg></button></div>
     <div class="modal-body compatibility-body" data-compatibility-body></div>
-    <div class="modal-footer"><button class="btn btn-secondary" data-close type="button">Done</button><button class="btn btn-primary" data-recheck type="button"><svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
+    <div class="modal-footer"><button class="btn btn-secondary" data-close type="button">Done</button><button class="btn btn-secondary" data-recheck type="button"><svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button><button class="btn btn-primary" data-make-compatible type="button" hidden><svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>Make compatible</button></div>
   </div>`;
   document.body.appendChild(overlay);
   overlay.addEventListener('click', async event => {
     if (event.target === overlay || event.target.closest('[data-close]')) { overlay.remove(); return; }
     if (event.target.closest('[data-recheck]')) {
       try { await renderCompatibilityResults(overlay); } catch (error) { toast('Compatibility check failed: ' + (error.message || error), 'error', 7000); }
+      return;
+    }
+    const makeCompatibleButton = event.target.closest('[data-make-compatible]');
+    if (makeCompatibleButton) {
+      makeCompatibleButton.disabled = true;
+      const original = makeCompatibleButton.innerHTML;
+      makeCompatibleButton.innerHTML = '<span class="spinner"></span>Making compatible…';
+      try { await makeModsCompatible(overlay); }
+      catch (error) { toast('Could not make mods compatible: ' + (error.message || error), 'error', 8000); }
+      finally {
+        if (makeCompatibleButton.isConnected && makeCompatibleButton.disabled) {
+          makeCompatibleButton.disabled = false;
+          makeCompatibleButton.innerHTML = original;
+        }
+      }
       return;
     }
     const button = event.target.closest('[data-compatibility-action]');
@@ -3760,7 +4029,18 @@ async function refreshFabricInstance(instanceName) {
 function fabricCompatibilityGroup(title, items, tone, emptyLabel) {
   return `<section class="fabric-compatibility-group is-${tone}">
     <header><strong>${escHtml(title)}</strong><span>${items.length}</span></header>
-    <div>${items.length ? items.map(item => `<article><svg aria-hidden="true"><use href="#i-${tone === 'compatible' ? 'check' : tone === 'incompatible' ? 'alert-triangle' : 'info'}"/></svg><span><b>${escHtml(item.name || item.filename)}</b><small>${escHtml(item.reason || item.filename)}${item.filename && item.name !== item.filename ? ` · ${escHtml(item.filename)}` : ''}</small></span></article>`).join('') : `<p>${escHtml(emptyLabel)}</p>`}</div>
+    <div>${items.length ? items.map((item, index) => {
+      const replacement = item.replacement;
+      const replacementCopy = replacement?.status === 'found'
+        ? `<em>Verified ${replacement.direction}: ${escHtml(replacement.versionName)}</em><button class="btn btn-primary btn-sm" type="button" data-fabric-replacement="${index}">${replacement.direction === 'downgrade' ? 'Downgrade' : 'Update'} mod</button>`
+        : tone === 'incompatible' && replacement?.status === 'not-found'
+          ? '<em>No verified replacement was found in the recent provider releases.</em>'
+          : tone === 'incompatible' && replacement?.status === 'unmanaged'
+            ? '<em>This local file has no provider record to check.</em>'
+            : tone === 'incompatible' && replacement?.status === 'unavailable'
+              ? '<em>The provider check is temporarily unavailable.</em>' : '';
+      return `<article><svg aria-hidden="true"><use href="#i-${tone === 'compatible' ? 'check' : tone === 'incompatible' ? 'alert-triangle' : 'info'}"/></svg><span><b>${escHtml(item.name || item.filename)}</b><small>${escHtml(item.reason || item.filename)}${item.filename && item.name !== item.filename ? ` · ${escHtml(item.filename)}` : ''}</small>${replacementCopy}</span></article>`;
+    }).join('') : `<p>${escHtml(emptyLabel)}</p>`}</div>
   </section>`;
 }
 
@@ -3770,7 +4050,7 @@ function renderFabricCompatibility(host, report) {
   host.innerHTML = `
     <div class="fabric-compatibility-summary ${counts.incompatible ? 'has-incompatible' : 'is-compatible'}">
       <svg aria-hidden="true"><use href="#i-${counts.incompatible ? 'alert-triangle' : 'check'}"/></svg>
-      <div><strong>${counts.incompatible ? `${counts.incompatible} incompatible mod${counts.incompatible === 1 ? '' : 's'} found` : 'Installed mods look compatible'}</strong><span>${report.checkedMods} enabled mod${report.checkedMods === 1 ? '' : 's'} checked for Fabric Loader ${escHtml(report.targetLoaderVersion)}</span></div>
+      <div><strong>${counts.incompatible ? `${counts.incompatible} incompatible mod${counts.incompatible === 1 ? '' : 's'} found` : 'Installed mods look compatible'}</strong><span>${report.checkedMods} enabled mod${report.checkedMods === 1 ? '' : 's'} checked for Fabric Loader ${escHtml(report.targetLoaderVersion)}${counts.replacements ? ` · ${counts.replacements} verified replacement${counts.replacements === 1 ? '' : 's'} available` : ''}</span></div>
     </div>
     <div class="fabric-compatibility-lists">
       ${fabricCompatibilityGroup('Compatible', report.compatible || [], 'compatible', 'No compatible mods were detected.')}
@@ -3806,6 +4086,41 @@ async function loadFabricPanel(instance) {
     const compatibilityHost = actionsHost.querySelector('[data-fabric-compatibility]');
     let currentReport = null;
     let scanSequence = 0;
+    const applyReplacement = async (replacement, item, button) => {
+      if (!replacement || replacement.status !== 'found') return;
+      const verb = replacement.direction === 'downgrade' ? 'Downgrade' : 'Update';
+      const confirmed = await backupConfirmation({
+        title: `${verb} ${item.name || item.filename}?`,
+        message: `${replacement.versionName} was downloaded and verified against Fabric Loader ${select?.value}. Pine will create a restore point and replace the installed mod file.`,
+        action: `${verb} mod`,
+      });
+      if (!confirmed) return;
+      button.disabled = true;
+      button.textContent = `${verb}ing…`;
+      try {
+        if (replacement.source === 'curseforge') {
+          await api.installCurseForgeContent(instance.name, { projectId: replacement.projectId, fileId: Number(replacement.fileId), type: 'mod', replaceFilename: replacement.filename, createBackup: true });
+        } else {
+          const check = await api.checkInstallFeasibility(instance.name, replacement.projectId, replacement.versionId, ['fabric'], instance.gameVersion);
+          if (!check.feasible) throw new Error(check.errors?.[0]?.message || 'The replacement is no longer available for this instance');
+          const versionIds = [replacement.versionId, ...(check.requiredDepVersionIds || [])];
+          const versionSizes = { [replacement.versionId]: check.file?.size || 0, ...(check.requiredDepSizes || {}) };
+          await api.installMod(instance.name, {
+            versionIds: [...new Set(versionIds)],
+            versionSizes,
+            disableFiles: [replacement.filename],
+            createBackup: true,
+            backupReason: `Before ${replacement.direction} for Fabric Loader ${select?.value}`,
+          });
+        }
+        toast(`${item.name || item.filename} ${replacement.direction === 'downgrade' ? 'downgraded' : 'updated'}`, 'success', 5000);
+        await scan();
+      } catch (error) {
+        toast(`Could not ${replacement.direction} mod: ${error.message || error}`, 'error', 8000);
+        button.disabled = false;
+        button.textContent = `${verb} mod`;
+      }
+    };
     const scan = async () => {
       const version = select?.value;
       if (!version) return;
@@ -3819,6 +4134,10 @@ async function loadFabricPanel(instance) {
         if (sequence !== scanSequence || !actionsHost.isConnected) return;
         currentReport = report;
         renderFabricCompatibility(compatibilityHost, report);
+        compatibilityHost.querySelectorAll('[data-fabric-replacement]').forEach(button => button.addEventListener('click', () => {
+          const item = currentReport?.incompatible?.[Number(button.dataset.fabricReplacement)];
+          if (item) applyReplacement(item.replacement, item, button);
+        }));
         changeButton.textContent = version === status.installedVersion ? 'Current version' : status.latestVersion === version ? 'Update loader' : 'Change version';
         changeButton.disabled = version === status.installedVersion || status.lockedByPack;
       } catch (error) {
@@ -3829,18 +4148,20 @@ async function loadFabricPanel(instance) {
     };
     select?.addEventListener('change', scan);
     changeButton?.addEventListener('click', async event => {
+      const actionButton = event.currentTarget;
       const version = select?.value;
       if (!version || !currentReport || currentReport.targetLoaderVersion !== version) return scan();
       const incompatible = Number(currentReport.counts?.incompatible || 0);
       const unknown = Number(currentReport.counts?.unknown || 0);
+      const replacements = Number(currentReport.counts?.replacements || 0);
       const confirmed = await backupConfirmation({
         title: `${status.latestVersion === version ? 'Update' : 'Change'} to Fabric Loader ${version}?`,
-        message: `${currentReport.counts?.compatible || 0} mod${currentReport.counts?.compatible === 1 ? '' : 's'} look compatible.${incompatible ? ` ${incompatible} mod${incompatible === 1 ? '' : 's'} declared an incompatibility and may prevent Minecraft from starting.` : ''}${unknown ? ` ${unknown} file${unknown === 1 ? '' : 's'} could not be verified.` : ''} Pine will create a full restore point and keep every mod installed.`,
+        message: `${currentReport.counts?.compatible || 0} mod${currentReport.counts?.compatible === 1 ? '' : 's'} look compatible.${incompatible ? ` ${incompatible} mod${incompatible === 1 ? '' : 's'} declared an incompatibility and may prevent Minecraft from starting.` : ''}${replacements ? ` ${replacements} verified replacement${replacements === 1 ? ' is' : 's are'} available in the scan above.` : ''}${unknown ? ` ${unknown} file${unknown === 1 ? '' : 's'} could not be verified.` : ''} Pine will create a full restore point and keep every mod installed.`,
         action: incompatible ? 'Update anyway' : 'Update Fabric Loader',
       });
       if (!confirmed) return;
       actionsHost.querySelectorAll('button, select').forEach(control => control.disabled = true);
-      event.currentTarget.textContent = 'Installing…';
+      actionButton.textContent = 'Installing…';
       try {
         const result = await api.changeFabricVersion(instance.name, version);
         const found = Number(result.compatibility?.counts?.incompatible || 0);
@@ -3852,19 +4173,21 @@ async function loadFabricPanel(instance) {
       }
     });
     actionsHost.querySelector('[data-fabric-repair]')?.addEventListener('click', async event => {
+      const actionButton = event.currentTarget;
       const confirmed = await backupConfirmation({ title: `Reinstall Fabric Loader ${status.installedVersion}?`, message: 'Pine will create a full restore point and rebuild the loader profile. Worlds, mods, configurations, and settings stay untouched.', action: 'Reinstall Fabric Loader' });
       if (!confirmed) return;
       actionsHost.querySelectorAll('button, select').forEach(control => control.disabled = true);
-      event.currentTarget.textContent = 'Reinstalling…';
+      actionButton.textContent = 'Reinstalling…';
       try { await api.repairFabric(instance.name); toast(`Fabric Loader ${status.installedVersion} is ready`, 'success', 6000); await refreshFabricInstance(instance.name); }
       catch (error) { toast('Fabric Loader repair failed: ' + (error.message || error), 'error', 8000); loadFabricPanel(instance); }
     });
     actionsHost.querySelector('[data-fabric-backups]')?.addEventListener('click', () => openBackupPanel());
     actionsHost.querySelector('[data-fabric-rollback]')?.addEventListener('click', async event => {
+      const actionButton = event.currentTarget;
       const confirmed = await backupConfirmation({ title: `Roll back to Fabric Loader ${status.rollbackVersion}?`, message: 'Pine will save the current setup, then restore the complete loader state from before the last loader change.', action: 'Roll back Fabric Loader' });
       if (!confirmed) return;
       actionsHost.querySelectorAll('button, select').forEach(control => control.disabled = true);
-      event.currentTarget.textContent = 'Rolling back…';
+      actionButton.textContent = 'Rolling back…';
       try { await api.rollbackFabric(instance.name); toast(`Fabric Loader rolled back to ${status.rollbackVersion}`, 'success', 6000); await refreshFabricInstance(instance.name); }
       catch (error) { toast('Fabric Loader rollback failed: ' + (error.message || error), 'error', 8000); loadFabricPanel(instance); }
     });
@@ -5247,13 +5570,14 @@ function bindDuplicateEvents() {
       : `Copying complete instance · ${progress.percent}%`;
   });
   api.onMigrationProgress?.((progress) => {
-    upsertActivity({ id: `migration:${progress.operationId}`, kind: 'instance', title: `Migrating ${progress.name || 'instance'}`, detail: progress.current ? `Copying ${shortFile(progress.current)}` : 'Copying and verifying instance', status: Number(progress.percent) >= 100 ? 'done' : 'active', progress: progress.percent, doneLabel: 'Migrated' });
+    const detail = progress.current ? `Copying ${shortFile(progress.current)}` : (progress.message || 'Copying and verifying instance');
+    upsertActivity({ id: `migration:${progress.operationId}`, kind: 'instance', title: `Migrating ${progress.name || 'instance'}`, detail, status: Number(progress.percent) >= 100 ? 'done' : 'active', progress: progress.percent, doneLabel: 'Migrated' });
     const root = $('version-migration-root');
     if (!root || root.dataset.name !== progress.name) return;
     const fill = root.querySelector('[data-progress-fill]');
     const label = root.querySelector('[data-progress-label]');
     if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%`;
-    if (label) label.textContent = progress.current ? `Copying ${shortFile(progress.current)} · ${progress.percent}%` : `Preparing migrated instance · ${progress.percent}%`;
+    if (label) label.textContent = progress.current ? `Copying ${shortFile(progress.current)} · ${progress.percent}%` : `${progress.message || 'Preparing migrated instance'} · ${progress.percent}%`;
   });
 }
 
@@ -5852,6 +6176,8 @@ async function openEditSheet() {
   $('edit-name').dataset.original = inst.name || '';
   populateGroupSelect($('edit-group'), inst.group || '');
   $('edit-tags').value = Array.isArray(inst.tags) ? inst.tags.join(', ') : '';
+  const subtitle = $('edit-sheet-subtitle');
+  if (subtitle) subtitle.textContent = `Personalize ${inst.name || 'this instance'} and manage its files.`;
 
   // Show sheet immediately (path loads async below)
   root.removeAttribute('hidden');
@@ -5862,12 +6188,18 @@ async function openEditSheet() {
   const pathStr = await resolveInstancePath(inst);
   $('edit-folder-path').textContent = pathStr;
 
-  // Reset upload previews
+  // Show the current artwork until the user selects a replacement.
   ['icon', 'banner'].forEach((t) => {
     const preview = $(`edit-${t}-preview`);
     const placeholder = preview?.previousElementSibling;
-    if (preview) { preview.hidden = true; preview.style.backgroundImage = ''; preview.replaceChildren(); }
-    if (placeholder) placeholder.hidden = false;
+    const currentArtwork = inst[`${t}Data`];
+    if (preview) {
+      preview.hidden = !currentArtwork;
+      preview.style.backgroundImage = '';
+      preview.replaceChildren();
+      if (currentArtwork) showAnimatedImagePreview(preview, currentArtwork);
+    }
+    if (placeholder) placeholder.hidden = Boolean(currentArtwork);
     const input = $(`edit-${t}`);
     if (input) input.value = '';
   });
@@ -6816,9 +7148,9 @@ async function openLibrarySkinPreview(skin) {
   try { textures = await api.getMinecraftUiTextures(); } catch {}
   const auth = await api.getAuth().catch(() => null);
   const applyButton = overlay.querySelector('[data-apply-library-skin]');
-  if (applyButton && (!auth || auth.meta?.type === 'offline')) {
+  if (applyButton && !auth?.profile) {
     applyButton.disabled = true;
-    applyButton.title = 'Sign in with Microsoft to apply skins';
+    applyButton.title = 'Select an account to apply skins';
   }
   const renderPreview = () => renderSkinFigure(overlay.querySelector('[data-library-skin-preview]'), skin.textureUrl, overlay.querySelector('[data-library-skin-variant]').value, textures);
   renderPreview();
@@ -6836,8 +7168,8 @@ async function openLibrarySkinPreview(skin) {
     const button = event.target.closest('button');
     button.disabled = true;
     try {
-      await api.saveLibrarySkin(skin, overlay.querySelector('[data-library-skin-variant]').value, apply);
-      toast(apply ? 'Skin saved and applied to your Minecraft profile' : 'Skin saved to your wardrobe', 'success');
+      const result = await api.saveLibrarySkin(skin, overlay.querySelector('[data-library-skin-variant]').value, apply);
+      toast(apply ? (result?.appliedMode === 'local' ? 'Skin saved and applied locally' : 'Skin saved and applied to your Minecraft profile') : 'Skin saved to your wardrobe', 'success');
     } catch (error) { toast(error.message || error, 'error', 6000); }
     finally { if (button.isConnected) button.disabled = false; }
   });
@@ -7533,7 +7865,15 @@ async function doInstallMod(inst, projectId, backupOptions = {}, requestedVersio
 
   // ── Warnings UI ───────────────────────────────────────────
   const disableFiles = [];
+  const replacementFiles = new Set((backupOptions.replaceFiles || [])
+    .map(filename => String(filename || '').replace(/\.disabled$/i, '')));
   for (const w of check.warnings || []) {
+    const existingFile = String(w.existingFile || '').replace(/\.disabled$/i, '');
+    if (w.code === 'DUPLICATE' && replacementFiles.has(existingFile)) {
+      // An update is expected to find its currently installed version. The
+      // transactional installer replaces it only after the new JAR verifies.
+      continue;
+    }
     if (w.code === 'DUPLICATE' || w.code === 'INCOMPATIBLE_INSTALLED') {
       if (w.existingFile) disableFiles.push(w.existingFile);
       toast(w.message, 'error', 4000);
@@ -7594,9 +7934,11 @@ async function doInstallMod(inst, projectId, backupOptions = {}, requestedVersio
     const restartNote = result.restartRequired ? ' · will apply on the next launch from Pine' : '';
     const installVerb = result.queued ? 'Downloaded' : 'Installed';
     toast(`${installVerb} ${result.installed.length} file${result.installed.length > 1 ? 's' : ''}${restartNote}`, 'success', result.restartRequired ? 6500 : 3000);
-    if (state.currentInstance?.name === inst.name) loadContentList();
+    if (state.currentInstance?.name === inst.name) await loadContentList();
+    return result;
   } catch (e) {
     toast('Install failed: ' + (e.message || e), 'error', 5000);
+    return null;
   }
 }
 
