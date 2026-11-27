@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pine-launcher-online-counter",
+  "main": "src/index.js",
+  "compatibility_date": "2026-04-01",
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ONLINE_COUNTER",
+        "class_name": "OnlineCounterDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OnlineCounterDO"]
+    }
+  ]
+}

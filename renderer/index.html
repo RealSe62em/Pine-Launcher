@@ -155,54 +155,95 @@
 
       <!-- HOME ──────────────────────────────────────────────── -->
       <section id="view-home" class="view active">
-        <div class="home-hero">
-          <div>
-            <div class="home-greeting" id="home-greeting">Welcome back</div>
-            <div class="home-sub" id="home-sub">Your Minecraft launcher, refined.</div>
+        <!-- ── 3D Cyberspace Player Arena (Cobalt Matrix & Center Stage) ── -->
+        <div class="home-player-stage" id="home-player-stage">
+          <div class="home-player-name-plate">
+            <span class="home-player-username" id="home-player-username">PLAYER</span>
           </div>
-          <div class="home-hero-right">
-            <span class="instance-count">
-              <svg width="14" height="14"><use href="#i-monitor"/></svg>
-              <span id="home-instance-stat">0 instances</span>
-            </span>
+          <div class="home-player-stage-viewport" id="home-player-stage-viewport">
+            <canvas id="home-player-skin-canvas" width="280" height="380" aria-label="3D Player Character"></canvas>
+            <div class="home-player-shadow" aria-hidden="true"></div>
+          </div>
+          <div class="home-console-launch-bar" id="home-console-launch-bar">
+            <button class="home-console-launch-btn" id="home-console-launch-btn" type="button">
+              <span>LAUNCH</span>
+            </button>
+            <div class="home-console-picker-wrap">
+              <button class="home-console-instance-btn" id="home-console-instance-btn" type="button" title="Select instance to launch" aria-haspopup="menu" aria-expanded="false">
+                <span id="home-console-instance-name">No Instances</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="home-console-instance-menu" id="home-console-instance-menu" role="menu" hidden></div>
+            </div>
           </div>
         </div>
 
-        <div class="hero-card card">
-          <div class="hero-badge">Welcome</div>
-          <h1 class="hero-title">Your Minecraft launcher, refined.</h1>
-          <p class="hero-copy">Minimal interface, premium polish, and clear launch feedback for every session.</p>
-          <div class="hero-actions">
-            <button class="btn btn-primary" id="hero-launch-button" type="button">Continue playing</button>
-            <button class="btn btn-secondary" type="button" id="hero-create-btn"><svg width="16" height="16" aria-hidden="true"><use href="#i-plus"/></svg>New instance</button>
-            <button class="btn btn-ghost" type="button" data-view="discover">Discover mods</button>
+        <div class="home-feed-sidebar" id="home-feed-sidebar">
+          <div class="home-hero">
+            <div>
+              <div class="home-greeting" id="home-greeting">Welcome back</div>
+              <div class="home-sub" id="home-sub">Your Minecraft launcher, refined.</div>
+            </div>
+            <div class="home-hero-right">
+              <span class="instance-count">
+                <svg width="14" height="14"><use href="#i-monitor"/></svg>
+                <span id="home-instance-stat">0 instances</span>
+              </span>
+            </div>
           </div>
-        </div>
 
-        <div class="section-header-row">
-          <div>
-            <h2>Continue playing</h2>
-            <p class="section-copy">Pick up where you left off.</p>
+          <div class="hero-card card">
+            <div class="hero-badge">Welcome</div>
+            <h1 class="hero-title">Your Minecraft launcher, refined.</h1>
+            <p class="hero-copy">Minimal interface, premium polish, and clear launch feedback for every session.</p>
+            <div class="hero-actions">
+              <button class="btn btn-primary" id="hero-launch-button" type="button">Continue playing</button>
+              <button class="btn btn-secondary" type="button" id="hero-create-btn"><svg width="16" height="16" aria-hidden="true"><use href="#i-plus"/></svg>New instance</button>
+              <button class="btn btn-ghost" type="button" data-view="discover">Discover mods</button>
+            </div>
           </div>
-        </div>
-        <div id="recent-cards" class="card-row"></div>
 
-        <div class="section-header-row" id="destinations-header" hidden>
-          <div>
-            <h2>Frequently visited</h2>
-            <p class="section-copy">Servers and worlds you actually play, ranked by visits.</p>
+          <div class="home-deck-switcher" id="home-deck-switcher" role="tablist" aria-label="Console Deck">
+            <button type="button" class="home-deck-tab active" data-deck-tab="overview">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              <span>Overview</span>
+            </button>
+            <button type="button" class="home-deck-tab" data-deck-tab="servers">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              <span>Servers</span>
+            </button>
+            <button type="button" class="home-deck-tab" data-deck-tab="instances">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              <span>Instances</span>
+            </button>
           </div>
-        </div>
-        <div id="destination-grid" class="destination-grid" hidden></div>
 
-        <button class="section-header-row home-library-link" id="home-library-link" data-view="library" type="button" aria-label="Open your library">
-          <div>
-            <h2>Your library</h2>
-            <p class="section-copy">All your instances in one place.</p>
+          <div class="section-header-row home-section-continue-hdr">
+            <div>
+              <h2>Continue playing</h2>
+              <p class="section-copy">Pick up where you left off.</p>
+            </div>
           </div>
-          <span class="section-link">View all <svg aria-hidden="true"><use href="#i-chevron-right"/></svg></span>
-        </button>
-        <div id="home-instance-grid" class="card-grid"></div>
+          <div id="recent-cards" class="card-row home-section-continue"></div>
+
+          <div class="section-header-row home-section-servers-hdr" id="destinations-header" hidden>
+            <div>
+              <h2>Frequently visited</h2>
+              <p class="section-copy">Servers and worlds you actually play, ranked by visits.</p>
+            </div>
+          </div>
+          <div id="destination-grid" class="destination-grid home-section-servers" hidden></div>
+          <div class="destinations-expand-wrap" id="destinations-expand-wrap" hidden></div>
+
+          <button class="section-header-row home-library-link home-section-library-hdr" id="home-library-link" data-view="library" type="button" aria-label="Open your library">
+            <div>
+              <h2>Your library</h2>
+              <p class="section-copy">All your instances in one place.</p>
+            </div>
+            <span class="section-link">View all <svg aria-hidden="true"><use href="#i-chevron-right"/></svg></span>
+          </button>
+          <div id="home-instance-grid" class="card-grid home-section-library"></div>
+        </div>
       </section>
 
       <!-- DISCOVER ──────────────────────────────────────────── -->
@@ -245,6 +286,7 @@
 
           <div class="discover-layout">
             <aside class="filter-panel">
+              <div class="filter-group"><label for="filter-source">Content source</label><select id="filter-source" class="input"><option value="all">All sources</option><option value="modrinth">Modrinth</option><option value="curseforge">CurseForge</option></select></div>
               <div class="filter-group"><label for="filter-loader">Mod loader</label><select id="filter-loader" class="input"></select></div>
               <div class="filter-group"><label for="filter-version">Minecraft version</label><select id="filter-version" class="input"></select></div>
               <div class="filter-group"><label for="filter-category">Category</label><input id="filter-category" class="input" placeholder="e.g. performance" autocomplete="off"></div>

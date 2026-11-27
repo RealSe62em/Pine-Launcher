@@ -453,3 +453,491 @@
 
 .split-uncommon-filter { display:flex; align-items:center; gap:8px; padding:6px 12px; font-size:11px; color:var(--text-lo); cursor:pointer; flex-shrink:0; }
 .split-uncommon-filter input { accent-color:var(--accent); width:14px; height:14px; margin:0; }
+
+
+/* ── CurseForge Settings & Discover Prompt ─────────────────── */
+.cf-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.setup-guide {
+  margin-top: 12px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+.setup-guide summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-hi);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  user-select: none;
+}
+.setup-guide summary::-webkit-details-marker {
+  display: none;
+}
+.setup-guide summary::after {
+  content: '▾';
+  font-size: 11px;
+  color: var(--text-lo);
+  transition: transform 150ms ease;
+}
+.setup-guide[open] summary::after {
+  transform: rotate(180deg);
+}
+.setup-guide-steps {
+  margin: 0;
+  padding: 2px 14px 12px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+}
+.setup-guide-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-md);
+}
+.setup-guide-num {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-hi);
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.setup-guide-steps strong {
+  color: var(--text-hi);
+  font-weight: 600;
+}
+.setup-guide-steps code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  color: var(--text-hi);
+}
+.cloud-zero-setup-tip {
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-md);
+}
+.cloud-zero-setup-tip strong {
+  color: var(--text-hi);
+}
+.discover-cf-setup-card {
+  grid-column: 1 / -1;
+  padding: 28px 24px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--glass-stroke);
+  background: var(--glass-surface-raised);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.discover-cf-setup-card h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.discover-cf-setup-card p {
+  margin: 0;
+  max-width: 520px;
+  color: var(--text-md);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.discover-cf-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.cf-modal-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.cf-modal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+.cf-manual-download-bar {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 159, 10, 0.32);
+  background: rgba(255, 159, 10, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* ── Cloud Sync Settings ───────────────────────────────────── */
+.cloud-sync-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+.cloud-sync-summary {
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-stroke);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cloud-sync-summary strong {
+  display: block;
+  font-size: 14px;
+}
+.cloud-sync-summary span {
+  font-size: 12px;
+  color: var(--text-md);
+}
+.cloud-sync-progress {
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--glass-stroke);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.cloud-sync-providers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 780px) {
+  .cloud-sync-providers {
+    grid-template-columns: 1fr;
+  }
+}
+.cloud-provider-card {
+  padding: 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-stroke);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cloud-provider-card.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, rgba(255, 255, 255, 0.03));
+}
+.cloud-provider-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cloud-provider-head > div {
+  min-width: 0;
+  flex: 1;
+}
+.cloud-provider-head strong {
+  font-size: 15px;
+  display: block;
+}
+.cloud-provider-head small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-md);
+  margin-top: 3px;
+  overflow-wrap: break-word;
+}
+.cloud-provider-head small.cloud-provider-path {
+  overflow-wrap: anywhere;
+}
+.cloud-provider-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-md);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cloud-provider-badge.connected {
+  background: rgba(48, 209, 88, 0.16);
+  color: #30d158;
+}
+.cloud-provider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cloud-oauth-details {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+  font-size: 12px;
+}
+.cloud-oauth-details summary {
+  cursor: pointer;
+  color: var(--text-md);
+  font-weight: 600;
+  user-select: none;
+}
+.cloud-oauth-fields {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cloud-oauth-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-lo);
+}
+.cloud-oauth-redirect {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.cloud-oauth-redirect code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.cloud-sync-scopes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-stroke);
+  background: rgba(255, 255, 255, 0.02);
+}
+@media (max-width: 680px) {
+  .cloud-sync-scopes {
+    grid-template-columns: 1fr;
+  }
+}
+.cloud-sync-scope-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.cloud-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.cloud-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+.cloud-switch-track {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  position: relative;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+}
+.cloud-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: transform var(--dur-fast);
+}
+.cloud-switch input:checked + .cloud-switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.cloud-switch input:checked + .cloud-switch-track::after {
+  transform: translateX(16px);
+}
+.cloud-sync-actions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cloud-sync-plan-box {
+  padding: 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-stroke);
+  background: rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.cloud-sync-conflict-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 159, 10, 0.35);
+  background: rgba(255, 159, 10, 0.08);
+}
+.cloud-sync-conflict-actions {
+  display: flex;
+  gap: 5px;
+}
+
+
+/* ── Anonymous Active-Player Counter & Transparency Modal ──── */
+.privacy-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.privacy-setting-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.privacy-setting-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-hi);
+}
+.privacy-setting-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-lo);
+}
+.privacy-row-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.telemetry-modal {
+  max-width: 520px;
+}
+.telemetry-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-lo);
+  margin-top: 12px;
+}
+.telemetry-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-stroke);
+  color: var(--text-hi);
+}
+.telemetry-preview-code {
+  margin: 8px 0 14px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-stroke);
+  background: rgba(0, 0, 0, 0.36);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-hi);
+  overflow-x: auto;
+}
+.telemetry-never-box {
+  margin-top: 16px;
+  padding: 13px 15px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(52, 199, 89, 0.28);
+  background: rgba(52, 199, 89, 0.06);
+}
+.telemetry-never-heading {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-hi);
+  letter-spacing: 0.01em;
+  margin-bottom: 8px;
+}
+.telemetry-never-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-md);
+}
+.telemetry-never-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.telemetry-never-mark {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--danger, #ff5c6c);
+  opacity: 0.9;
+}

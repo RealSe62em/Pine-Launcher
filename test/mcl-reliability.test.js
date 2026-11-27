@@ -183,3 +183,48 @@ test('MCLC checksum cache rehashes a file only after it changes', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Minecraft launch preserves process state while applying Pine environment overrides', () => {
+  const childProcess = require('node:child_process');
+  const originalSpawn = childProcess.spawn;
+  const previousParentValue = process.env.PINE_PARENT_TEST;
+  process.env.PINE_PARENT_TEST = 'preserved';
+  let call;
+  try {
+    const { install } = freshModules();
+    install();
+    childProcess.spawn = (command, args, options) => {
+      call = { command, args, options };
+      const processHandle = new EventEmitter();
+      processHandle.stdout = new EventEmitter();
+      processHandle.stderr = new EventEmitter();
+      processHandle.pid = 4242;
+      return processHandle;
+    };
+    const Launcher = require('minecraft-launcher-core/components/launcher');
+    const launcher = new Launcher();
+    launcher.options = {
+      javaPath: '/runtime/bin/java',
+      root: '/instances/example',
+      overrides: {
+        cwd: '/instances/example/game',
+        detached: true,
+        env: { PINE_INSTANCE_NAME: 'Example', RESOURCE_NAME: 'minecraft' },
+      },
+    };
+
+    const processHandle = launcher.startMinecraft(['-Xmx4G', 'net.minecraft.client.main.Main']);
+    assert.equal(processHandle.pid, 4242);
+    assert.equal(call.command, '/runtime/bin/java');
+    assert.deepEqual(call.args, ['-Xmx4G', 'net.minecraft.client.main.Main']);
+    assert.equal(call.options.cwd, '/instances/example/game');
+    assert.equal(call.options.detached, true);
+    assert.equal(call.options.env.PINE_PARENT_TEST, 'preserved');
+    assert.equal(call.options.env.PINE_INSTANCE_NAME, 'Example');
+    assert.equal(call.options.env.RESOURCE_NAME, 'minecraft');
+  } finally {
+    childProcess.spawn = originalSpawn;
+    if (previousParentValue === undefined) delete process.env.PINE_PARENT_TEST;
+    else process.env.PINE_PARENT_TEST = previousParentValue;
+  }
+});

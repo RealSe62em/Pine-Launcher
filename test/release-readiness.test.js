@@ -14,7 +14,7 @@ const websiteScript = fs.readFileSync(path.join(root, 'website', 'script.js'), '
 const sitemap = fs.readFileSync(path.join(root, 'website', 'sitemap.xml'), 'utf8');
 
 test('release uses the planned updater-visible version', () => {
-  assert.equal(pkg.version, '1.2.9');
+  assert.equal(pkg.version, '1.3.0');
   assert.equal(pkg.dependencies['electron-updater'], '6.8.9');
   assert.equal(pkg.devDependencies.electron, '42.11.6');
   assert.match(builder, /electronVersion:\s*42\.11\.6/);
@@ -65,18 +65,18 @@ test('Linux windows and packages share the Pine taskbar identity and icon', () =
   }
 });
 
-test('website fallbacks point at every 1.2.9 native installer', () => {
-  assert.match(website, /data-release-version>1\.2\.9</);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-archlinux-x64\.pacman/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-fedora-x86_64\.rpm/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-fedora-aarch64\.rpm/);
-  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.2\.9'/);
+test('website fallbacks point at every 1.3.0 native installer', () => {
+  assert.match(website, /data-release-version>1\.3\.0</);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-archlinux-x64\.pacman/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-fedora-x86_64\.rpm/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-fedora-aarch64\.rpm/);
+  assert.match(websiteScript, /const FALLBACK_VERSION = '1\.3\.0'/);
   assert.match(websiteScript, /Object\.values\(names\)\.some\(name => !assets\.get\(name\)\?\.browser_download_url\)/);
-  assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.8/);
+  assert.doesNotMatch(`${website}\n${websiteScript}`, /releases\/download\/v1\.2\.9/);
 });
 
 test('website uses one concise Linux distro picker', () => {

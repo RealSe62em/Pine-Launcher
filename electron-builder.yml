@@ -27,6 +27,7 @@ files:
   - renderer/**
   - lib/**
   - "!scripts/**"
+  - "!workers/**"
   - "!installer/**"
   - "!test/**"
   - "!dist*/**"

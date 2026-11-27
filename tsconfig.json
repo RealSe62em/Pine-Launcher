@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "types.d.ts",
+    "preload.js",
+    "lib/curseforge-service.js",
+    "lib/version-security.js",
+    "lib/online-counter.js",
+    "lib/cloud-sync.js",
+    "lib/cloud-sync-oauth.js",
+    "lib/cloud-sync-providers.js",
+    "lib/ipc-cloud-sync.js",
+    "lib/modrinth-service.js",
+    "lib/settings.js",
+    "lib/account-store.js",
+    "lib/pack-export.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-native",
+    "discord-bot",
+    "workers"
+  ]
+}

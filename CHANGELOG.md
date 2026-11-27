@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.0 (2026-11-27)
+
+### Theme Studio, Built-in Themes & UI Layouts
+
+- Added **Theme Studio**, a live visual theme editor with click-to-inspect element styling, collapsible property groups, border and text-gradient presets, adaptive background studio (solid, gradient with adjustable angle, and auto-compressed wallpaper uploads), CSS snippets, icon-safe text edits, single-gesture Undo/Redo, unsaved-change protection, and JSON preset import/export.
+- Added 7 curated built-in themes (*Pine Dark*, *Evergreen Canopy*, *Nordic Frost*, *Obsidian Ember*, *Velvet Nebula*, *Kyoto Sakura*, *Cobalt Matrix*) and 6 structural UI layouts (*Dynamic Island & Dock*, *Studio Sidebar*, *Zen Icon Rail*, *Panorama Top-Deck*, *Tactical Mecha HUD*, *Tactile 3D Bento*).
+
+### Discovery, Security & Privacy
+
+- Added optional BYO CurseForge API key support in **Settings → CurseForge** (OS keyring encrypted, with Test Connection and step-by-step setup guide) plus a Discover content source filter covering all 5 content types (mods, modpacks, resource packs, shaders, and data packs).
+- Added Mojang `version_manifest_v2.json` security-manifest checking on launch (protecting existing instances against stale LWJGL/FreeType builds such as Minecraft2Shell, with a clear pre-launch warning before downloading updated official libraries while leaving worlds, mods, and configs untouched).
+- Added an optional, strictly anonymous active-player counter in **Settings → General** (ephemeral per-launch random ID, zero account/IP/server data) with an opt-out toggle and an inline **What's shared?** modal displaying the exact JSON payload.
+
+### Architecture, Play Stats & Quality
+
+- Modularized core main process IPC handlers into discrete, domain-focused backend services in `lib/`:
+  - `lib/ipc-servers.js`: Server directory, live ping status polling, and saved servers persistence.
+  - `lib/ipc-worlds.js`: World saves discovery, LevelName parsing, data pack imports, and world deletion.
+  - `lib/ipc-system.js`: Window controls, onboarding, clipboard access, storage reporting, and cache clearing.
+  - `lib/ipc-diagnostics.js`: Diagnostic crash log redaction, log export, and safe reporting.
+  - `lib/ipc-skins.js`: Local custom skin loader, Cape inventory, and profile skin synchronization.
+  - `lib/modrinth-service.js`: Standalone Modrinth API client with cached metadata fetching and SHA1 integrity hashing.
+  - `lib/destination-catalog.js`: Recent destinations and server visit history cataloging.
+- Improved single-instance lock handling and Wayland desktop integration.
+- Fixed Play Stats multi-day session splitting so overnight or long sessions distribute accurately across local calendar days and never exceed 24 hours in a single day.
+- Added non-breaking TypeScript static type checking (`npm run typecheck` via `tsc --noEmit` + `types.d.ts`).
+- Preserved 100% test suite compatibility across 325+ unit, IPC, security, and regression tests with strict >= 85% line/function and >= 60% branch quality gates.
+
 ## 1.2.9 (2026-10-04)
 
 ### Quality, responsiveness, and maintenance

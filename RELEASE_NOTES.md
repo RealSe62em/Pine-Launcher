@@ -1,51 +1,35 @@
-# Pine Launcher 1.2.9
+# Pine Launcher 1.3.0
 
-Pine 1.2.9 makes modded instances safer to maintain, gives Fabric users a complete loader-management workflow, and substantially improves Library organization, skins, capes, split view, and Linux distribution support.
+Pine 1.3.0 introduces **Theme Studio**, 7 curated built-in themes, 6 structural UI layouts, optional CurseForge discovery across all five content types, Mojang security-manifest verification (protecting against stale LWJGL/FreeType builds such as Minecraft2Shell), a transparent opt-out active-player counter, and a modularized main-process architecture.
 
-## Make mod compatibility actionable
+## Theme Studio, Built-in Themes & UI Layouts
 
-- The compatibility checker can now upgrade or downgrade supported mods with **Make compatible**.
-- Pine previews version changes, validates dependencies, creates a restore point, applies verified files, and checks the instance again afterward.
-- Conflicting requirements and repairs that cannot be made safely remain visible instead of being silently changed.
-- Mod updates no longer leave duplicate disabled files, stale rows, or incorrect “already installed” errors.
-- Mods copied with a normal file manager recover their embedded names and icons, with exact Modrinth hash lookup as a fallback.
+- **Live Theme Studio (new in 1.3.0):** Visually customize Pine Launcher in real time with a compact glass inspector dock, click-to-inspect element styling, collapsible property groups, border & text-gradient presets, CSS snippets, gesture-grouped Undo/Redo, unsaved-changes protection, and JSON preset import/export.
+- **Adaptive Background Studio:** Choose solid colors, custom multi-stop gradients with adjustable angle, or uploaded wallpapers with automatic client-side compression for large images.
+- **7 Curated Built-in Themes:** *Pine Dark*, *Evergreen Canopy*, *Nordic Frost*, *Obsidian Ember*, *Velvet Nebula*, *Kyoto Sakura*, and *Cobalt Matrix*.
+- **6 Structural UI Layouts:** Switch the entire shell between *Dynamic Island & Dock*, *Studio Sidebar*, *Zen Icon Rail*, *Panorama Top-Deck*, *Tactical Mecha HUD*, and *Tactile 3D Bento*.
 
-## Manage Fabric Loader safely
+## CurseForge Discovery (Optional BYO API Key)
 
-- Change, update, reinstall, repair, or roll back Fabric Loader from Instance Settings.
-- Pine scans installed mods before changing the loader and can find compatible upgrades or downgrades.
-- Lightweight loader restore points protect the profile without unnecessarily copying worlds and content.
-- Failed or incomplete loader changes are verified and rolled back automatically.
-- Version migrations now install and validate Fabric Loader and a compatible Fabric API build in the migrated instance.
+- Added **Settings → CurseForge** with OS-keyring encrypted API key storage (refusing plaintext fallback), a **Test Connection** check, and a built-in step-by-step beginner guide for creating a personal CurseForge API key.
+- Added a Discover source filter (**All sources**, **Modrinth**, **CurseForge**) supporting Mods, Modpacks, Resource Packs, Shaders, and Data Packs, plus clear manual-download guidance whenever an author disables third-party downloads.
 
-## A more useful Library
+## Mojang Security-Manifest Protection (Minecraft2Shell Fix)
 
-- Drag entire instance cards directly into groups, with a clear `+` drop target.
-- Reorder instances inside groups to control their preview artwork.
-- Move instances back out of groups without deleting anything.
-- The Library destination now returns to the overview when a group is open.
-- Split panes can show only uncommon mods, resource packs, shaders, or data packs and remember that choice independently.
+- Pine now validates cached vanilla `<version>.json` manifests against Mojang’s official `version_manifest_v2.json` SHA-1 checksums before launch.
+- Existing instances with outdated cached metadata receive a clear pre-launch warning explaining the security update (including Mojang’s patched LWJGL / FreeType libraries addressing the Minecraft2Shell resource-pack RCE) before downloading anything—while keeping worlds, mods, resource packs, and configs completely untouched.
+- Offline launches continue safely without blocking play.
 
-## Better customization and presets
+## Privacy-First Active-Player Counter
 
-- Instance Settings now uses Pine’s current responsive popup design with clearer identity, artwork, and storage controls.
-- Offline accounts can apply local skins on supported modded instances without changing Microsoft account behavior.
-- Cape ownership survives unequipping and temporary Minecraft service failures, with a new refresh action for recently claimed capes.
-- The Builder preset now includes Effortless Building and Axiom when compatible versions are available.
+- Added an optional, strictly anonymous active-player counter in **Settings → General** paired with a **What's shared?** button that displays the exact 4-field JSON payload for the current session (`sessionId`, `state`, `version`, `platform`) alongside a clear checklist of everything never collected or stored (usernames, Microsoft accounts, UUIDs, IP addresses, server addresses, worlds, or mods).
+- Turning off the toggle immediately removes the temporary in-memory session and stops all heartbeats.
 
-## Home, multiplayer, and Linux fixes
+## Play Stats, Linux Packaging & Architecture
 
-- Frequently visited servers and worlds no longer disappear when one instance scan is incomplete.
-- Fixed the main-process JavaScript popup that could appear after successfully joining a multiplayer server.
-- Pine ships native Debian/Ubuntu x64 and ARM64 packages plus an Arch-family x64 package.
-- The website includes a searchable Linux distro picker that directs supported Debian-family and Arch-family systems to the correct installer.
-- Improved Linux taskbar identity, desktop integration, secure credential storage, Java provisioning, and update handling.
+- **Play Stats Accuracy:** Fixed multi-day session splitting so overnight or long sessions distribute cleanly across local midnight boundaries and never exceed 24 hours in a single day.
+- **Modularized Main-Process Services:** Decomposed core IPC handlers into dedicated `lib/` services (`ipc-servers.js`, `ipc-worlds.js`, `ipc-system.js`, `ipc-diagnostics.js`, `ipc-skins.js`, `modrinth-service.js`, `destination-catalog.js`) with improved single-instance lock handling and Wayland desktop integration.
+- **Native Installers Across Platforms:** Ships Windows x64 & ARM64 installers, Debian/Ubuntu `.deb` (x64 & ARM64), Fedora/Nobara `.rpm` (x64 & ARM64), and Arch Linux `.pacman` (x64) packages.
+- **Quality & Static Checking:** Added non-breaking TypeScript static type checking (`npm run typecheck`) and verified 100% pass rate across 325+ automated tests with >= 85% line/function and >= 60% branch coverage plus Electron UI smoke testing.
 
-## Reliability
-
-- Content replacements and queued installs are transactional and recover cleanly after interruptions.
-- Restore points finish before protected instance changes begin.
-- Heavy screenshot, world, and synchronization work no longer blocks Electron’s main thread.
-- Expanded automated coverage and release checks protect loader changes, backups, skins, capes, groups, mod updates, multiplayer tracking, and Linux packaging.
-
-> **Windows installation:** Pine’s public GitHub Actions workflow builds separate x64 and ARM64 installers. If this release is unsigned, Windows SmartScreen may ask you to confirm. Verify the SHA-256 checksum published with the release before running an installer.
+> **Windows installation:** Pine’s public GitHub Actions workflow builds separate x64 and ARM64 installers. Because this release is unsigned, Windows SmartScreen may ask you to confirm. Verify the SHA-256 checksum published with this release before running an installer.

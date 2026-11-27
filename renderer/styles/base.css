@@ -30,11 +30,11 @@ body::before {
   pointer-events: none;
   z-index: 0;
   background:
-    radial-gradient(ellipse 800px 600px at 20% 10%, rgba(94, 92, 230, 0.08), transparent 60%),
-    radial-gradient(ellipse 600px 500px at 80% 80%, rgba(100, 210, 255, 0.06), transparent 60%),
-    radial-gradient(ellipse 500px 400px at 50% 50%, rgba(255, 159, 10, 0.03), transparent 60%);
+    radial-gradient(ellipse 800px 600px at 20% 10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
+    radial-gradient(ellipse 600px 500px at 80% 80%, color-mix(in srgb, var(--accent-2) 11%, transparent), transparent 60%),
+    radial-gradient(ellipse 500px 400px at 50% 50%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%);
   filter: blur(60px);
-  transition: background 2s var(--ease-glass);
+  transition: background 0.4s var(--ease-glass);
 }
 
 /* ── Grain texture for realism ────────────────────────────── */

@@ -1,13 +1,13 @@
 const RELEASES = {
-  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncherSetup-x64.exe',
-  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncherSetup-arm64.exe',
-  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-linux-amd64.deb',
-  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-linux-arm64.deb',
-  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-archlinux-x64.pacman',
-  fedora: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-fedora-x86_64.rpm',
-  fedoraArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.2.9/PineLauncher-1.2.9-fedora-aarch64.rpm'
+  x64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncherSetup-x64.exe',
+  arm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncherSetup-arm64.exe',
+  linux: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncher-1.3.0-linux-amd64.deb',
+  linuxArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncher-1.3.0-linux-arm64.deb',
+  arch: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncher-1.3.0-archlinux-x64.pacman',
+  fedora: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncher-1.3.0-fedora-x86_64.rpm',
+  fedoraArm64: 'https://github.com/RealSe62em/Pine-Launcher/releases/download/v1.3.0/PineLauncher-1.3.0-fedora-aarch64.rpm'
 };
-const FALLBACK_VERSION = '1.2.9';
+const FALLBACK_VERSION = '1.3.0';
 const ANALYTICS_ID = 'G-FR14WGWZY2';
 const CONSENT_KEY = 'pine_analytics_consent';
 

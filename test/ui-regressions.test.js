@@ -9,16 +9,18 @@ const root = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const renderer = [
   'renderer/script.js',
-  'renderer/accessibility.js',
-  'renderer/memory-range.js',
-  'renderer/window-chrome.js',
+  ...fs.readdirSync(path.join(root, 'renderer')).filter(n => n.endsWith('.js') && n !== 'script.js').map(n => `renderer/${n}`),
 ].map(read).join('\n');
 const html = read('renderer/index.html');
 const styles = read('renderer/style.css');
 const components = read('renderer/styles/components.css');
 const features = read('renderer/styles/features.css');
 const preload = read('preload.js');
-const main = ['main.js', 'lib/launcher-window.js'].map(read).join('\n');
+const main = [
+  'main.js',
+  'lib/launcher-window.js',
+  ...fs.readdirSync(path.join(root, 'lib')).filter(name => name.endsWith('.js') && name !== 'launcher-window.js').map(name => `lib/${name}`),
+].map(read).join('\n');
 const website = read('website/index.html');
 
 test('custom install location keeps browse controls visually separate from the path field', () => {
@@ -262,7 +264,7 @@ test('Discover includes legacy releases and provider-aware classic mod results',
   assert.match(renderer, /for \(const version of releases\) filterVer\.add/);
   assert.doesNotMatch(renderer, /releases\.slice\(0, 30\)/);
   assert.match(renderer, /versionSel\.value = gameVersion/);
-  assert.match(renderer, /Promise\.allSettled\(\[\s*api\.searchMods[\s\S]*?api\.searchCurseForge/);
+  assert.match(renderer, /Promise\.allSettled\(\[[\s\S]*?api\.searchMods[\s\S]*?api\.searchCurseForge/);
   assert.match(renderer, /function officialDiscoverResults\(query, version, loader, category/);
   assert.match(renderer, /project_id: 'official:optifine'/);
   assert.match(preload, /getOptiFineBuilds:\s*\(gameVersion\) => ipcRenderer\.invoke\('get-optifine-builds'/);
@@ -402,9 +404,12 @@ test('Fabric Loader compatibility can offer verified mod updates and downgrades'
   assert.match(renderer, /replaceFilename: replacement\.filename/);
 });
 
-test('pride account matching is case-insensitive', () => {
-  assert.match(renderer, /profile\?\.name \|\| ''\)\.toLowerCase\(\)/);
-  assert.match(renderer, /new Set\(\['undrrwrldd', 'se62em', 'shemes', 'exobeast'\]\)/);
+test('pride mode uses centralized eligibility and follows authentication changes', () => {
+  assert.match(renderer, /import \{ getPrideModeState \} from '\.\/pride-mode\.js'/);
+  assert.match(renderer, /const pride = getPrideModeState\(state\.authData\?\.profile, state\.settings\)/);
+  assert.match(renderer, /function updateAuthUI\(\)[\s\S]*?updatePride\(\);/);
+  assert.match(renderer, /properties\.forEach\(property => rootStyle\.removeProperty\(property\)\)/);
+  assert.match(renderer, /gayMode: prideToggle \? prideToggle\.checked : state\.settings\.gayMode !== false/);
 });
 
 test('Discover bounds its live card count during long sessions', () => {
@@ -475,22 +480,30 @@ test('website removes the dummy Creative Forge entry and links VirusTotal by exa
   assert.doesNotMatch(website, /Creative\s*<i>Forge<\/i>/);
   assert.match(website, /data-virustotal/);
   assert.match(read('website/script.js'), /virustotal\.com\/gui\/file\/\$\{digest\.toLowerCase\(\)\}/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-x64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncherSetup-arm64\.exe/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-amd64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-linux-arm64\.deb/);
-  assert.match(website, /releases\/download\/v1\.2\.9\/PineLauncher-1\.2\.9-archlinux-x64\.pacman/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncherSetup-x64\.exe/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncherSetup-arm64\.exe/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-linux-amd64\.deb/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-linux-arm64\.deb/);
+  assert.match(website, /releases\/download\/v1\.3\.0\/PineLauncher-1\.3\.0-archlinux-x64\.pacman/);
   assert.match(website, /data-verify-download hidden/);
   assert.doesNotMatch(website, /data-build="universal"|Download universal installer/);
 });
 
-test('ordinary users are not asked to configure third-party credentials', () => {
-  assert.doesNotMatch(renderer, /data-cat="integrations"|curseforge-api-key|saveCurseForgeKey|testCurseForgeKey/);
-  assert.doesNotMatch(preload, /getIntegrationStatus|saveCurseForgeKey|testCurseForgeKey/);
-  assert.doesNotMatch(main, /INTEGRATION_SECRETS_FILE|save-curseforge-key|test-curseforge-key/);
-  assert.doesNotMatch(read('README.md'), /Settings → Integrations|approved third-party API key/);
-  assert.doesNotMatch(website, /CurseForge/i);
+test('CurseForge API keys and Cloud Sync remain optional, encrypted, and never block Modrinth', () => {
+  assert.match(renderer, /data-cat="curseforge"/);
+  assert.match(renderer, /data-cat="cloud-sync"/);
+  assert.match(renderer, /id="cf-api-key-input"/);
+  assert.match(preload, /getCurseForgeStatus/);
+  assert.match(preload, /saveCurseForgeKey/);
+  assert.match(preload, /testCurseForgeKey/);
+  assert.match(preload, /connectCloudSync/);
+  assert.match(preload, /runCloudSync/);
+  assert.match(main, /ipcMain\.handle\('save-curseforge-key'/);
+  assert.match(main, /ipcMain\.handle\('test-curseforge-key'/);
+  assert.match(main, /ipcMain\.handle\('cloud-sync-connect'/);
+  assert.match(main, /ipcMain\.handle\('cloud-sync-run'/);
   assert.match(renderer, /api\.searchMods\(query, facets, state\.searchOffset, SEARCH_LIMIT, sort\)/);
+  assert.match(html, /id="filter-source"/);
 });
 
 test('high-density home and performance surfaces avoid live scrolling blur', () => {

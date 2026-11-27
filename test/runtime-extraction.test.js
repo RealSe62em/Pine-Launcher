@@ -35,3 +35,7 @@ test('Linux Java extraction uses tar with argument-safe paths', async () => {
   assert.deepEqual(calls, [{ command: 'tar', args: ['-xzf', '/tmp/Pine Java.tar.gz', '-C', '/tmp/Pine Runtime'] }]);
   assert.equal(await extractRuntimeArchive('runtime.tar.gz', 'runtime', 'linux', async () => {}), 'tar');
 });
+
+test('unsupported platforms fail explicitly instead of producing unusable runtimes', async () => {
+  await assert.rejects(extractRuntimeArchive('runtime.tar.gz', 'runtime', 'darwin', async () => {}), /not supported on darwin/);
+});

@@ -70,6 +70,10 @@ export function stagger(els, baseIndex = 0) {
   els.forEach((el, i) => el.style.setProperty('--i', i + baseIndex));
 }
 
+export function staggerInto(els) {
+  stagger(els, 0);
+}
+
 // One-shot scale pop on an element, e.g. for "✓ saved" feedback.
 export function pulseOnce(el) {
   if (!el) return;

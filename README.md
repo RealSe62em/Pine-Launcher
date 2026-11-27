@@ -9,23 +9,33 @@
 
 # Pine Launcher
 
-Pine Launcher is a Windows and Linux Minecraft launcher with isolated instances, Microsoft and offline accounts, Modrinth content management, verified shared caching, and an iOS-inspired glass interface.
+Pine Launcher is a Windows and Linux Minecraft launcher with isolated instances, Microsoft and offline accounts, Modrinth and optional CurseForge content discovery, verified shared caching, a live **Theme Studio**, and an iOS-inspired glass interface.
 
-Windows 10/11, Debian-family Linux distributions, and Arch-family Linux distributions are supported. The website’s searchable Linux picker maps supported distributions to the matching DEB or Pacman installer.
+Windows 10/11 (x64 & ARM64), Debian/Ubuntu-family Linux (`.deb` x64 & ARM64), Fedora/Nobara-family Linux (`.rpm` x64 & ARM64), and Arch-family Linux (`.pacman` x64) are supported. The website’s Linux picker maps supported distributions directly to the matching native installer.
 
 ## Download and install
 
-1. Download the newest package from the [Releases](https://github.com/RealSe62em/Pine-Launcher/releases) page.
-2. On Windows, run the installer that matches your PC:
+1. Download the newest package from the [Releases](https://github.com/RealSe62em/Pine-Launcher/releases) page (or via the [Pine Launcher website](https://realse62em.github.io/Pine-Launcher/)).
+2. **Windows** — run the installer that matches your PC:
    - `PineLauncherSetup-x64.exe` — Intel or AMD 64-bit PCs.
    - `PineLauncherSetup-arm64.exe` — Windows on ARM PCs.
-3. On Debian, Ubuntu, Linux Mint, or another Debian-based distribution, install the x64 package:
+3. **Debian, Ubuntu, Linux Mint, Pop!_OS, Zorin OS, elementary OS** — install the native `.deb` package:
 
 ```bash
 sudo apt install ./PineLauncher-*-linux-amd64.deb
+# or for ARM64:
+sudo apt install ./PineLauncher-*-linux-arm64.deb
 ```
 
-4. On Arch Linux, install the native x64 package:
+4. **Fedora & Nobara** — install the native `.rpm` package:
+
+```bash
+sudo dnf install ./PineLauncher-*-fedora-x86_64.rpm
+# or for ARM64:
+sudo dnf install ./PineLauncher-*-fedora-aarch64.rpm
+```
+
+5. **Arch Linux, Manjaro, EndeavourOS, CachyOS** — install the native `.pacman` package:
 
 ```bash
 sudo pacman -U ./PineLauncher-*-archlinux-x64.pacman
@@ -33,38 +43,41 @@ sudo pacman -U ./PineLauncher-*-archlinux-x64.pacman
 
 Then open Pine Launcher from the application menu or run `pine-launcher`.
 
-Pine downloads and verifies the Java runtime required by the selected Minecraft version on both platforms, so manual Java installation should not normally be needed. Linux Java archives are verified and extracted with the system `tar` utility.
+Pine downloads and verifies the Java runtime required by the selected Minecraft version on both Windows and Linux, so manual Java installation should not normally be needed. Linux Java archives are verified and extracted with the system `tar` utility.
 
 ## Features
 
-- Separate Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
-- Multiple Microsoft and offline accounts with individual switching and deletion.
-- Modrinth discovery for mods, packs, resource packs, shaders, and data packs.
-- A polished frequently visited grid with real server/world details and one-click Play.
-- Shared verified caches for game assets, libraries, versions, and mods—so matching files are reused instead of downloaded again for every new instance.
-- Clear launch stages and selectable, copyable logs for troubleshooting.
-- Transactional instance copies and imports with cancellation, category selection, private-data exclusion, and rollback of partial work.
-- Pine archives, lightweight Pine manifests, and standards-compatible Modrinth `.mrpack` import/export.
-- Automatic restore points, world management, managed-pack lifecycle controls, and privacy-safe crash diagnosis.
+- **Isolated instances & five loaders:** Separate Vanilla, Fabric, Quilt, Forge, and NeoForge instances with independent mods, worlds, resource packs, shaders, data packs, and Java/memory settings.
+- **Theme Studio, 7 built-in themes & 6 UI layouts (new in 1.3.0):**
+  - Switch between **7 curated themes** (*Pine Dark*, *Evergreen Canopy*, *Nordic Frost*, *Obsidian Ember*, *Velvet Nebula*, *Kyoto Sakura*, *Cobalt Matrix*) and **6 structural UI layouts** (*Dynamic Island & Dock*, *Studio Sidebar*, *Zen Icon Rail*, *Panorama Top-Deck*, *Tactical Mecha HUD*, *Tactile 3D Bento*).
+  - Customize every surface live in **Theme Studio** with click-to-inspect element styling, adaptive solid/gradient/wallpaper backgrounds (with gradient angle and automatic wallpaper compression), border & text-gradient presets, CSS snippets, Undo/Redo, and JSON theme preset import/export.
+- **Modrinth & optional CurseForge discovery:** Browse and install mods, modpacks, resource packs, shaders, and data packs from Modrinth out of the box, or add your own CurseForge API key in **Settings → CurseForge** (stored encrypted in your OS keyring, with a built-in step-by-step setup guide and connection test).
+- **Multiple accounts:** Manage multiple Microsoft and offline accounts with individual switching, deletion, skins, and capes.
+- **Smart Home & Play Stats:** Frequently visited servers and worlds with one-click Play, plus Play Stats dashboards with accurate multi-day session tracking.
+- **Shared verified caching:** Game assets, libraries, versions, and mods are cached and hash-verified so matching files are reused across instances instead of downloaded repeatedly.
+- **Mojang security-manifest verification:** Validates cached vanilla manifests against Mojang’s `version_manifest_v2.json` SHA-1 checksums on launch, warning existing instances before refreshing stale official libraries (such as LWJGL / FreeType security fixes like Minecraft2Shell) while leaving worlds, mods, and configs untouched.
+- **Backups, imports & exports:** Automatic restore points, transactional instance duplication/migration, Pine archives, lightweight Pine manifests, Modrinth `.mrpack` import/export, world management, managed-pack lifecycle controls, and privacy-safe crash diagnosis.
 
 The **Settings → Storage** page shows how much space instances, shared game files, Java runtimes, backups, caches, and logs use. Its cache cleanup removes only replaceable downloads; it never removes instances, worlds, runtimes, or backups.
 
 ## Privacy and safety
 
-Microsoft login uses OAuth with PKCE. Microsoft refresh tokens are saved only when Electron's operating-system-backed secure storage is available; Pine refuses to persist them as plaintext. Content downloads use HTTPS, verify available hashes, reject unsafe filenames, resolve required dependencies, and roll back partial installations.
+Microsoft login uses OAuth with PKCE. Microsoft refresh tokens and optional CurseForge API keys are saved only when Electron's operating-system-backed secure storage is available; Pine refuses to persist them as plaintext. Content downloads use HTTPS, verify available hashes, reject unsafe filenames, resolve required dependencies, and roll back partial installations.
+
+Pine also includes an optional anonymous active-player counter (enabled by default, with a one-click opt-out and a **What's shared?** live JSON payload viewer in **Settings → General**). It sends only a random per-launch in-memory `sessionId`, launcher/playing state, Pine version, and OS platform—never usernames, Microsoft accounts, UUIDs, IP addresses, server addresses, worlds, or mod lists.
 
 Instances, encrypted account data, settings, caches, and diagnostic logs are stored in Electron's per-user application-data directory (`%APPDATA%` on Windows and `~/.config` on typical Linux desktops). Uninstalling Pine removes application files but keeps worlds and other user data.
 
-On Linux, Microsoft account persistence requires a working desktop Secret Service/keyring such as GNOME Keyring, KWallet, KeePassXC, or oo7. Pine will not save refresh tokens as plaintext if secure storage is unavailable. Arch users whose desktop does not already provide one can install GNOME Keyring with `sudo pacman -S gnome-keyring`.
+On Linux, Microsoft account and CurseForge key persistence requires a working desktop Secret Service/keyring such as GNOME Keyring, KWallet, KeePassXC, or oo7. Pine will not save secrets as plaintext if secure storage is unavailable. Arch users whose desktop does not already provide one can install GNOME Keyring with `sudo pacman -S gnome-keyring`.
 
-The current installer is unsigned. Windows may therefore show an "Unknown publisher" notice. Verify the installer checksum published with each release and never disable antivirus protection globally.
+The current Windows installer is unsigned. Windows may therefore show an "Unknown publisher" notice. Verify the SHA-256 checksum published with each release and never disable antivirus protection globally.
 
 ## Troubleshooting
 
 - **Java error:** Pine installs the Java runtime required by the Minecraft version. You can also choose a custom Java executable in Settings.
 - **Launch failure:** Open the instance **Logs** tab and copy the selectable log text when asking for help.
-- **Installer problem:** On Windows, choose x64 for Intel/AMD or ARM64 for Windows on ARM. On Debian, use `sudo apt install ./package.deb`; on Arch, use `sudo pacman -U ./package.pacman`, so required desktop libraries are resolved automatically.
-- **Uninstall:** Use **Installed apps** on Windows, `sudo apt remove pine-launcher` on Debian, or `sudo pacman -R pine-launcher` on Arch. Worlds and other user data are retained.
+- **Installer problem:** On Windows, choose x64 for Intel/AMD or ARM64 for Windows on ARM. On Debian/Ubuntu use `sudo apt install ./package.deb`, on Fedora use `sudo dnf install ./package.rpm`, and on Arch use `sudo pacman -U ./package.pacman`, so required desktop libraries are resolved automatically.
+- **Uninstall:** Use **Installed apps** on Windows, `sudo apt remove pine-launcher` on Debian/Ubuntu, `sudo dnf remove pine-launcher` on Fedora, or `sudo pacman -R pine-launcher` on Arch. Worlds and other user data are retained.
 
 ## Building from source on Windows
 
@@ -72,7 +85,7 @@ Install Node.js 22.12 or newer, then run from Command Prompt or PowerShell:
 
 ```powershell
 npm.cmd install
-npm.cmd test
+npm.cmd run check
 npm.cmd start
 ```
 
@@ -82,24 +95,25 @@ Use `npm run dev` to open Electron developer tools. Build Windows installers wit
 npm run build:installer
 ```
 
-## Building from source on Debian
+## Building from source on Debian / Ubuntu
 
-Install Node.js 22.12 or newer, `npm`, and the standard Debian packaging tools. Building the Arch package from Debian also requires `libarchive-tools`:
+Install Node.js 22.12 or newer, `npm`, and the standard packaging tools (`libarchive-tools`, `rpm`, and `zstd` are needed if building Arch/Fedora packages too):
 
 ```bash
-sudo apt install libarchive-tools
+sudo apt install libarchive-tools rpm zstd
 npm ci
-npm test
+npm run check
 npm start
 ```
 
-Build a native x64 `.deb` with:
+Build native packages into `dist-native/`:
 
 ```bash
 npm run build:deb:x64
+npm run build:deb:arm64
+npm run build:rpm:x64
+npm run build:rpm:arm64
 ```
-
-The package is written to `dist-native/`. An ARM64 package can be built on a suitable builder with `npm run build:deb:arm64`.
 
 ## Building from source on Arch Linux
 
@@ -108,7 +122,7 @@ Install Node.js 22.12 or newer and npm, then run:
 ```bash
 sudo pacman -S --needed nodejs npm base-devel
 npm ci
-npm test
+npm run check
 npm start
 ```
 
@@ -122,11 +136,11 @@ The package is written to `dist-native/` and can be installed with `sudo pacman 
 
 ## Release checklist
 
-1. Run `npm test` and `npm audit`.
-2. Smoke-test Vanilla, Fabric, Quilt, and Forge with fresh instances.
-3. Test install, launch, and uninstall on Windows, Debian, and Arch Linux.
-4. Test managed Java, Microsoft secure storage, Vanilla, Fabric, Quilt, Forge, and NeoForge on each platform.
-5. Publish the installer/package files and their SHA-256 checksums in a GitHub Release.
+1. Run `npm run check`, `node scripts/audit-production.cjs`, and `npm run test:smoke`.
+2. Smoke-test Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
+3. Verify install, launch, and uninstall on Windows, Debian/Ubuntu, Fedora, and Arch Linux.
+4. Verify managed Java, OS keyring storage, and updater feeds on each platform.
+5. Publish all installers/packages and their SHA-256 checksums in a GitHub Release.
 
 Built with Electron and `minecraft-launcher-core`. Licensed under MIT.
 

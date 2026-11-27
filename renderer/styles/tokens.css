@@ -125,58 +125,39 @@
   50%  { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
 }
-@keyframes pride-ambient {
-  0%   { opacity: .06; transform: scale(1) translate(0, 0); }
-  25%  { opacity: .1;  transform: scale(1.1) translate(2%, -2%); }
-  50%  { opacity: .06; transform: scale(1) translate(0, 0); }
-  75%  { opacity: .1;  transform: scale(1.05) translate(-2%, 2%); }
-  100% { opacity: .06; transform: scale(1) translate(0, 0); }
-}
 html.pride-mode {
-  --accent-grad: repeating-linear-gradient(
+  --accent-grad: linear-gradient(
     90deg,
-    #e40303 0%, #e40303 8.33%,
-    #ff8c00 8.33%, #ff8c00 16.66%,
-    #ffed00 16.66%, #ffed00 25%,
-    #008026 25%, #008026 33.33%,
-    #004dff 33.33%, #004dff 41.66%,
-    #750787 41.66%, #750787 50%
+    #ff4d6d 0%,
+    #ff9f43 18%,
+    #ffe66d 36%,
+    #4ade80 54%,
+    #5ce0ff 72%,
+    #a78bfa 88%,
+    #ff4d9d 100%
   );
-  --accent-glow: 0 0 24px rgba(228,3,3,0.35), 0 0 48px rgba(255,140,0,0.2);
-  --accent: #750787;
-  --accent-2: #008026;
-  --accent-dim: rgba(117,7,135,0.25);
+  --accent-glow: 0 0 24px rgba(255,77,157,.28), 0 0 48px rgba(92,224,255,.14);
+  --accent: #ff5ca8;
+  --accent-2: #8b7cff;
+  --accent-dim: rgba(255,92,168,.18);
+  --glass-stroke: rgba(255,120,196,.32);
 }
-/* Ambient rainbow lights behind all pages */
-html.pride-mode::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse 60% 40% at 10% 30%, rgba(228,3,3,0.15) 0%, transparent 60%),
-    radial-gradient(ellipse 50% 35% at 25% 60%, rgba(255,140,0,0.12) 0%, transparent 55%),
-    radial-gradient(ellipse 55% 40% at 40% 20%, rgba(255,237,0,0.1) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 35% at 55% 70%, rgba(0,128,38,0.12) 0%, transparent 55%),
-    radial-gradient(ellipse 60% 40% at 70% 25%, rgba(0,77,255,0.12) 0%, transparent 55%),
-    radial-gradient(ellipse 50% 35% at 85% 65%, rgba(117,7,135,0.15) 0%, transparent 55%),
-    radial-gradient(ellipse 40% 30% at 50% 50%, rgba(255,255,255,0.04) 0%, transparent 50%);
-  animation: pride-ambient 12s ease-in-out infinite;
+html.pride-mode body::before {
+  display: none;
 }
 html.pride-mode .brand-mark::after {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   animation: pride-shift 6s ease infinite;
 }
 html.pride-mode .brand-mark {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   animation: pride-shift 6s ease infinite;
 }
 html.pride-mode .brand-name {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -184,13 +165,13 @@ html.pride-mode .brand-name {
 }
 html.pride-mode .playing-pill {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   animation: pride-shift 6s ease infinite;
 }
 /* All primary buttons get the rainbow */
 html.pride-mode .btn-primary {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   animation: pride-shift 4s ease infinite;
   border: none;
   box-shadow: var(--accent-glow);
@@ -212,7 +193,7 @@ html.pride-mode .btn-secondary:hover {
 /* Tab bar active indicator, accent toggles, chips, etc. */
 html.pride-mode .tabbar-item.active .tabbar-label {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -223,89 +204,299 @@ html.pride-mode .tabbar-item.active .tabbar-icon {
 }
 html.pride-mode .chip.accent {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   animation: pride-shift 6s ease infinite;
 }
 html.pride-mode .slider-fill,
 html.pride-mode input[type="checkbox"]:checked + .check-visual {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   animation: pride-shift 6s ease infinite;
 }
 html.pride-mode .accent-text {
   background: var(--accent-grad);
-  background-size: 600% 100%;
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: pride-shift 4s ease infinite;
 }
-/* Animated rainbow border on every surface element */
-html.pride-mode {
-  --glass-stroke: rgba(117,7,135,0.35);
-}
+/* Keep surfaces readable while giving current cards a visible rainbow edge. */
 html.pride-mode .settings-card,
 html.pride-mode .mod-card,
 html.pride-mode .content-item,
 html.pride-mode .instance-card,
 html.pride-mode .discover-filters,
-html.pride-mode .pick-instance,
 html.pride-mode .modal,
-html.pride-mode .glass-panel,
-html.pride-mode .step-progress,
-html.pride-mode .profile-card,
 html.pride-mode .world-card,
-html.pride-mode .modal-header,
-html.pride-mode .modal-body,
-html.pride-mode .modal-footer,
 html.pride-mode .sheet,
-html.pride-mode .sheet-header,
-html.pride-mode .sheet-body,
-html.pride-mode .launch-splash,
 html.pride-mode .instance-hero,
-html.pride-mode .instance-mods-header,
-html.pride-mode .results-header,
-html.pride-mode .empty-state,
-html.pride-mode .color-swatches {
-  position: relative;
-  border: 1px solid transparent !important;
-  background-clip: padding-box !important;
-}
-html.pride-mode .settings-card::after,
-html.pride-mode .mod-card::after,
-html.pride-mode .content-item::after,
-html.pride-mode .instance-card::after,
-html.pride-mode .discover-filters::after,
-html.pride-mode .pick-instance::after,
-html.pride-mode .modal::after,
-html.pride-mode .glass-panel::after,
-html.pride-mode .step-progress::after,
-html.pride-mode .profile-card::after,
-html.pride-mode .world-card::after,
-html.pride-mode .modal-header::after,
-html.pride-mode .modal-body::after,
-html.pride-mode .modal-footer::after,
-html.pride-mode .sheet::after,
-html.pride-mode .sheet-header::after,
-html.pride-mode .sheet-body::after,
-html.pride-mode .launch-splash::after,
-html.pride-mode .instance-hero::after,
-html.pride-mode .instance-mods-header::after,
-html.pride-mode .results-header::after,
-html.pride-mode .empty-state::after,
-html.pride-mode .color-swatches::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: var(--accent-grad);
-  background-size: 600% 100%;
-  animation: pride-shift 4s ease infinite;
-  z-index: -1;
-  pointer-events: none;
+html.pride-mode .empty-state {
+  border-color: color-mix(in srgb, var(--accent) 34%, rgba(255,255,255,.12));
+  box-shadow: inset 0 1px rgba(255,255,255,.08), 0 0 24px rgba(167,139,250,.08);
 }
 html.pride-mode input.input,
 html.pride-mode select.input,
 html.pride-mode textarea.input {
-  border-color: rgba(117,7,135,0.4);
+  border-color: color-mix(in srgb, var(--accent) 42%, rgba(255,255,255,.12));
 }
+html.pride-mode .topbar,
+html.pride-mode .tabbar {
+  border-color: color-mix(in srgb, var(--accent) 30%, rgba(255,255,255,.12));
+}
+.pride-mode-setting > label:first-child strong,
+.pride-mode-setting > label:first-child small {
+  display: block;
+}
+.pride-mode-setting > label:first-child small {
+  margin-top: 3px;
+  color: var(--text-lo);
+  font-size: var(--text-caption);
+}
+html.reduced-motion.pride-mode *,
+html.reduced-motion.pride-mode body::before {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html.pride-mode *,
+  html.pride-mode body::before {
+    animation: none !important;
+  }
+}
+
+/* ── Custom Launcher Themes ──────────────────────────────── */
+html[data-theme="evergreen"] {
+  --bg-0: #050c09;
+  --bg-1: color-mix(in srgb, var(--accent) 5%, transparent);
+  --bg-2: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg-3: color-mix(in srgb, var(--accent) 14%, transparent);
+  --glass-surface-base: rgba(14, 40, 29, 0.34);
+  --glass-surface-raised: rgba(18, 52, 37, 0.44);
+  --glass-surface-overlay: rgba(24, 66, 47, 0.56);
+  --glass-surface-modal: rgba(10, 28, 20, 0.84);
+  --glass-surface-cinematic: rgba(14, 38, 27, 0.90);
+  --glass-inner-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 22%, transparent);
+  --glass-inner-shadow-deep: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 30%, transparent), inset 0 -0.5px 0 rgba(2, 10, 6, 0.38);
+  --glass-leak: linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 100%);
+  --glass-stroke: color-mix(in srgb, var(--accent) 30%, rgba(255, 255, 255, 0.14));
+  --text-hi: #ecfdf5;
+  --text-md: rgba(209, 250, 229, 0.72);
+  --text-lo: rgba(167, 243, 208, 0.46);
+}
+html[data-theme="evergreen"]:not(.pride-mode) body::before {
+  background:
+    radial-gradient(ellipse 820px 620px at 18% 12%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 62%),
+    radial-gradient(ellipse 640px 520px at 82% 82%, color-mix(in srgb, var(--accent-2) 15%, transparent), transparent 60%),
+    radial-gradient(ellipse 520px 420px at 50% 46%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 60%);
+}
+
+html[data-theme="nordic-frost"] {
+  --bg-0: #070e18;
+  --bg-1: color-mix(in srgb, var(--accent) 5%, transparent);
+  --bg-2: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg-3: color-mix(in srgb, var(--accent) 14%, transparent);
+  --glass-surface-base: rgba(20, 42, 70, 0.34);
+  --glass-surface-raised: rgba(26, 54, 88, 0.44);
+  --glass-surface-overlay: rgba(34, 68, 110, 0.56);
+  --glass-surface-modal: rgba(11, 22, 38, 0.84);
+  --glass-surface-cinematic: rgba(15, 30, 50, 0.90);
+  --glass-inner-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 24%, transparent);
+  --glass-inner-shadow-deep: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 32%, transparent), inset 0 -0.5px 0 rgba(3, 8, 18, 0.42);
+  --glass-leak: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 100%);
+  --glass-stroke: color-mix(in srgb, var(--accent) 32%, rgba(255, 255, 255, 0.16));
+  --text-hi: #f0f9ff;
+  --text-md: rgba(224, 242, 254, 0.72);
+  --text-lo: rgba(186, 230, 253, 0.46);
+}
+html[data-theme="nordic-frost"]:not(.pride-mode) body::before {
+  background:
+    radial-gradient(ellipse 840px 620px at 20% 10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 62%),
+    radial-gradient(ellipse 660px 520px at 80% 80%, color-mix(in srgb, var(--accent-2) 16%, transparent), transparent 60%),
+    radial-gradient(ellipse 520px 420px at 48% 52%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%);
+}
+
+html[data-theme="obsidian-ember"] {
+  --bg-0: #0c0705;
+  --bg-1: color-mix(in srgb, var(--accent) 5%, transparent);
+  --bg-2: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg-3: color-mix(in srgb, var(--accent) 14%, transparent);
+  --glass-surface-base: rgba(44, 24, 16, 0.36);
+  --glass-surface-raised: rgba(58, 32, 22, 0.46);
+  --glass-surface-overlay: rgba(74, 41, 28, 0.58);
+  --glass-surface-modal: rgba(22, 12, 8, 0.86);
+  --glass-surface-cinematic: rgba(30, 17, 11, 0.92);
+  --glass-inner-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent-2) 22%, transparent);
+  --glass-inner-shadow-deep: inset 0 1px 0 color-mix(in srgb, var(--accent-2) 30%, transparent), inset 0 -1px 0 rgba(0, 0, 0, 0.48);
+  --glass-leak: linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 100%);
+  --glass-stroke: color-mix(in srgb, var(--accent) 30%, rgba(255, 255, 255, 0.14));
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 13px;
+  --r-lg: 17px;
+  --r-xl: 22px;
+  --text-hi: #fff7ed;
+  --text-md: rgba(254, 215, 170, 0.72);
+  --text-lo: rgba(253, 186, 116, 0.46);
+}
+html[data-theme="obsidian-ember"]:not(.pride-mode) body::before {
+  background:
+    radial-gradient(ellipse 820px 600px at 18% 12%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 62%),
+    radial-gradient(ellipse 640px 500px at 82% 82%, color-mix(in srgb, var(--accent-2) 15%, transparent), transparent 60%),
+    radial-gradient(ellipse 500px 400px at 50% 50%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 60%);
+}
+
+html[data-theme="velvet-nebula"] {
+  --bg-0: #090414;
+  --bg-1: color-mix(in srgb, var(--accent) 5%, transparent);
+  --bg-2: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg-3: color-mix(in srgb, var(--accent) 15%, transparent);
+  --glass-surface-base: rgba(38, 17, 70, 0.34);
+  --glass-surface-raised: rgba(50, 22, 90, 0.44);
+  --glass-surface-overlay: rgba(66, 30, 116, 0.56);
+  --glass-surface-modal: rgba(18, 8, 36, 0.85);
+  --glass-surface-cinematic: rgba(25, 11, 48, 0.91);
+  --glass-inner-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 24%, transparent);
+  --glass-inner-shadow-deep: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 32%, transparent), inset 0 -0.5px 0 rgba(34, 211, 238, 0.16);
+  --glass-leak: linear-gradient(165deg, color-mix(in srgb, var(--accent) 9%, transparent) 0%, color-mix(in srgb, var(--accent-2) 4%, transparent) 100%);
+  --glass-stroke: color-mix(in srgb, var(--accent) 32%, rgba(255, 255, 255, 0.16));
+  --text-hi: #faf5ff;
+  --text-md: rgba(233, 213, 255, 0.72);
+  --text-lo: rgba(216, 180, 254, 0.46);
+}
+html[data-theme="velvet-nebula"]:not(.pride-mode) body::before {
+  background:
+    radial-gradient(ellipse 840px 620px at 18% 12%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 62%),
+    radial-gradient(ellipse 640px 520px at 82% 80%, color-mix(in srgb, var(--accent-2) 16%, transparent), transparent 60%),
+    radial-gradient(ellipse 520px 420px at 50% 48%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%);
+}
+
+html[data-theme="mocha-sakura"] {
+  --bg-0: #120d11;
+  --bg-1: color-mix(in srgb, var(--accent) 5%, transparent);
+  --bg-2: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg-3: color-mix(in srgb, var(--accent) 14%, transparent);
+  --glass-surface-base: rgba(54, 35, 46, 0.34);
+  --glass-surface-raised: rgba(70, 46, 60, 0.44);
+  --glass-surface-overlay: rgba(88, 58, 76, 0.56);
+  --glass-surface-modal: rgba(26, 17, 23, 0.85);
+  --glass-surface-cinematic: rgba(34, 22, 30, 0.91);
+  --glass-inner-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 22%, transparent);
+  --glass-inner-shadow-deep: inset 0 0.5px 0 color-mix(in srgb, var(--accent-2) 30%, transparent), inset 0 -0.5px 0 rgba(12, 6, 9, 0.38);
+  --glass-leak: linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 100%);
+  --glass-stroke: color-mix(in srgb, var(--accent) 30%, rgba(255, 255, 255, 0.15));
+  --r-sm: 14px;
+  --r-md: 18px;
+  --r-lg: 24px;
+  --r-xl: 30px;
+  --text-hi: #fdf2f8;
+  --text-md: rgba(251, 207, 232, 0.74);
+  --text-lo: rgba(244, 180, 212, 0.48);
+}
+html[data-theme="mocha-sakura"]:not(.pride-mode) body::before {
+  background:
+    radial-gradient(ellipse 820px 600px at 20% 12%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 62%),
+    radial-gradient(ellipse 640px 500px at 80% 82%, color-mix(in srgb, var(--accent-2) 15%, transparent), transparent 60%),
+    radial-gradient(ellipse 500px 400px at 50% 50%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%);
+}
+
+html[data-theme="cobalt-matrix"] {
+  --bg-0: #060b17;
+  --bg-1: color-mix(in srgb, var(--accent) 5%, transparent);
+  --bg-2: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg-3: color-mix(in srgb, var(--accent) 15%, transparent);
+  --glass-surface-base: rgba(11, 23, 46, 0.46);
+  --glass-surface-raised: rgba(15, 33, 66, 0.58);
+  --glass-surface-overlay: rgba(20, 44, 88, 0.72);
+  --glass-surface-modal: rgba(8, 16, 34, 0.90);
+  --glass-surface-cinematic: rgba(10, 20, 40, 0.95);
+  --glass-inner-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent-2) 26%, transparent), inset 0 0 16px color-mix(in srgb, var(--accent) 12%, transparent);
+  --glass-inner-shadow-deep: inset 0 1px 0 color-mix(in srgb, var(--accent-2) 36%, transparent), inset 0 -1px 0 rgba(2, 6, 16, 0.55);
+  --glass-leak: linear-gradient(180deg, color-mix(in srgb, var(--accent) 12%, transparent) 0%, transparent 100%);
+  --glass-stroke: color-mix(in srgb, var(--accent) 35%, rgba(255, 255, 255, 0.18));
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --text-hi: #f8fafc;
+  --text-md: rgba(224, 238, 255, 0.78);
+  --text-lo: rgba(147, 197, 253, 0.50);
+}
+html[data-theme="cobalt-matrix"]:not(.pride-mode) body::before {
+  background:
+    radial-gradient(ellipse 950px 550px at 50% 48%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 68%),
+    radial-gradient(ellipse 700px 500px at 15% 15%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 55%),
+    radial-gradient(ellipse 700px 500px at 85% 85%, color-mix(in srgb, var(--accent-2) 18%, transparent), transparent 55%),
+    #060b17;
+}
+html[data-theme="cobalt-matrix"]:not(.pride-mode) #app::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--accent-2) 14%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-2) 14%, transparent) 1px, transparent 1px);
+  background-size: 52px 52px;
+  background-position: center center;
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 50%, rgba(0, 0, 0, 0.85) 20%, transparent 95%);
+  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 50%, rgba(0, 0, 0, 0.85) 20%, transparent 95%);
+}
+html[data-theme="cobalt-matrix"]:not(.pride-mode) #app::after {
+  content: '';
+  position: fixed;
+  left: -40%;
+  right: -40%;
+  bottom: -20%;
+  top: 36%;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--accent-2) 36%, transparent) 1.5px, transparent 1.5px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-2) 36%, transparent) 1.5px, transparent 1.5px);
+  background-size: 56px 56px;
+  transform: perspective(350px) rotateX(66deg);
+  transform-origin: 50% 0%;
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.95) 25%, rgba(0, 0, 0, 0.45) 80%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.95) 25%, rgba(0, 0, 0, 0.45) 80%, transparent 100%);
+  animation: cyber-grid-scroll var(--grid-speed, 14s) linear infinite;
+}
+
+@keyframes cyber-grid-scroll {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 56px;
+  }
+}
+
+html[data-grid-speed="0"] #app::after,
+html[style*="--grid-speed: 0s"] #app::after,
+html[style*="--grid-speed: 0;"] #app::after,
+html[data-custom-theme="active"][data-grid-speed="0"] #app::after {
+  animation: none !important;
+}
+
+html.reduced-motion #app::after {
+  animation: none !important;
+}
+
+html[data-theme]:not([data-theme="pine-dark"]) .topbar,
+html[data-theme]:not([data-theme="pine-dark"]) .tabbar,
+html[data-theme]:not([data-theme="pine-dark"]) .settings-card,
+html[data-theme]:not([data-theme="pine-dark"]) .instance-card,
+html[data-theme]:not([data-theme="pine-dark"]) .hero-card,
+html[data-theme]:not([data-theme="pine-dark"]) .mod-card,
+html[data-theme]:not([data-theme="pine-dark"]) .world-card {
+  border: 1px solid color-mix(in srgb, var(--glass-stroke) 65%, transparent);
+}
+html.is-scrolling[data-theme]:not([data-theme="pine-dark"]) .topbar {
+  background: color-mix(in srgb, var(--bg-0) 78%, var(--glass-surface-overlay));
+}
+html[data-theme]:not([data-theme="pine-dark"]) select option {
+  background: var(--bg-0);
+  color: var(--text-hi);
+}
+

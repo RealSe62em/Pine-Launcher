@@ -8,6 +8,9 @@ import { classifyLine, stageLabel, shortFile, parseDownloadLine } from './launch
 import { bindAccessibleLayers as bindAccessibleLayerBehavior } from './accessibility.js';
 import { bindWindowChrome as bindWindowChromeBehavior } from './window-chrome.js';
 import { bindMemoryRange as bindMemoryRangeBehavior, memoryRangeMarkup as buildMemoryRangeMarkup } from './memory-range.js';
+import { getPrideModeState } from './pride-mode.js';
+import { DEFAULT_THEME_ID, DEFAULT_UI_STYLE_ID, THEMES, UI_STYLES, getThemeById, getUiStyleById, normalizeThemeId, normalizeUiStyleId } from './themes.js';
+import { initThemeStudioController } from './theme-studio.js';
 
 const api = window.electronAPI;
 document.documentElement.dataset.platform = api?.platform || 'unknown';
@@ -930,6 +933,59 @@ function bindTabBar() {
   });
   $('instance-settings-btn')?.addEventListener('click', openEditSheet);
   $('hero-launch-button')?.addEventListener('click', quickLaunch);
+  $('home-console-launch-btn')?.addEventListener('click', () => {
+    const sorted = sortByRecency(state.instances);
+    const target = state.currentInstance || sorted[0];
+    if (target) launchInstance(target.name);
+    else quickLaunch();
+  });
+  const toggleHomeInstanceMenu = () => {
+    const menu = $('home-console-instance-menu');
+    const btn = $('home-console-instance-btn');
+    if (!menu || !btn) return;
+    const isHidden = menu.hidden;
+    if (isHidden) {
+      menu.innerHTML = state.instances.length
+        ? state.instances.map(inst => `
+            <button type="button" class="home-console-menu-item" data-choose-instance="${escHtml(inst.name)}">
+              <span>${escHtml(inst.name)}</span>
+              <small>${escHtml(inst.loader || 'Vanilla')} ${escHtml(inst.version || '')}</small>
+            </button>
+          `).join('')
+        : '<p class="text-muted" style="padding:10px 14px;margin:0;font-size:12px;">No instances created yet</p>';
+      menu.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+    } else {
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  };
+  $('home-console-instance-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleHomeInstanceMenu();
+  });
+  $('home-console-instance-menu')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const item = e.target.closest('[data-choose-instance]');
+    if (!item) return;
+    const name = item.dataset.chooseInstance;
+    const inst = state.instances.find(i => i.name === name);
+    if (inst) {
+      state.currentInstance = inst;
+      const label = $('home-console-instance-name');
+      if (label) label.textContent = inst.name;
+    }
+    const menu = $('home-console-instance-menu');
+    if (menu) menu.hidden = true;
+    $('home-console-instance-btn')?.setAttribute('aria-expanded', 'false');
+  });
+  document.addEventListener('click', () => {
+    const menu = $('home-console-instance-menu');
+    if (menu && !menu.hidden) {
+      menu.hidden = true;
+      $('home-console-instance-btn')?.setAttribute('aria-expanded', 'false');
+    }
+  });
   $('discover-search-btn')?.addEventListener('click', () => searchMods(false));
   $('discover-search-btn-alt')?.addEventListener('click', () => searchMods(false));
   $('load-more-btn')?.addEventListener('click', () => searchMods(true));
@@ -991,7 +1047,7 @@ function bindTabBar() {
   const liveSearch = debounce(() => searchMods(false), 220);
   $('search-input')?.addEventListener('input', liveSearch);
   $('search-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchMods(false); });
-  ['filter-loader', 'filter-version', 'filter-category', 'results-sort'].forEach((id) => {
+  ['filter-source', 'filter-loader', 'filter-version', 'filter-category', 'results-sort'].forEach((id) => {
     $(id)?.addEventListener(id === 'filter-category' ? 'input' : 'change',
       id === 'filter-category' ? debounce(() => searchMods(false), 220) : () => searchMods(false));
   });
@@ -1191,6 +1247,8 @@ function switchView(view) {
     void target.offsetWidth; // restart anim
     target.style.animation = '';
   }
+  const main = $('content');
+  if (main) main.scrollTo({ top: 0, behavior: 'smooth' });
   document.querySelectorAll('.tabbar-item').forEach((n) => n.classList.toggle('active', n.dataset.view === view));
   moveTabIndicator(view);
   if (view === 'instance') {
@@ -1450,6 +1508,22 @@ function renderHome() {
       heroBtn.style.display = 'none';
     }
   }
+
+  const switcher = $('home-deck-switcher');
+  if (switcher && !switcher.dataset.bound) {
+    switcher.dataset.bound = 'true';
+    switcher.querySelectorAll('.home-deck-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        switcher.querySelectorAll('.home-deck-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const view = tab.dataset.deckTab || 'overview';
+        const sidebar = $('home-feed-sidebar');
+        if (sidebar) sidebar.dataset.deckView = view;
+      });
+    });
+  }
+
+  renderHomePlayerStage();
 }
 
 function statsTime(seconds) {
@@ -1580,7 +1654,7 @@ function renderRecentDestinations() {
       : (isServer ? 'Saved server' : 'Available world');
     const image = item.iconData ? `<div class="destination-art"><img src="${escHtml(item.iconData)}" alt="${escHtml(title)} icon"></div>` : '';
     const payload = escHtml(JSON.stringify({ type: item.type, identifier: item.identifier, address: item.address, label: item.label, instanceId: item.instanceId }));
-    return `<article class="destination-card${item.iconData ? ' has-art' : ''}${hasDetail ? ' has-detail' : ''}${item.deletedInstance ? ' deleted-instance' : ''}" data-destination-index="${index}" data-key="${escHtml(item.key || '')}">
+    return `<article class="destination-card${index >= 4 ? ' is-overflow' : ''}${item.iconData ? ' has-art' : ''}${hasDetail ? ' has-detail' : ''}${item.deletedInstance ? ' deleted-instance' : ''}" data-destination-index="${index}" data-key="${escHtml(item.key || '')}">
       <div class="destination-card-main">
         ${image}
         <div class="destination-info">
@@ -1650,6 +1724,26 @@ function renderRecentDestinations() {
     }));
     if (item.type === 'multiplayer') hydrateServerMetadata(card, item);
   });
+
+  const expandWrap = $('destinations-expand-wrap');
+  if (expandWrap) {
+    if (items.length > 4) {
+      expandWrap.hidden = false;
+      const isExpanded = grid.classList.contains('destinations-expanded');
+      expandWrap.innerHTML = `
+        <button type="button" class="destinations-expand-btn" id="destinations-expand-btn">
+          <span>${isExpanded ? 'Show fewer servers ▲' : `View all ${items.length} servers ▼`}</span>
+        </button>
+      `;
+      $('destinations-expand-btn')?.addEventListener('click', () => {
+        grid.classList.toggle('destinations-expanded');
+        renderRecentDestinations();
+      });
+    } else {
+      expandWrap.hidden = true;
+      expandWrap.innerHTML = '';
+    }
+  }
 }
 
 function beginDestinationRename(card, item) {
@@ -3014,14 +3108,37 @@ async function openSkinStudio() {
         await render();
       });
       body.querySelectorAll('[data-skin]').forEach(card => card.addEventListener('click', async event => {
-        if (event.target.closest('[data-apply-skin]')) { try { const result = await api.applySkin(card.dataset.skin); toast(result?.message || 'Skin applied', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }
-        if (event.target.closest('[data-delete-skin]')) { await api.deleteSkin(card.dataset.skin); await render(); }
+        if (event.target.closest('[data-apply-skin]')) {
+          try {
+            const result = await api.applySkin(card.dataset.skin);
+            toast(result?.message || 'Skin applied', 'success');
+            await render();
+            renderHomePlayerStage();
+          } catch (e) {
+            toast(e.message || e, 'error', 6000);
+          }
+        }
+        if (event.target.closest('[data-delete-skin]')) {
+          await api.deleteSkin(card.dataset.skin);
+          await render();
+          renderHomePlayerStage();
+        }
       }));
-      body.querySelectorAll('[data-cape]').forEach(card => card.addEventListener('click', async () => { try { await api.setActiveCape(card.dataset.cape || null); toast(card.dataset.cape ? 'Cape equipped' : 'Cape unequipped', 'success'); await render(); } catch (e) { toast(e.message || e, 'error', 6000); } }));
+      body.querySelectorAll('[data-cape]').forEach(card => card.addEventListener('click', async () => {
+        try {
+          await api.setActiveCape(card.dataset.cape || null);
+          toast(card.dataset.cape ? 'Cape equipped' : 'Cape unequipped', 'success');
+          await render();
+          renderHomePlayerStage();
+        } catch (e) {
+          toast(e.message || e, 'error', 6000);
+        }
+      }));
     } catch (error) { body.innerHTML = emptyStateMarkup('Could not load your wardrobe', error.message || String(error), 'i-alert'); }
   };
   await render();
 }
+window.__pineOpenSkinStudio = openSkinStudio;
 
 function renderSkinFigure(canvas, source, variant = 'classic', minecraftTextures = null) {
   if (!canvas || !source) return;
@@ -3096,6 +3213,89 @@ function renderSkinFigure(canvas, source, variant = 'classic', minecraftTextures
     clearTimeout(angryTimer);
     viewer.dispose();
   }, 800);
+}
+
+let homeSkinViewer = null;
+
+async function renderHomePlayerStage() {
+  const canvas = $('home-player-skin-canvas');
+  if (!canvas) return;
+
+  const username = state.authData?.profile?.name || 'SENZUP';
+  const nameEl = $('home-player-username');
+  if (nameEl) nameEl.textContent = username.toUpperCase();
+
+  const currentInst = state.currentInstance || state.instances[0];
+  const instNameEl = $('home-console-instance-name');
+  if (instNameEl) instNameEl.textContent = currentInst ? currentInst.name : 'No Instances';
+
+  const isCobalt = document.documentElement.dataset.theme === 'cobalt-matrix';
+  if (!isCobalt && canvas.offsetWidth === 0 && canvas.offsetHeight === 0) return;
+
+  const lib = window.skinview3d;
+  if (!lib?.SkinViewer) return;
+
+  try {
+    const skinData = await api.getSkinLibrary().catch(() => null);
+    let skinSource = null;
+    let variant = 'classic';
+    if (skinData?.activeSkin) {
+      variant = skinData.activeSkin.variant || 'classic';
+      if (skinData.activeSkin.data) {
+        skinSource = skinData.activeSkin.data;
+      } else if (skinData.activeSkin.url) {
+        skinSource = skinData.activeSkin.url;
+      } else if (skinData.activeSkin.id && Array.isArray(skinData.saved)) {
+        const equipped = skinData.saved.find(s => s.id === skinData.activeSkin.id);
+        if (equipped?.data) {
+          skinSource = equipped.data;
+          variant = equipped.variant || variant;
+        }
+      }
+    }
+
+    if (!skinSource && state.authData?.profile?.name) {
+      skinSource = `https://mineskin.eu/skin/${encodeURIComponent(state.authData.profile.name)}`;
+    }
+
+    if (homeSkinViewer) {
+      if (skinSource) {
+        try {
+          homeSkinViewer.loadSkin(skinSource, { model: variant === 'slim' ? 'slim' : 'default' });
+          const activeCape = (skinData?.capes || []).find(c => c.state === 'ACTIVE');
+          if (activeCape?.data && homeSkinViewer.loadCape) {
+            homeSkinViewer.loadCape(activeCape.data);
+          }
+        } catch (e) {}
+      }
+      return;
+    }
+
+    homeSkinViewer = new lib.SkinViewer({
+      canvas,
+      width: Number(canvas.getAttribute('width')) || 280,
+      height: Number(canvas.getAttribute('height')) || 380,
+      skin: skinSource || undefined,
+      model: variant === 'slim' ? 'slim' : 'default',
+      animation: new lib.IdleAnimation(),
+      zoom: 0.88,
+      fov: 46,
+      pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+    });
+    homeSkinViewer.autoRotate = false;
+    homeSkinViewer.controls.enableRotate = true;
+    homeSkinViewer.controls.enableZoom = false;
+    homeSkinViewer.controls.enablePan = false;
+    homeSkinViewer.globalLight.intensity = 2.6;
+    homeSkinViewer.cameraLight.intensity = 0.85;
+
+    const activeCape = (skinData?.capes || []).find(c => c.state === 'ACTIVE');
+    if (activeCape?.data && homeSkinViewer.loadCape) {
+      try { homeSkinViewer.loadCape(activeCape.data); } catch (e) {}
+    }
+  } catch (err) {
+    console.warn('Could not initialize home skin viewer:', err);
+  }
 }
 
 function triggerWardrobeCrystalEasterEgg(root, textures = {}, sourceCard = null) {
@@ -4549,6 +4749,7 @@ async function refreshAccounts() {
   }
   updateAuthUI();
   updatePride();
+  renderHomePlayerStage();
 }
 
 async function chooseAccount(key) {
@@ -4796,7 +4997,10 @@ function setAvatarImage(el, uuid, name) {
 function updateAuthUI() {
   const el = $('account-name');
   const av = $('account-avatar');
-  if (!el || !av) return;
+  if (!el || !av) {
+    updatePride();
+    return;
+  }
   if (state.authData && state.authData.profile) {
     el.textContent = state.authData.profile.name;
     av.classList.remove('avatar-logged-out');
@@ -4816,16 +5020,57 @@ function updateAuthUI() {
   if (greeting) {
     greeting.textContent = homeGreetingText();
   }
+  updatePride();
+  renderHomePlayerStage();
+}
+
+function applyAccentVariables(usePridePalette) {
+  const rootStyle = document.documentElement.style;
+  const properties = ['--accent', '--accent-2', '--accent-dim', '--accent-glow', '--accent-grad', '--text-on-accent', '--glass-stroke'];
+  if (usePridePalette) {
+    properties.forEach(property => rootStyle.removeProperty(property));
+    return;
+  }
+
+  const activeTheme = getThemeById(state.settings.theme);
+  const accent = /^#[0-9a-f]{6}$/i.test(state.settings.accentColor || '') ? state.settings.accentColor : (activeTheme.accent || '#ff5cb9');
+  const red = Number.parseInt(accent.slice(1, 3), 16);
+  const green = Number.parseInt(accent.slice(3, 5), 16);
+  const blue = Number.parseInt(accent.slice(5, 7), 16);
+  const lighten = channel => Math.round(channel + (255 - channel) * 0.28);
+  const accent2 = `#${[lighten(red), lighten(green), lighten(blue)].map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+  rootStyle.setProperty('--accent', accent, 'important');
+  rootStyle.setProperty('--accent-2', accent2, 'important');
+  rootStyle.setProperty('--accent-dim', `rgba(${red}, ${green}, ${blue}, 0.20)`, 'important');
+  rootStyle.setProperty('--accent-glow', `0 0 24px rgba(${red}, ${green}, ${blue}, 0.35)`, 'important');
+  rootStyle.setProperty('--accent-grad', `linear-gradient(135deg, ${accent} 0%, ${accent2} 100%)`, 'important');
+  rootStyle.setProperty('--text-on-accent', luminance > 0.68 ? '#101014' : '#ffffff', 'important');
+  rootStyle.setProperty('--glass-stroke', `color-mix(in srgb, ${accent} 35%, rgba(255, 255, 255, 0.16))`, 'important');
+
+  const gridSpeed = Number.isFinite(Number(state.settings.gridSpeed)) ? Number(state.settings.gridSpeed) : 14;
+  if (gridSpeed <= 0) {
+    rootStyle.setProperty('--grid-speed', '0s', 'important');
+    document.documentElement.dataset.gridSpeed = '0';
+  } else {
+    rootStyle.setProperty('--grid-speed', `${gridSpeed}s`, 'important');
+    delete document.documentElement.dataset.gridSpeed;
+  }
 }
 
 function updatePride() {
-  const name = (state.authData?.profile?.name || '').toLowerCase();
-  const eligible = new Set(['undrrwrldd', 'se62em', 'shemes', 'exobeast']).has(name);
-  const enabled = eligible && state.settings.gayMode !== false;
-  document.documentElement.classList.toggle('pride-mode', !!enabled);
+  const pride = getPrideModeState(state.authData?.profile, state.settings);
+  document.documentElement.classList.toggle('pride-mode', pride.enabled);
+  document.documentElement.dataset.prideEligible = String(pride.eligible);
+  applyAccentVariables(pride.enabled);
   const row = $('gay-mode-row');
-  if (row) row.hidden = !eligible;
-  return eligible;
+  if (row) row.hidden = !pride.eligible;
+  const toggle = $('gay-mode-toggle');
+  if (toggle) {
+    toggle.disabled = !pride.eligible;
+    toggle.checked = pride.enabled;
+  }
+  return pride;
 }
 
 // ── Settings ────────────────────────────────────────────────
@@ -4835,36 +5080,191 @@ async function loadSettings() {
   applyAppearanceSettings();
 }
 
+let themeStudioController = null;
+function ensureThemeStudio() {
+  if (!themeStudioController) {
+    themeStudioController = initThemeStudioController({
+      getState: () => state,
+      saveSettings: async () => {
+        const themeSelect = $('set-theme-select');
+        if (themeSelect) themeSelect.value = normalizeThemeId(state.settings.theme);
+        const uiStyleSelect = $('set-ui-style-select');
+        if (uiStyleSelect) uiStyleSelect.value = normalizeUiStyleId(state.settings.uiStyle);
+        await saveAllSettings(null, { silent: true });
+        if ($('settings-layout')?.querySelector('.settings-pane[data-cat="themes"]')) {
+          renderSettingsLayout();
+        }
+      },
+      applyAppearance: applyAppearanceSettings,
+      switchView,
+      toast,
+      copyText: text => api.copyText(text),
+    });
+  }
+  return themeStudioController;
+}
+
 function applyAppearanceSettings() {
-  const accent = /^#[0-9a-f]{6}$/i.test(state.settings.accentColor || '') ? state.settings.accentColor : '#ff5cb9';
-  const red = Number.parseInt(accent.slice(1, 3), 16);
-  const green = Number.parseInt(accent.slice(3, 5), 16);
-  const blue = Number.parseInt(accent.slice(5, 7), 16);
-  const lighten = channel => Math.round(channel + (255 - channel) * 0.28);
-  const accent2 = `#${[lighten(red), lighten(green), lighten(blue)].map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
-  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
-  const rootStyle = document.documentElement.style;
-  rootStyle.setProperty('--accent', accent);
-  rootStyle.setProperty('--accent-2', accent2);
-  rootStyle.setProperty('--accent-dim', `rgba(${red}, ${green}, ${blue}, 0.20)`);
-  rootStyle.setProperty('--accent-glow', `0 0 24px rgba(${red}, ${green}, ${blue}, 0.35)`);
-  rootStyle.setProperty('--accent-grad', `linear-gradient(135deg, ${accent} 0%, ${accent2} 100%)`);
-  rootStyle.setProperty('--text-on-accent', luminance > 0.68 ? '#101014' : '#ffffff');
+  const themeId = normalizeThemeId(state.settings.theme);
+  const uiStyleId = normalizeUiStyleId(state.settings.uiStyle);
+  document.documentElement.dataset.theme = themeId;
+  document.documentElement.dataset.uiStyle = uiStyleId;
   document.documentElement.classList.toggle('reduced-motion', state.settings.reducedMotion === true);
   document.documentElement.classList.toggle('compact-library', state.settings.compactLibrary === true);
   updatePride();
+  renderHomePlayerStage();
+  ensureThemeStudio()?.syncLiveTheme();
+  requestAnimationFrame(() => {
+    const activeTab = document.querySelector('.tabbar-item.active');
+    if (activeTab?.dataset.view) moveTabIndicator(activeTab.dataset.view);
+  });
 }
+
+function renderUiStyleWireframe(style) {
+  switch (style.layoutType) {
+    case 'left-sidebar':
+      return `
+        <div class="ui-wireframe" data-layout="left-sidebar">
+          <div class="ui-wf-canvas">
+            <div class="ui-wf-nav ui-wf-sidebar">
+              <span class="ui-wf-pill accent"></span>
+              <span class="ui-wf-pill"></span>
+              <span class="ui-wf-pill"></span>
+              <span class="ui-wf-pill"></span>
+            </div>
+            <div class="ui-wf-bar ui-wf-header">
+              <span class="ui-wf-pill"></span>
+              <span class="ui-wf-dot accent"></span>
+            </div>
+            <div class="ui-wf-grid">
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill accent"></span></div>
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill"></span></div>
+            </div>
+          </div>
+        </div>`;
+    case 'icon-rail':
+      return `
+        <div class="ui-wireframe" data-layout="icon-rail">
+          <div class="ui-wf-canvas">
+            <div class="ui-wf-nav ui-wf-rail">
+              <span class="ui-wf-dot accent"></span>
+              <span class="ui-wf-dot"></span>
+              <span class="ui-wf-dot"></span>
+              <span class="ui-wf-dot"></span>
+            </div>
+            <div class="ui-wf-main">
+              <div class="ui-wf-bar" style="height:12px;border-radius:999px;display:flex;align-items:center;justify-content:space-between;padding:0 6px;">
+                <span class="ui-wf-pill"></span>
+                <span class="ui-wf-dot accent"></span>
+              </div>
+              <div class="ui-wf-grid">
+                <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill accent"></span></div>
+                <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    case 'top-deck':
+      return `
+        <div class="ui-wireframe" data-layout="top-deck">
+          <div class="ui-wf-canvas">
+            <div class="ui-wf-bar ui-wf-header">
+              <span class="ui-wf-pill"></span>
+              <span class="ui-wf-dot accent"></span>
+            </div>
+            <div class="ui-wf-nav ui-wf-subdeck">
+              <span class="ui-wf-pill accent" style="width:16px;height:4px;"></span>
+              <span class="ui-wf-pill" style="width:12px;height:3px;"></span>
+              <span class="ui-wf-pill" style="width:12px;height:3px;"></span>
+            </div>
+            <div class="ui-wf-grid">
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill accent"></span></div>
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill"></span></div>
+            </div>
+          </div>
+        </div>`;
+    case 'cyber-hud':
+      return `
+        <div class="ui-wireframe" data-layout="cyber-hud">
+          <div class="ui-wf-canvas">
+            <div class="ui-wf-bar ui-wf-top">
+              <span class="ui-wf-pill" style="border-radius:1px;"></span>
+              <span class="ui-wf-dot accent" style="border-radius:1px;"></span>
+            </div>
+            <div class="ui-wf-grid">
+              <div class="ui-wf-card"><span class="ui-wf-pill" style="border-radius:1px;"></span><span class="ui-wf-pill accent" style="border-radius:1px;"></span></div>
+              <div class="ui-wf-card"><span class="ui-wf-pill" style="border-radius:1px;"></span><span class="ui-wf-pill" style="border-radius:1px;"></span></div>
+            </div>
+            <div class="ui-wf-nav ui-wf-bottom">
+              <span class="ui-wf-dot accent" style="border-radius:1px;"></span>
+              <span class="ui-wf-dot" style="border-radius:1px;"></span>
+              <span class="ui-wf-dot" style="border-radius:1px;"></span>
+            </div>
+          </div>
+        </div>`;
+    case 'arcade-bento':
+      return `
+        <div class="ui-wireframe" data-layout="arcade-bento">
+          <div class="ui-wf-canvas">
+            <div class="ui-wf-bar ui-wf-top">
+              <span class="ui-wf-pill"></span>
+              <span class="ui-wf-dot accent"></span>
+            </div>
+            <div class="ui-wf-grid">
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill accent"></span></div>
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill"></span></div>
+            </div>
+            <div class="ui-wf-nav ui-wf-bottom">
+              <span class="ui-wf-dot accent"></span>
+              <span class="ui-wf-dot"></span>
+              <span class="ui-wf-dot"></span>
+            </div>
+          </div>
+        </div>`;
+    default:
+      return `
+        <div class="ui-wireframe" data-layout="island-dock">
+          <div class="ui-wf-canvas">
+            <div class="ui-wf-bar ui-wf-top">
+              <span class="ui-wf-pill"></span>
+              <span class="ui-wf-dot accent"></span>
+            </div>
+            <div class="ui-wf-grid">
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill accent"></span></div>
+              <div class="ui-wf-card"><span class="ui-wf-pill"></span><span class="ui-wf-pill"></span></div>
+            </div>
+            <div class="ui-wf-nav ui-wf-bottom">
+              <span class="ui-wf-dot accent"></span>
+              <span class="ui-wf-dot"></span>
+              <span class="ui-wf-dot"></span>
+            </div>
+          </div>
+        </div>`;
+  }
+}
+
+const CLOUD_SYNC_UI_ENABLED = false;
 
 function renderSettingsLayout() {
   const layout = $('settings-layout');
   if (!layout) return;
+  let previousCat = layout.querySelector('.settings-nav button.active')?.dataset.cat || 'general';
+  if (!CLOUD_SYNC_UI_ENABLED && previousCat === 'cloud-sync') previousCat = 'general';
   const s = state.settings;
+  const pride = getPrideModeState(state.authData?.profile, s);
+  const activeTheme = getThemeById(s.theme);
+  const activeUiStyle = getUiStyleById(s.uiStyle);
+  const customThemes = Array.isArray(s.customThemes) ? s.customThemes : [];
+  const activeCustomId = s.activeCustomThemeId || null;
   layout.innerHTML = `
     <nav class="settings-nav">
       <button class="active" data-cat="general">General</button>
       <button data-cat="java">Java &amp; memory</button>
       <button data-cat="appearance">Appearance</button>
+      <button data-cat="themes">Themes</button>
       <button data-cat="discord">Discord</button>
+      <button data-cat="curseforge">CurseForge</button>
+      ${CLOUD_SYNC_UI_ENABLED ? '<button data-cat="cloud-sync">Cloud Sync</button>' : ''}
       <button data-cat="storage">Storage</button>
       <button data-cat="updates">Updates</button>
     </nav>
@@ -4882,6 +5282,22 @@ function renderSettingsLayout() {
             <input id="set-dl-limit" class="input" type="number" min="2" max="16" step="1" value="${s.dlLimit || 4}">
           </div>
           <div class="settings-row"><label>Compact library</label><label class="snapshot-inline settings-toggle-inline"><input type="checkbox" id="set-compact-library" ${s.compactLibrary ? 'checked' : ''}><span class="check-visual"></span></label></div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Privacy</div>
+          <div class="privacy-setting-row">
+            <div class="privacy-setting-copy">
+              <label class="privacy-setting-title" for="set-online-counter">Anonymous active-player count</label>
+              <span class="privacy-setting-desc">Counts active launchers and live game sessions anonymously. No username, account, IP, or server info is collected.</span>
+            </div>
+            <div class="privacy-row-controls">
+              <button type="button" class="btn btn-ghost btn-sm" id="set-online-counter-info">What's shared?</button>
+              <label class="cloud-switch" aria-label="Anonymous active-player count">
+                <input type="checkbox" id="set-online-counter" ${s.anonymousOnlineCounter !== false ? 'checked' : ''}>
+                <span class="cloud-switch-track"></span>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
       <div class="settings-pane" data-cat="java">
@@ -4926,10 +5342,10 @@ function renderSettingsLayout() {
               <span><strong>Choose any color</strong><small id="custom-color-value">${/^#[0-9a-f]{6}$/i.test(s.accentColor || '') ? escHtml(String(s.accentColor).toUpperCase()) : '#FF5CB9'}</small></span>
             </label>
           </div>
-          <div class="settings-row" id="gay-mode-row"${updatePride() ? '' : ' hidden'}>
-            <label>Gay mode</label>
+          <div class="settings-row pride-mode-setting" id="gay-mode-row"${pride.eligible ? '' : ' hidden'}>
+            <label><strong>Pride mode</strong><small>Rainbow accents across Pine</small></label>
             <label class="snapshot-inline settings-toggle-inline">
-              <input type="checkbox" id="gay-mode-toggle" ${s.gayMode !== false && updatePride() ? 'checked' : ''}>
+              <input type="checkbox" id="gay-mode-toggle" data-independent ${pride.enabled ? 'checked' : ''}>
               <span class="check-visual"></span>
             </label>
           </div>
@@ -4942,6 +5358,155 @@ function renderSettingsLayout() {
         </div>
         <div class="settings-actions">
           <button class="btn btn-ghost" id="set-reset-btn">Reset defaults</button>
+        </div>
+      </div>
+      <div class="settings-pane" data-cat="themes">
+        <div class="studio-launch-banner">
+          <div class="studio-launch-banner-copy">
+            <strong>Theme Studio</strong>
+            <p>Customize colors, backgrounds, layouts, and individual elements live, or import shared <code>.pine-theme.json</code> files.</p>
+          </div>
+          <div class="studio-launch-banner-actions">
+            <button type="button" class="btn btn-secondary" id="import-custom-theme-btn">Import</button>
+            <button type="button" class="btn btn-primary" id="open-theme-studio-btn">Open Studio</button>
+          </div>
+        </div>
+        ${customThemes.length > 0 ? `
+        <div class="settings-card custom-themes-card">
+          <div class="settings-card-title">Your Custom Themes (${customThemes.length})</div>
+          <p class="text-muted settings-note">Saved custom presets created or imported in the Visual Theme Studio. You can apply, re-open in the live editor, or export any preset as a <code>.pine-theme.json</code> file.</p>
+          <div class="theme-studio-preset-list">
+            ${customThemes.map(preset => {
+              const isPresetActive = activeCustomId === preset.id;
+              const baseThemeObj = getThemeById(preset.baseTheme);
+              const baseStyleObj = getUiStyleById(preset.baseUiStyle);
+              const rulesCount = Object.keys(preset.elementRules || {}).length;
+              const textsCount = Object.keys(preset.textOverrides || {}).length;
+              return `
+                <div class="theme-studio-preset-card ${isPresetActive ? 'active' : ''}" data-custom-theme-card="${escHtml(preset.id)}">
+                  <div class="theme-studio-preset-head">
+                    <div>
+                      <strong>${escHtml(preset.name || 'Untitled Theme')}</strong>
+                      <small>${escHtml(baseThemeObj.shortName)} · ${escHtml(baseStyleObj.shortName)} · ${rulesCount} element rule${rulesCount === 1 ? '' : 's'} · ${textsCount} text edit${textsCount === 1 ? '' : 's'}</small>
+                    </div>
+                    ${isPresetActive ? '<span class="theme-studio-badge active">Active Custom Theme</span>' : ''}
+                  </div>
+                  ${preset.description ? `<p class="theme-studio-preset-desc">${escHtml(preset.description)}</p>` : ''}
+                  <div class="theme-studio-preset-actions">
+                    <button type="button" class="btn ${isPresetActive ? 'btn-primary' : 'btn-secondary'} btn-sm" data-custom-theme-apply="${escHtml(preset.id)}">${isPresetActive ? 'Re-apply' : 'Apply'}</button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-custom-theme-edit="${escHtml(preset.id)}">Edit in Studio</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-custom-theme-export="${escHtml(preset.id)}">Export</button>
+                    <button type="button" class="btn btn-ghost btn-sm text-danger" data-custom-theme-delete="${escHtml(preset.id)}">Delete</button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+        ` : ''}
+        <div class="settings-card">
+          <div class="settings-card-title">Themes</div>
+          <p class="text-muted settings-note">Select a curated visual theme across Pine Launcher. Each theme transforms surfaces, frosted glass depth, atmosphere, and signature accents.</p>
+          <div class="settings-row">
+            <label for="set-theme-select">Current theme</label>
+            <select id="set-theme-select" class="input" data-independent>
+              ${THEMES.map(theme => `<option value="${escHtml(theme.id)}" ${theme.id === activeTheme.id ? 'selected' : ''}>${escHtml(theme.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="theme-grid" role="radiogroup" aria-label="Launcher themes">
+            ${THEMES.map(theme => {
+              const isSelected = theme.id === activeTheme.id;
+              const grad = `linear-gradient(135deg, ${theme.accent} 0%, ${theme.accent2} 100%)`;
+              return `
+                <button type="button" class="theme-card ${isSelected ? 'active' : ''}" data-theme-id="${escHtml(theme.id)}" role="radio" aria-checked="${isSelected}">
+                  <div class="theme-preview" style="background:${theme.preview.bg}">
+                    <div class="theme-preview-aura" style="background:${theme.preview.aura}"></div>
+                    <div class="theme-preview-topbar" style="background:${theme.preview.surface};border-color:${theme.preview.stroke}">
+                      <span class="theme-preview-brand" style="background:${theme.preview.text}"></span>
+                      <span class="theme-preview-search"></span>
+                      <span class="theme-preview-dot" style="background:${grad}"></span>
+                    </div>
+                    <div class="theme-preview-body">
+                      <div class="theme-preview-hero" style="background:${theme.preview.surface};border:1px solid ${theme.preview.stroke}">
+                        <div class="theme-preview-lines">
+                          <span class="theme-preview-line" style="background:${theme.preview.text}"></span>
+                          <span class="theme-preview-line short" style="background:${theme.preview.muted}"></span>
+                        </div>
+                        <span class="theme-preview-cta" style="background:${grad}"></span>
+                      </div>
+                      <div class="theme-preview-side" style="background:${theme.preview.surface};border:1px solid ${theme.preview.stroke}">
+                        <div class="theme-preview-lines">
+                          <span class="theme-preview-line" style="background:${theme.preview.text}"></span>
+                          <span class="theme-preview-line short" style="background:${theme.preview.muted}"></span>
+                        </div>
+                        <div class="theme-preview-lines">
+                          <span class="theme-preview-line short" style="background:${theme.accent}"></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="theme-preview-dock" style="background:${theme.preview.surface};border:1px solid ${theme.preview.stroke}">
+                      <span class="is-active" style="background:${theme.accent}"></span>
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                  <div class="theme-card-head">
+                    <div>
+                      <div class="theme-card-title">${escHtml(theme.shortName)}</div>
+                      <span class="theme-card-badge">${escHtml(theme.badge)}</span>
+                    </div>
+                    <span class="theme-card-check" aria-hidden="true">
+                      <svg width="12" height="12"><use href="#i-check"/></svg>
+                    </span>
+                  </div>
+                  <p class="theme-card-desc">${escHtml(theme.description)}</p>
+                  <div class="theme-card-footer">
+                    <div class="theme-card-swatches" aria-hidden="true">
+                      ${theme.swatches.map(swatch => `<span class="theme-card-swatch" style="background:${swatch}"></span>`).join('')}
+                    </div>
+                    <span class="theme-card-status">${isSelected ? 'Active theme' : 'Apply theme'}</span>
+                  </div>
+                </button>
+              `;
+            }).join('')}
+          </div>
+        </div>
+        <div class="settings-card ui-style-section-card">
+          <div class="settings-card-title">UI &amp; UX Architecture</div>
+          <p class="text-muted settings-note">Transform the entire spatial layout, navigation placement, card geometry, and tactile interaction model of Pine Launcher. Combines freely with any color theme above.</p>
+          <div class="settings-row">
+            <label for="set-ui-style-select">Interface style</label>
+            <select id="set-ui-style-select" class="input" data-independent>
+              ${UI_STYLES.map(style => `<option value="${escHtml(style.id)}" ${style.id === activeUiStyle.id ? 'selected' : ''}>${escHtml(style.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="theme-grid" role="radiogroup" aria-label="Launcher UI and UX architecture styles">
+            ${UI_STYLES.map(style => {
+              const isSelected = style.id === activeUiStyle.id;
+              return `
+                <button type="button" class="theme-card ui-style-card ${isSelected ? 'active' : ''}" data-ui-style-id="${escHtml(style.id)}" role="radio" aria-checked="${isSelected}">
+                  ${renderUiStyleWireframe(style)}
+                  <div class="theme-card-head">
+                    <div>
+                      <div class="theme-card-title">${escHtml(style.shortName)}</div>
+                      <span class="theme-card-badge">${escHtml(style.badge)}</span>
+                    </div>
+                    <span class="theme-card-check" aria-hidden="true">
+                      <svg width="12" height="12"><use href="#i-check"/></svg>
+                    </span>
+                  </div>
+                  <p class="theme-card-desc">${escHtml(style.description)}</p>
+                  <div class="theme-card-footer">
+                    <div class="ui-style-tags">
+                      ${style.highlights.map(tag => `<span class="ui-style-tag">${escHtml(tag)}</span>`).join('')}
+                    </div>
+                    <span class="theme-card-status">${isSelected ? 'Active layout' : 'Apply layout'}</span>
+                  </div>
+                </button>
+              `;
+            }).join('')}
+          </div>
         </div>
       </div>
       <div class="settings-pane" data-cat="discord">
@@ -4968,6 +5533,45 @@ function renderSettingsLayout() {
           <p class="text-muted settings-card-note">Requires the Discord desktop app. When multiplayer sharing is enabled, Pine displays the server address you joined.</p>
         </div>
       </div>
+      <div class="settings-pane" data-cat="curseforge">
+        <div class="settings-card">
+          <div class="settings-card-title">CurseForge API Key</div>
+          <p class="text-muted settings-note">Optional. Add your own free CurseForge API key to search and install CurseForge mods, modpacks, resource packs, shaders, and data packs directly in Discover. Modrinth works without any key.</p>
+          <div class="settings-health" id="cf-key-status" data-ok="false">
+            <strong>Checking CurseForge key status…</strong>
+            <span>Keys are encrypted with your OS keyring and never saved in plaintext.</span>
+          </div>
+          <div class="settings-row">
+            <label for="cf-api-key-input">API key</label>
+            <input id="cf-api-key-input" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your CurseForge x-api-key…" data-independent>
+          </div>
+          <div class="settings-actions cf-key-actions">
+            <button class="btn btn-primary" id="cf-save-key-btn" type="button">Save key</button>
+            <button class="btn btn-secondary" id="cf-test-key-btn" type="button">Test connection</button>
+            <button class="btn btn-ghost" id="cf-clear-key-btn" type="button">Remove key</button>
+            <button class="btn btn-ghost" id="cf-get-key-btn" type="button">Get free API key</button>
+          </div>
+          <details class="setup-guide" open>
+            <summary>Step-by-step guide: How to get your free CurseForge key (~1 min)</summary>
+            <ol class="setup-guide-steps">
+              <li><span class="setup-guide-num">1</span><span>Click <strong>Get free API key</strong> above to open <code>console.curseforge.com</code> in your browser, then sign in with your CurseForge, Twitch, or Google account.</span></li>
+              <li><span class="setup-guide-num">2</span><span>If asked to create an organization on your first visit, enter any name (for example <code>Personal</code>) and continue.</span></li>
+              <li><span class="setup-guide-num">3</span><span>Click <strong>API Keys</strong> in the left sidebar and click <strong>Copy</strong> next to your key (it starts with <code>$2a$10$...</code>).</span></li>
+              <li><span class="setup-guide-num">4</span><span>Paste the key into the <strong>API key</strong> box above, click <strong>Save key</strong>, then click <strong>Test connection</strong>.</span></li>
+            </ol>
+          </details>
+          <p class="text-muted settings-card-note">Your key stays encrypted locally on this PC and is never synced or uploaded.</p>
+        </div>
+      </div>
+      ${CLOUD_SYNC_UI_ENABLED ? `<div class="settings-pane" data-cat="cloud-sync">
+        <div class="settings-card">
+          <div class="settings-card-title">Cloud Sync</div>
+          <p class="text-muted settings-note">Keep your launcher settings, Theme Studio presets, saved servers, instance recipes, and optional worlds synced across devices using your own Google Drive, OneDrive, Dropbox, or local synced folder.</p>
+          <div id="cloud-sync-root" class="cloud-sync-root">
+            <div class="storage-loading">Loading Cloud Sync…</div>
+          </div>
+        </div>
+      </div>` : ''}
       <div class="settings-pane" data-cat="storage">
         <div class="settings-card">
           <div class="settings-card-title">Storage usage</div>
@@ -5009,6 +5613,8 @@ function renderSettingsLayout() {
       layout.querySelector(`.settings-pane[data-cat="${btn.dataset.cat}"]`)?.classList.add('active');
       syncSettingsHeaderSave(btn.dataset.cat);
       if (btn.dataset.cat === 'storage') void loadStorageUsage();
+      if (btn.dataset.cat === 'curseforge') void loadCurseForgeSettingsStatus();
+      if (btn.dataset.cat === 'cloud-sync') void loadCloudSyncSettingsPanel();
     });
   });
   const chooseAccent = (color, saveImmediately = false) => {
@@ -5016,6 +5622,32 @@ function renderSettingsLayout() {
     const normalized = color.toLowerCase();
     state.settings.accentColor = normalized;
     state.settingsDirty = true;
+    if (state.settings.activeCustomThemeId && Array.isArray(state.settings.customThemes)) {
+      const activeCustom = state.settings.customThemes.find(t => t.id === state.settings.activeCustomThemeId);
+      if (activeCustom) {
+        activeCustom.tokens = activeCustom.tokens || {};
+        activeCustom.tokens['--accent'] = normalized;
+        const lighten = channel => Math.round(channel + (255 - channel) * 0.28);
+        const r = parseInt(normalized.slice(1, 3), 16);
+        const g = parseInt(normalized.slice(3, 5), 16);
+        const b = parseInt(normalized.slice(5, 7), 16);
+        activeCustom.tokens['--accent-2'] = `#${[lighten(r), lighten(g), lighten(b)].map(c => c.toString(16).padStart(2, '0')).join('')}`;
+      }
+    }
+    const studio = ensureThemeStudio();
+    if (studio?.isOpen()) {
+      const draft = studio.getDraftTheme();
+      if (draft) {
+        draft.tokens = draft.tokens || {};
+        draft.tokens['--accent'] = normalized;
+        const lighten = channel => Math.round(channel + (255 - channel) * 0.28);
+        const r = parseInt(normalized.slice(1, 3), 16);
+        const g = parseInt(normalized.slice(3, 5), 16);
+        const b = parseInt(normalized.slice(5, 7), 16);
+        draft.tokens['--accent-2'] = `#${[lighten(r), lighten(g), lighten(b)].map(c => c.toString(16).padStart(2, '0')).join('')}`;
+        studio.syncLiveTheme();
+      }
+    }
     applyAppearanceSettings();
     layout.querySelectorAll('.color-swatch').forEach(swatch => swatch.classList.toggle('active', swatch.dataset.color === normalized));
     const picker = $('set-custom-accent');
@@ -5035,15 +5667,133 @@ function renderSettingsLayout() {
   });
   $('set-custom-accent')?.addEventListener('input', event => chooseAccent(event.target.value));
   $('set-custom-accent')?.addEventListener('change', event => chooseAccent(event.target.value, true));
+  const chooseTheme = (themeId) => {
+    const theme = getThemeById(themeId);
+    state.settings.theme = theme.id;
+    state.settings.accentColor = theme.accent;
+    state.settings.activeCustomThemeId = null;
+    state.settingsDirty = true;
+    applyAppearanceSettings();
+    const select = $('set-theme-select');
+    if (select && select.value !== theme.id) select.value = theme.id;
+    layout.querySelectorAll('.theme-card[data-theme-id]').forEach(card => {
+      const isSelected = card.dataset.themeId === theme.id;
+      card.classList.toggle('active', isSelected);
+      card.setAttribute('aria-checked', String(isSelected));
+      const status = card.querySelector('.theme-card-status');
+      if (status) status.textContent = isSelected ? 'Active theme' : 'Apply theme';
+    });
+    layout.querySelectorAll('[data-custom-theme-card]').forEach(card => card.classList.remove('active'));
+    const normalizedAccent = theme.accent.toLowerCase();
+    layout.querySelectorAll('.color-swatch').forEach(swatch => swatch.classList.toggle('active', swatch.dataset.color === normalizedAccent));
+    const picker = $('set-custom-accent');
+    const preview = layout.querySelector('.custom-color-preview');
+    const custom = layout.querySelector('.custom-color-control');
+    const value = $('custom-color-value');
+    if (picker && picker.value !== normalizedAccent) picker.value = normalizedAccent;
+    if (preview) preview.style.background = normalizedAccent;
+    if (value) value.textContent = normalizedAccent.toUpperCase();
+    custom?.classList.toggle('active', !ACCENT_PRESETS.some(preset => preset.color === normalizedAccent));
+    clearTimeout(state.settingsSaveTimer);
+    void saveAllSettings(null, { silent: true });
+  };
+  const chooseUiStyle = (styleId) => {
+    const style = getUiStyleById(styleId);
+    state.settings.uiStyle = style.id;
+    state.settings.activeCustomThemeId = null;
+    state.settingsDirty = true;
+    applyAppearanceSettings();
+    const select = $('set-ui-style-select');
+    if (select && select.value !== style.id) select.value = style.id;
+    layout.querySelectorAll('.ui-style-card[data-ui-style-id]').forEach(card => {
+      const isSelected = card.dataset.uiStyleId === style.id;
+      card.classList.toggle('active', isSelected);
+      card.setAttribute('aria-checked', String(isSelected));
+      const status = card.querySelector('.theme-card-status');
+      if (status) status.textContent = isSelected ? 'Active layout' : 'Apply layout';
+    });
+    layout.querySelectorAll('[data-custom-theme-card]').forEach(card => card.classList.remove('active'));
+    clearTimeout(state.settingsSaveTimer);
+    void saveAllSettings(null, { silent: true });
+  };
+  $('set-theme-select')?.addEventListener('change', event => chooseTheme(event.target.value));
+  layout.querySelectorAll('.theme-card[data-theme-id]').forEach(card => {
+    card.addEventListener('click', () => chooseTheme(card.dataset.themeId));
+  });
+  $('set-ui-style-select')?.addEventListener('change', event => chooseUiStyle(event.target.value));
+  layout.querySelectorAll('.ui-style-card[data-ui-style-id]').forEach(card => {
+    card.addEventListener('click', () => chooseUiStyle(card.dataset.uiStyleId));
+  });
+  $('open-theme-studio-btn')?.addEventListener('click', () => {
+    ensureThemeStudio()?.openStudio();
+  });
+  $('import-custom-theme-btn')?.addEventListener('click', () => {
+    ensureThemeStudio()?.triggerImportFilePicker();
+  });
+  layout.querySelectorAll('[data-custom-theme-apply]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.customThemeApply;
+      const preset = (state.settings.customThemes || []).find(item => item.id === id);
+      if (!preset) return;
+      state.settings.activeCustomThemeId = preset.id;
+      state.settings.theme = normalizeThemeId(preset.baseTheme);
+      state.settings.uiStyle = normalizeUiStyleId(preset.baseUiStyle);
+      const themeSelect = $('set-theme-select');
+      if (themeSelect) themeSelect.value = state.settings.theme;
+      const uiStyleSelect = $('set-ui-style-select');
+      if (uiStyleSelect) uiStyleSelect.value = state.settings.uiStyle;
+      await saveAllSettings(null, { silent: true });
+      renderSettingsLayout();
+      toast(`Applied custom theme "${preset.name}"`, 'success');
+    });
+  });
+  layout.querySelectorAll('[data-custom-theme-edit]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.customThemeEdit;
+      const preset = (state.settings.customThemes || []).find(item => item.id === id);
+      if (preset) ensureThemeStudio()?.openStudio(preset);
+    });
+  });
+  layout.querySelectorAll('[data-custom-theme-export]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.customThemeExport;
+      const preset = (state.settings.customThemes || []).find(item => item.id === id);
+      if (preset) ensureThemeStudio()?.exportThemeJson(preset);
+    });
+  });
+  layout.querySelectorAll('[data-custom-theme-delete]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.customThemeDelete;
+      state.settings.customThemes = (state.settings.customThemes || []).filter(item => item.id !== id);
+      if (state.settings.activeCustomThemeId === id) state.settings.activeCustomThemeId = null;
+      await saveAllSettings(null, { silent: true });
+      renderSettingsLayout();
+      toast('Deleted custom theme preset', 'info');
+    });
+  });
   $('update-check-btn')?.addEventListener('click', checkForLauncherUpdates);
   $('update-action-btn')?.addEventListener('click', runUpdateAction);
   $('storage-refresh')?.addEventListener('click', loadStorageUsage);
   $('storage-clear-cache')?.addEventListener('click', clearDownloadCache);
+  $('set-online-counter-info')?.addEventListener('click', openOnlineCounterTransparencyModal);
+  bindCurseForgeSettingsActions();
+  if (previousCat === 'curseforge') void loadCurseForgeSettingsStatus();
+  if (previousCat === 'cloud-sync') void loadCloudSyncSettingsPanel();
   bindMemoryRange('set');
   renderUpdatePanel();
   const headerSave = $('settings-header-save');
   if (headerSave) headerSave.onclick = (event) => saveAllSettings(event.currentTarget);
-  syncSettingsHeaderSave('general');
+  if (previousCat && previousCat !== 'general') {
+    const navBtn = layout.querySelector(`.settings-nav button[data-cat="${previousCat}"]`);
+    const pane = layout.querySelector(`.settings-pane[data-cat="${previousCat}"]`);
+    if (navBtn && pane) {
+      layout.querySelectorAll('.settings-nav button').forEach(b => b.classList.remove('active'));
+      layout.querySelectorAll('.settings-pane').forEach(p => p.classList.remove('active'));
+      navBtn.classList.add('active');
+      pane.classList.add('active');
+    }
+  }
+  syncSettingsHeaderSave(previousCat || 'general');
   $('set-reset-btn')?.addEventListener('click', resetSettings);
   $('set-reduced-motion')?.addEventListener('change', (e) => {
     document.documentElement.classList.toggle('reduced-motion', e.target.checked);
@@ -5053,9 +5803,10 @@ function renderSettingsLayout() {
     gayToggle.addEventListener('change', () => {
       state.settings.gayMode = gayToggle.checked;
       updatePride();
-      saveAllSettings();
+      void saveAllSettings(null, { silent: true });
     });
   }
+  updatePride();
   state.settingsDirty = false;
   layout.querySelectorAll('input:not([data-independent]), select:not([data-independent])').forEach(control => {
     control.addEventListener('input', () => {
@@ -5093,6 +5844,64 @@ async function clearDownloadCache() {
   } catch (error) { toast(error.message || 'Could not clear cache', 'error', 4500); }
 }
 
+async function openOnlineCounterTransparencyModal() {
+  let info;
+  try {
+    info = await api.getOnlineCounterInfo();
+  } catch (error) {
+    toast(error.message || 'Could not load sharing details', 'error', 4000);
+    return;
+  }
+  const previousFocus = document.activeElement;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-root visible';
+  const payloadJson = JSON.stringify(info?.samplePayload || {}, null, 2);
+  const neverShared = Array.isArray(info?.neverShared) ? info.neverShared : [];
+  const enabled = info?.enabled !== false;
+  const statusText = !enabled
+    ? 'Opted out — Pine sends nothing'
+    : info?.endpointConfigured
+      ? `Enabled — sends every ${info.intervalMinutes || 4} min while open`
+      : 'Enabled (inactive until endpoint is configured)';
+  overlay.innerHTML = `
+    <div class="modal telemetry-modal" role="dialog" aria-modal="true" aria-labelledby="telemetry-info-title">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title" id="telemetry-info-title">What’s shared?</h2>
+          <p class="modal-subtitle">Anonymous active-player count</p>
+        </div>
+        <button class="modal-close" type="button" data-close aria-label="Close"><svg width="16" height="16" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <div class="telemetry-status-pill">${escHtml(statusText)}</div>
+        <div class="telemetry-section-label">Exact JSON sent for this session (only these 4 fields)</div>
+        <pre class="telemetry-preview-code">${escHtml(payloadJson)}</pre>
+        <p class="privacy-setting-desc"><strong>sessionId</strong> is a random ID created in memory each time you open Pine. It is never saved to disk and expires automatically after you close the launcher or opt out.</p>
+        <div class="telemetry-never-box">
+          <div class="telemetry-never-heading">Never collected or stored</div>
+          <ul class="telemetry-never-list">
+            ${neverShared.map(item => `<li><span class="telemetry-never-mark" aria-hidden="true">✕</span><span>${escHtml(item)}</span></li>`).join('')}
+          </ul>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" type="button" data-close>Got it</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => {
+    overlay.remove();
+    previousFocus?.focus?.();
+  };
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay || event.target.closest('[data-close]')) close();
+  });
+  overlay.addEventListener('keydown', event => {
+    if (event.key === 'Escape') close();
+  });
+  overlay.querySelector('[data-close]')?.focus();
+}
+
 function syncSettingsHeaderSave(category) {
   const headerSave = $('settings-header-save');
   if (!headerSave) return;
@@ -5101,14 +5910,19 @@ function syncSettingsHeaderSave(category) {
 
 async function saveAllSettings(button = null, { silent = false } = {}) {
   clearTimeout(state.settingsSaveTimer);
+  const prideToggle = $('gay-mode-toggle');
+  const themeSelect = $('set-theme-select');
+  const uiStyleSelect = $('set-ui-style-select');
   state.settings = {
     ...state.settings,
+    theme: normalizeThemeId(themeSelect ? themeSelect.value : state.settings.theme),
+    uiStyle: normalizeUiStyleId(uiStyleSelect ? uiStyleSelect.value : state.settings.uiStyle),
     javaPath: $('set-java-path')?.value || '',
     minMemory: `${parseInt($('set-min-mem')?.value, 10) || 4}G`,
     maxMemory: `${parseInt($('set-max-mem')?.value, 10) || 4}G`,
     launchBehavior: $('set-launch-behavior')?.value || 'Keep open',
     dlLimit: parseInt($('set-dl-limit')?.value) || 4,
-    gayMode: $('gay-mode-toggle')?.checked !== false,
+    gayMode: prideToggle ? prideToggle.checked : state.settings.gayMode !== false,
     windowWidth: parseInt($('set-window-width')?.value) || 1280,
     windowHeight: parseInt($('set-window-height')?.value) || 720,
     jvmArgs: $('set-jvm-args')?.value || '',
@@ -5117,6 +5931,7 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
     discordShowInstance: $('set-discord-instance')?.checked !== false,
     discordShowServer: $('set-discord-server')?.checked !== false,
     compactLibrary: $('set-compact-library')?.checked === true,
+    anonymousOnlineCounter: $('set-online-counter')?.checked !== false,
   };
   try {
     state.settings = await api.saveSettings(state.settings);
@@ -5134,10 +5949,13 @@ async function saveAllSettings(button = null, { silent = false } = {}) {
 
 async function resetSettings() {
   state.settings = {
+    theme: DEFAULT_THEME_ID,
+    uiStyle: DEFAULT_UI_STYLE_ID,
     launchBehavior: 'Keep open', dlLimit: 4, javaPath: '', minMemory: '4G', maxMemory: '4G',
     jvmArgs: '', windowWidth: 1280, windowHeight: 720, accentColor: '#ff5cb9',
     reducedMotion: false, gayMode: true, discordPresence: true,
     discordShowInstance: true, discordShowServer: true, compactLibrary: false,
+    anonymousOnlineCounter: true,
   };
   try {
     state.settings = await api.saveSettings(state.settings);
@@ -5147,6 +5965,511 @@ async function resetSettings() {
   } catch (e) {
     toast('Could not reset settings: ' + (e.message || e), 'error', 4500);
   }
+}
+
+function openSettingsCategory(category) {
+  switchView('settings');
+  requestAnimationFrame(() => {
+    document.querySelector(`.settings-nav button[data-cat="${category}"]`)?.click();
+  });
+}
+
+async function loadCurseForgeSettingsStatus() {
+  const statusEl = $('cf-key-status');
+  if (!statusEl || !api.getCurseForgeStatus) return;
+  try {
+    const status = await api.getCurseForgeStatus();
+    statusEl.dataset.ok = String(Boolean(status.configured));
+    if (status.configured) {
+      const sourceLabel = status.source === 'env' ? 'Environment variable' : 'Encrypted in OS keyring';
+      statusEl.innerHTML = `<strong>CurseForge enabled${status.keyHint ? ` (${escHtml(status.keyHint)})` : ''}</strong><span>${sourceLabel}. CurseForge mods, modpacks, resource packs, shaders, and data packs are active in Discover.</span>`;
+    } else if (!status.secureStorageAvailable) {
+      statusEl.innerHTML = `<strong>OS keyring unavailable</strong><span>Install a desktop Secret Service (such as GNOME Keyring or KWallet) so Pine can encrypt your API key safely.</span>`;
+    } else {
+      statusEl.innerHTML = `<strong>Not configured</strong><span>Add your free CurseForge API key below to browse and install CurseForge content alongside Modrinth.</span>`;
+    }
+  } catch (error) {
+    statusEl.dataset.ok = 'false';
+    statusEl.innerHTML = `<strong>Could not check CurseForge status</strong><span>${escHtml(error.message || error)}</span>`;
+  }
+}
+
+function bindCurseForgeSettingsActions() {
+  const input = $('cf-api-key-input');
+  const statusEl = $('cf-key-status');
+  $('cf-save-key-btn')?.addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    const raw = input?.value.trim() || '';
+    if (!raw) {
+      toast('Paste your CurseForge API key first', 'error');
+      return;
+    }
+    btn.disabled = true;
+    try {
+      await api.saveCurseForgeKey(raw);
+      if (input) input.value = '';
+      await loadCurseForgeSettingsStatus();
+      toast('CurseForge API key saved securely', 'success');
+    } catch (error) {
+      toast(error.message || 'Could not save CurseForge API key', 'error', 5500);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $('cf-test-key-btn')?.addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    const candidate = input?.value.trim() || '';
+    btn.disabled = true;
+    try {
+      const result = await api.testCurseForgeKey(candidate || undefined);
+      if (statusEl) {
+        statusEl.dataset.ok = String(Boolean(result.ok));
+        statusEl.innerHTML = `<strong>${result.ok ? 'Connection verified' : 'Connection failed'}</strong><span>${escHtml(result.message || '')}</span>`;
+      }
+      toast(result.message || (result.ok ? 'CurseForge key works' : 'CurseForge test failed'), result.ok ? 'success' : 'error', 5000);
+    } catch (error) {
+      toast(error.message || 'CurseForge test failed', 'error', 5500);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $('cf-clear-key-btn')?.addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    try {
+      await api.clearCurseForgeKey();
+      if (input) input.value = '';
+      await loadCurseForgeSettingsStatus();
+      toast('CurseForge API key removed', 'info');
+    } catch (error) {
+      toast(error.message || 'Could not remove API key', 'error', 4500);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $('cf-get-key-btn')?.addEventListener('click', async () => {
+    try {
+      await api.openCurseForgeUrl('https://console.curseforge.com/#/api-keys');
+    } catch (error) {
+      toast(error.message || 'Could not open CurseForge Console', 'error', 4500);
+    }
+  });
+}
+
+let cloudSyncLastPreview = null;
+let cloudSyncProgressState = null;
+let cloudSyncProgressBound = false;
+
+async function loadCloudSyncSettingsPanel() {
+  const host = $('cloud-sync-root');
+  if (!host || !api.getCloudSyncStatus) return;
+  if (!cloudSyncProgressBound && api.onCloudSyncProgress) {
+    cloudSyncProgressBound = true;
+    api.onCloudSyncProgress((progress) => {
+      cloudSyncProgressState = progress;
+      const bar = $('cloud-sync-progress');
+      if (bar) {
+        bar.hidden = false;
+        bar.innerHTML = `<span>${escHtml(progress.message || 'Syncing…')}</span><div class="progress-bar"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%"></div></div>`;
+      }
+    });
+  }
+  try {
+    const status = await api.getCloudSyncStatus();
+    renderCloudSyncPane(status);
+  } catch (error) {
+    host.innerHTML = `<div class="storage-loading">${escHtml(error.message || 'Could not load Cloud Sync')}</div>`;
+  }
+}
+
+function cleanIpcError(err, fallback = 'Operation failed') {
+  const raw = String(err?.message || err || fallback);
+  return raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '').trim() || fallback;
+}
+
+const CLOUD_OAUTH_GUIDES = {
+  'google-drive': [
+    'Click <strong>Get Client ID &amp; Connect</strong> (or <strong>Open Google Drive Console</strong>) to open Google Cloud Console.',
+    'Click <strong>Select a project → New Project</strong> at the top, name it <code>Pine Launcher</code>, and click <strong>Create</strong>.',
+    'Open the left menu (☰) → <strong>APIs &amp; Services → Library</strong>, search for <strong>Google Drive API</strong>, and click <strong>Enable</strong>.',
+    'Go to <strong>OAuth consent screen</strong>, pick <strong>External</strong>, fill in app name <code>Pine Launcher</code> and your email, then add your own Gmail under <strong>Test users</strong>.',
+    'Go to <strong>Credentials → + Create Credentials → OAuth client ID</strong>, pick <strong>Desktop app</strong>, and click <strong>Create</strong>.',
+    'Copy the <strong>Client ID</strong> (and <strong>Client Secret</strong> if shown), paste them below, and click <strong>Connect in browser</strong>.',
+  ],
+  onedrive: [
+    'Click <strong>Get Client ID &amp; Connect</strong> (or <strong>Open OneDrive Console</strong>) to open Microsoft Azure App Registrations.',
+    'Click <strong>+ New registration</strong>, name it <code>Pine Launcher</code>, and choose <strong>Personal Microsoft accounts only</strong> (or Any org + personal).',
+    'Under <strong>Redirect URI</strong>, select <strong>Public client/native (mobile &amp; desktop)</strong> and paste the Redirect URI from above, then click <strong>Register</strong>.',
+    'On the Overview page, copy the <strong>Application (client) ID</strong>.',
+    'Paste it into the box below and click <strong>Connect in browser</strong> (no Client Secret needed).',
+  ],
+  dropbox: [
+    'Click <strong>Get Client ID &amp; Connect</strong> (or <strong>Open Dropbox Console</strong>) and click <strong>Create app</strong>.',
+    'Pick <strong>Scoped access</strong> → <strong>App folder</strong>, name it <code>Pine Launcher Sync</code>, and click <strong>Create app</strong>.',
+    'Open the <strong>Permissions</strong> tab, check <code>account_info.read</code>, <code>files.metadata.read</code>, <code>files.content.read</code>, and <code>files.content.write</code>, then click <strong>Submit</strong>.',
+    'Open the <strong>Settings</strong> tab, paste the Redirect URI from above under <strong>OAuth 2 → Redirect URIs</strong>, and click <strong>Add</strong>.',
+    'Copy your <strong>App key</strong> on that same page, paste it below, and click <strong>Connect in browser</strong>.',
+  ],
+};
+
+function renderCloudSyncPane(status) {
+  const host = $('cloud-sync-root');
+  if (!host || !status) return;
+  const config = status.config;
+  const activeId = config.activeProvider;
+  const activeProvider = activeId ? status.providers[activeId] : null;
+  const oauthIds = ['google-drive', 'onedrive', 'dropbox'];
+  const connectedSummary = activeProvider?.connected
+    ? `${activeProvider.label}${activeProvider.account?.email ? ` · ${activeProvider.account.email}` : activeProvider.account?.name ? ` · ${activeProvider.account.name}` : ''}`
+    : 'No active cloud provider connected';
+  const lastSyncText = config.lastSyncAt
+    ? `Last sync: ${new Date(config.lastSyncAt).toLocaleString()}${config.lastSyncSummary ? ` (${config.lastSyncSummary})` : ''}`
+    : 'Never synced yet';
+
+  const switchMarkup = (attrs, checked) => `<span class="cloud-switch"><input type="checkbox" data-independent ${attrs} ${checked ? 'checked' : ''}><span class="cloud-switch-track"></span></span>`;
+
+  host.innerHTML = `
+    <div class="cloud-sync-summary">
+      <div>
+        <strong>${escHtml(connectedSummary)}</strong>
+        <span>${escHtml(lastSyncText)}</span>
+      </div>
+      ${status.connectingProvider ? `<button type="button" class="btn btn-ghost btn-sm" id="cloud-sync-cancel-connect">Cancel browser sign-in</button>` : ''}
+    </div>
+
+    <div class="cloud-zero-setup-tip">
+      <strong>Want the easiest zero-setup option?</strong> If you already have the Google Drive, OneDrive, or Dropbox desktop app installed on your PC, just use <strong>Synced Folder</strong> below — no developer keys or console steps needed.
+    </div>
+
+    <div id="cloud-sync-progress" class="cloud-sync-progress"${cloudSyncProgressState && cloudSyncProgressState.stage !== 'done' ? '' : ' hidden'}>
+      ${cloudSyncProgressState ? `<span>${escHtml(cloudSyncProgressState.message || '')}</span><div class="progress-bar"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, Number(cloudSyncProgressState.percent) || 0))}%"></div></div>` : ''}
+    </div>
+
+    <div class="cloud-sync-providers">
+      ${oauthIds.map((id) => {
+        const p = status.providers[id];
+        const isActive = activeId === id;
+        const guideSteps = CLOUD_OAUTH_GUIDES[id] || [];
+        const acctLine = p.connected
+          ? (p.account?.email || p.account?.name || 'Connected')
+          : (p.hasClientId
+            ? 'Opens your default browser so you can pick your account directly.'
+            : 'Click below to open the setup page and copy your free Client ID.');
+        return `
+          <div class="cloud-provider-card${isActive ? ' active' : ''}" data-cloud-provider="${escHtml(id)}">
+            <div class="cloud-provider-head">
+              <div>
+                <strong>${escHtml(p.label)}</strong>
+                <small${p.connected ? ' class="cloud-provider-path"' : ''}>${escHtml(acctLine)}</small>
+              </div>
+              <span class="cloud-provider-badge${p.connected ? ' connected' : ''}">${p.connected ? (isActive ? 'Active' : 'Connected') : (p.hasClientId ? 'Ready' : 'Setup needed')}</span>
+            </div>
+            <div class="cloud-provider-actions">
+              ${p.connected
+                ? `${!isActive ? `<button type="button" class="btn btn-primary btn-sm" data-cloud-use="${escHtml(id)}">Use for sync</button>` : ''}
+                   <button type="button" class="btn btn-secondary btn-sm" data-cloud-connect="${escHtml(id)}">Switch account</button>
+                   <button type="button" class="btn btn-ghost btn-sm" data-cloud-disconnect="${escHtml(id)}">Disconnect</button>`
+                : `<button type="button" class="btn btn-primary btn-sm" data-cloud-connect="${escHtml(id)}">${p.hasClientId ? 'Connect in browser' : 'Get Client ID & Connect'}</button>`}
+            </div>
+            <details class="cloud-oauth-details" data-cloud-details="${escHtml(id)}"${!p.hasClientId ? ' open' : ''}>
+              <summary>OAuth App Setup ${p.hasClientId ? '(Configured)' : ''}</summary>
+              <div class="cloud-oauth-fields">
+                <div class="cloud-oauth-redirect">
+                  <code>${escHtml(p.redirectUri || '')}</code>
+                  <button type="button" class="btn btn-ghost btn-sm" data-cloud-copy-redirect="${escHtml(p.redirectUri || '')}">Copy URI</button>
+                </div>
+                <input type="text" class="input" data-independent data-cloud-client-id="${escHtml(id)}" placeholder="${escHtml(p.label)} OAuth Client ID${p.hasClientId ? ' (saved — paste new to replace)' : ''}" autocomplete="off" spellcheck="false">
+                ${p.supportsClientSecret ? `<input type="password" class="input" data-independent data-cloud-client-secret="${escHtml(id)}" placeholder="Client Secret (optional for Google Desktop app)" autocomplete="off" spellcheck="false">` : ''}
+                <div class="cloud-provider-actions">
+                  <button type="button" class="btn btn-secondary btn-sm" data-cloud-save-oauth="${escHtml(id)}">Save App ID</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-cloud-console="${escHtml(id)}">Open ${escHtml(p.label)} Console</button>
+                </div>
+                <details class="setup-guide">
+                  <summary>Step-by-step guide (${guideSteps.length} steps)</summary>
+                  <ol class="setup-guide-steps">
+                    ${guideSteps.map((step, idx) => `<li><span class="setup-guide-num">${idx + 1}</span><span>${step}</span></li>`).join('')}
+                  </ol>
+                </details>
+              </div>
+            </details>
+          </div>
+        `;
+      }).join('')}
+
+      ${(() => {
+        const local = status.providers['local-folder'];
+        const isActive = activeId === 'local-folder';
+        return `
+          <div class="cloud-provider-card${isActive ? ' active' : ''}" data-cloud-provider="local-folder">
+            <div class="cloud-provider-head">
+              <div>
+                <strong>Synced Folder</strong>
+                <small${local.folderPath ? ' class="cloud-provider-path"' : ''}>${escHtml(local.folderPath || 'Works immediately with your Google Drive, OneDrive, Dropbox, or Syncthing desktop folder — zero OAuth setup.')}</small>
+              </div>
+              <span class="cloud-provider-badge${local.connected ? ' connected' : ''}">${local.connected ? (isActive ? 'Active' : 'Ready') : 'Instant setup'}</span>
+            </div>
+            <div class="cloud-provider-actions">
+              <button type="button" class="btn btn-primary btn-sm" id="cloud-sync-choose-folder">${local.folderPath ? 'Change folder' : 'Choose folder'}</button>
+              ${local.connected && !isActive ? `<button type="button" class="btn btn-secondary btn-sm" data-cloud-use="local-folder">Use for sync</button>` : ''}
+              ${local.folderPath ? `<button type="button" class="btn btn-ghost btn-sm" data-cloud-disconnect="local-folder">Clear</button>` : ''}
+            </div>
+          </div>
+        `;
+      })()}
+    </div>
+
+    <div class="cloud-sync-scopes">
+      <label class="cloud-sync-scope-row"><span>Launcher settings</span>${switchMarkup('data-cloud-scope="settings"', config.scopes.settings)}</label>
+      <label class="cloud-sync-scope-row"><span>Themes &amp; Theme Studio</span>${switchMarkup('data-cloud-scope="themes"', config.scopes.themes)}</label>
+      <label class="cloud-sync-scope-row"><span>Saved servers</span>${switchMarkup('data-cloud-scope="servers"', config.scopes.servers)}</label>
+      <label class="cloud-sync-scope-row"><span>Instance recipes &amp; mod lists</span>${switchMarkup('data-cloud-scope="instances"', config.scopes.instances)}</label>
+      <label class="cloud-sync-scope-row"><span>Worlds (ZIP, up to ${config.maxWorldSizeMb} MB)</span>${switchMarkup('data-cloud-scope="worlds"', config.scopes.worlds)}</label>
+      <label class="cloud-sync-scope-row"><span>Auto-sync after closing game</span>${switchMarkup('id="cloud-sync-auto-exit"', config.autoSyncOnExit)}</label>
+    </div>
+
+    <div class="cloud-sync-actions-bar">
+      <button type="button" class="btn btn-primary" id="cloud-sync-now-btn"${activeProvider?.connected ? '' : ' disabled'}>Sync now</button>
+      <button type="button" class="btn btn-secondary" id="cloud-sync-preview-btn"${activeProvider?.connected ? '' : ' disabled'}>Check changes</button>
+      <button type="button" class="btn btn-secondary" id="cloud-sync-push-btn"${activeProvider?.connected ? '' : ' disabled'}>Push to cloud</button>
+      <button type="button" class="btn btn-secondary" id="cloud-sync-pull-btn"${activeProvider?.connected ? '' : ' disabled'}>Pull from cloud</button>
+    </div>
+
+    <div id="cloud-sync-plan-host"></div>
+  `;
+
+  if (cloudSyncLastPreview) renderCloudSyncPlanBox(cloudSyncLastPreview);
+
+  host.querySelectorAll('[data-cloud-client-id]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const id = input.dataset.cloudClientId;
+      const p = status.providers[id];
+      const connectBtn = host.querySelector(`[data-cloud-connect="${id}"]`);
+      if (connectBtn && !p?.connected) {
+        connectBtn.textContent = (input.value.trim() || p?.hasClientId) ? 'Connect in browser' : 'Get Client ID & Connect';
+      }
+    });
+  });
+
+  host.querySelectorAll('[data-cloud-copy-redirect]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api.copyText(btn.dataset.cloudCopyRedirect || '');
+        toast('Copied Redirect URI', 'success');
+      } catch (err) { toast(cleanIpcError(err, 'Could not copy URI'), 'error'); }
+    });
+  });
+
+  host.querySelectorAll('[data-cloud-console]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try { await api.openCloudSyncConsole(btn.dataset.cloudConsole); }
+      catch (err) { toast(cleanIpcError(err, 'Could not open console'), 'error'); }
+    });
+  });
+
+  host.querySelectorAll('[data-cloud-save-oauth]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.cloudSaveOauth;
+      const clientId = host.querySelector(`[data-cloud-client-id="${id}"]`)?.value.trim() || '';
+      const clientSecret = host.querySelector(`[data-cloud-client-secret="${id}"]`)?.value.trim() || '';
+      if (!clientId) {
+        toast('Paste an OAuth Client ID first', 'error');
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const next = await api.saveCloudSyncConfig({ oauthCredentials: { [id]: { clientId, clientSecret } } });
+        toast('OAuth App ID saved — click Connect in browser to sign in', 'success');
+        renderCloudSyncPane(next);
+      } catch (err) {
+        toast(cleanIpcError(err, 'Could not save OAuth credentials'), 'error', 5500);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  host.querySelectorAll('[data-cloud-connect]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.cloudConnect;
+      const providerInfo = status.providers[id];
+      const inputEl = host.querySelector(`[data-cloud-client-id="${id}"]`);
+      const clientId = inputEl?.value.trim() || '';
+      const clientSecret = host.querySelector(`[data-cloud-client-secret="${id}"]`)?.value.trim() || '';
+
+      // If no Client ID is saved or entered yet, immediately open the provider's console & copy Redirect URI
+      if (!providerInfo?.hasClientId && !clientId) {
+        const detailsEl = host.querySelector(`[data-cloud-details="${id}"]`);
+        if (detailsEl) detailsEl.open = true;
+        if (providerInfo?.redirectUri) {
+          void api.copyText(providerInfo.redirectUri).catch(() => {});
+        }
+        try {
+          await api.openCloudSyncConsole(id);
+          toast(`Opened ${providerInfo?.label || id} Console and copied Redirect URI — paste your Client ID below, then click Connect`, 'info', 7000);
+        } catch (err) {
+          toast(cleanIpcError(err, 'Could not open browser'), 'error', 5000);
+        }
+        inputEl?.focus();
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Waiting for browser…';
+      try {
+        const next = await api.connectCloudSync({
+          providerId: id,
+          ...(clientId ? { clientId, clientSecret } : {}),
+        });
+        cloudSyncLastPreview = null;
+        toast(`Connected to ${next.providers[id]?.label || id}`, 'success');
+        renderCloudSyncPane(next);
+      } catch (err) {
+        toast(cleanIpcError(err, 'Cloud sign-in failed'), 'error', 6500);
+        await loadCloudSyncSettingsPanel();
+      }
+    });
+  });
+
+  host.querySelector('#cloud-sync-cancel-connect')?.addEventListener('click', async () => {
+    const next = await api.cancelCloudSyncConnect();
+    renderCloudSyncPane(next);
+  });
+
+  host.querySelectorAll('[data-cloud-use]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const next = await api.saveCloudSyncConfig({ activeProvider: btn.dataset.cloudUse });
+      cloudSyncLastPreview = null;
+      renderCloudSyncPane(next);
+    });
+  });
+
+  host.querySelectorAll('[data-cloud-disconnect]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const next = await api.disconnectCloudSync(btn.dataset.cloudDisconnect);
+      cloudSyncLastPreview = null;
+      toast('Disconnected cloud provider', 'info');
+      renderCloudSyncPane(next);
+    });
+  });
+
+  host.querySelector('#cloud-sync-choose-folder')?.addEventListener('click', async () => {
+    try {
+      const picked = await api.chooseCloudSyncFolder();
+      if (!picked.canceled && picked.status) {
+        cloudSyncLastPreview = null;
+        toast('Sync folder selected', 'success');
+        renderCloudSyncPane(picked.status);
+      }
+    } catch (err) { toast(cleanIpcError(err, 'Could not select folder'), 'error'); }
+  });
+
+  const saveScopePatch = async () => {
+    const scopes = {};
+    host.querySelectorAll('[data-cloud-scope]').forEach((cb) => {
+      scopes[cb.dataset.cloudScope] = cb.checked;
+    });
+    const autoSyncOnExit = host.querySelector('#cloud-sync-auto-exit')?.checked === true;
+    try {
+      await api.saveCloudSyncConfig({ scopes, autoSyncOnExit });
+    } catch (err) { toast(cleanIpcError(err, 'Could not update Cloud Sync preferences'), 'error'); }
+  };
+  host.querySelectorAll('[data-cloud-scope], #cloud-sync-auto-exit').forEach((cb) => {
+    cb.addEventListener('change', saveScopePatch);
+  });
+
+  const runSyncAction = async (mode, resolutions = {}) => {
+    try {
+      const result = await api.runCloudSync({ mode, resolutions });
+      if (result.status === 'conflicts') {
+        cloudSyncLastPreview = { plan: { toPush: [], toPull: [], conflicts: result.conflicts, unchanged: [], skipped: result.skipped || [] } };
+        renderCloudSyncPlanBox(cloudSyncLastPreview);
+        toast(`${result.conflicts.length} sync conflict(s) detected — choose which version to keep below`, 'info', 5500);
+        return;
+      }
+      cloudSyncLastPreview = null;
+      toast(`Cloud Sync complete: ${result.summary}`, 'success', 4500);
+      if (result.pulled > 0) {
+        state.settings = await api.getSettings();
+        applyAppearanceSettings();
+        await loadInstances();
+      }
+      if (result.statusSnapshot) renderCloudSyncPane(result.statusSnapshot);
+      else await loadCloudSyncSettingsPanel();
+    } catch (err) {
+      toast(cleanIpcError(err, 'Cloud Sync failed'), 'error', 6500);
+    }
+  };
+
+  host.querySelector('#cloud-sync-preview-btn')?.addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    try {
+      cloudSyncLastPreview = await api.previewCloudSync();
+      renderCloudSyncPlanBox(cloudSyncLastPreview);
+    } catch (err) {
+      toast(cleanIpcError(err, 'Could not check cloud differences'), 'error', 5500);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  host.querySelector('#cloud-sync-now-btn')?.addEventListener('click', () => runSyncAction('smart'));
+  host.querySelector('#cloud-sync-push-btn')?.addEventListener('click', () => runSyncAction('push'));
+  host.querySelector('#cloud-sync-pull-btn')?.addEventListener('click', () => runSyncAction('pull'));
+}
+
+function renderCloudSyncPlanBox(preview) {
+  const planHost = $('cloud-sync-plan-host');
+  if (!planHost || !preview?.plan) return;
+  const { toPush = [], toPull = [], conflicts = [], unchanged = [], skipped = [] } = preview.plan;
+  const resolutions = {};
+  planHost.innerHTML = `
+    <div class="cloud-sync-plan-box">
+      <strong>Sync check${preview.remoteDeviceName ? ` · Cloud updated by ${escHtml(preview.remoteDeviceName)}` : ''}</strong>
+      <div>To upload: <b>${toPush.length}</b> · To download: <b>${toPull.length}</b> · Conflicts: <b>${conflicts.length}</b> · Up to date: <b>${unchanged.length}</b></div>
+      ${toPush.length ? `<div class="text-muted">Upload: ${toPush.map(i => escHtml(i.label)).join(', ')}</div>` : ''}
+      ${toPull.length ? `<div class="text-muted">Download: ${toPull.map(i => escHtml(i.label)).join(', ')}</div>` : ''}
+      ${skipped.length ? `<div class="text-muted">Skipped: ${skipped.map(i => `${escHtml(i.label)} (${escHtml(i.reason)})`).join(', ')}</div>` : ''}
+      ${conflicts.length ? `
+        <div class="cloud-sync-conflicts">
+          ${conflicts.map(c => `
+            <div class="cloud-sync-conflict-row" data-conflict-key="${escHtml(c.key)}">
+              <div><strong>${escHtml(c.label)}</strong><div class="text-muted">Changed both locally and in the cloud</div></div>
+              <div class="cloud-sync-conflict-actions">
+                <button type="button" class="btn btn-secondary btn-sm" data-resolve-key="${escHtml(c.key)}" data-resolve-choice="local">Keep local</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-resolve-key="${escHtml(c.key)}" data-resolve-choice="remote">Keep cloud</button>
+                ${c.kind === 'world' ? `<button type="button" class="btn btn-secondary btn-sm" data-resolve-key="${escHtml(c.key)}" data-resolve-choice="duplicate">Keep both</button>` : ''}
+              </div>
+            </div>
+          `).join('')}
+          <button type="button" class="btn btn-primary btn-sm" id="cloud-sync-apply-conflicts" style="margin-top:8px;">Apply conflict choices &amp; sync</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+  planHost.querySelectorAll('[data-resolve-key]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.resolveKey;
+      resolutions[key] = btn.dataset.resolveChoice;
+      planHost.querySelectorAll(`[data-resolve-key="${CSS.escape(key)}"]`).forEach((b) => b.classList.remove('btn-primary'));
+      btn.classList.add('btn-primary');
+    });
+  });
+  planHost.querySelector('#cloud-sync-apply-conflicts')?.addEventListener('click', async () => {
+    if (conflicts.some(c => !resolutions[c.key])) {
+      toast('Choose an option for every conflict first', 'error');
+      return;
+    }
+    const result = await api.runCloudSync({ mode: 'smart', resolutions });
+    cloudSyncLastPreview = null;
+    toast(`Cloud Sync complete: ${result.summary}`, 'success', 4500);
+    if (result.pulled > 0) {
+      state.settings = await api.getSettings();
+      applyAppearanceSettings();
+      await loadInstances();
+    }
+    if (result.statusSnapshot) renderCloudSyncPane(result.statusSnapshot);
+    else await loadCloudSyncSettingsPanel();
+  });
 }
 
 function formatUpdateBytes(value) {
@@ -6874,6 +8197,27 @@ async function launchInstance(name, destination = null) {
       }
     } catch (error) { return toast('Could not verify world safety: ' + (error.message || error), 'error', 7000); }
   }
+  if (api.checkInstanceSecurityUpdate && api.applyInstanceSecurityUpdate) {
+    try {
+      const secCheck = await api.checkInstanceSecurityUpdate(name);
+      if (secCheck?.needsUpdate) {
+        const freetypeNote = secCheck.freetypeAffected
+          ? 'This includes Mojang\'s updated LWJGL / FreeType libraries (which patch the Minecraft2Shell resource-pack RCE vulnerability). '
+          : '';
+        const confirmed = await backupConfirmation({
+          title: `Security update available for Minecraft ${secCheck.versionId}`,
+          message: `Mojang published an updated version manifest for Minecraft ${secCheck.versionId}. ${freetypeNote}Before launching "${name}", Pine will refresh the cached ${secCheck.versionId} metadata and download the updated official libraries from Mojang. Your worlds, mods, resource packs, and configs will not be touched.`,
+          action: 'Update & launch',
+        });
+        if (!confirmed) return;
+        setStatus(`Updating Minecraft ${secCheck.versionId} security libraries…`);
+        await api.applyInstanceSecurityUpdate(name);
+        toast(`Updated Minecraft ${secCheck.versionId} metadata to Mojang's latest build`, 'success', 4500);
+      }
+    } catch (error) {
+      return toast('Could not apply Mojang security update: ' + cleanIpcError(error, String(error)), 'error', 7000);
+    }
+  }
   clearLogs({ showBanner: false });
   state.launchingName = name;
   setStatus(`Launching ${name}…`);
@@ -7576,6 +8920,7 @@ async function searchMods(append = false) {
   if (append && state.searchLoading) return;
   if (!append) state.searchOffset = 0;
   const query = $('search-input')?.value.trim() || '';
+  const sourceFilter = $('filter-source')?.value || 'all';
   const loader = $('filter-loader')?.value || '';
   const version = $('filter-version')?.value || '';
   const category = $('filter-category')?.value.trim() || '';
@@ -7584,7 +8929,7 @@ async function searchMods(append = false) {
   if (loader) facets.push(['categories:' + loader]);
   if (version) facets.push(['versions:' + version]);
   if (category) facets.push(['categories:' + category]);
-  const searchKey = JSON.stringify({ query, loader, version, category, sort, type: state.discoverCategory });
+  const searchKey = JSON.stringify({ query, sourceFilter, loader, version, category, sort, type: state.discoverCategory });
   const requestId = ++state.searchRequestId;
   state.activeSearchKey = searchKey;
   state.searchLoading = true;
@@ -7603,16 +8948,35 @@ async function searchMods(append = false) {
 
   try {
     const [modrinthResult, curseForgeResult] = await Promise.allSettled([
-      api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort),
-      api.searchCurseForge(query, { type: state.discoverCategory, gameVersion: version, loader, offset: state.searchOffset, limit: SEARCH_LIMIT, sort }),
+      sourceFilter === 'curseforge'
+        ? Promise.resolve({ hits: [], total_hits: 0 })
+        : api.searchMods(query, facets, state.searchOffset, SEARCH_LIMIT, sort),
+      sourceFilter === 'modrinth'
+        ? Promise.resolve({ hits: [], total_hits: 0, configured: false })
+        : api.searchCurseForge(query, { type: state.discoverCategory, gameVersion: version, loader, offset: state.searchOffset, limit: SEARCH_LIMIT, sort }),
     ]);
     if (requestId !== state.searchRequestId || searchKey !== state.activeSearchKey) return;
+    if (sourceFilter === 'curseforge' && curseForgeResult.status === 'fulfilled' && curseForgeResult.value?.configured === false) {
+      count.textContent = 'CurseForge key needed';
+      grid.innerHTML = `<div class="discover-cf-setup-card">
+        <h3>Connect your free CurseForge API key</h3>
+        <p>CurseForge requires a personal API key to search and download mods, modpacks, resource packs, shaders, and data packs. Add your free key once in Settings and Pine encrypts it locally in your OS keyring.</p>
+        <div class="discover-cf-setup-actions">
+          <button type="button" class="btn btn-primary" id="discover-open-cf-settings">Add API key in Settings</button>
+          <button type="button" class="btn btn-secondary" id="discover-open-cf-console">Get free key at CurseForge</button>
+        </div>
+      </div>`;
+      grid.querySelector('#discover-open-cf-settings')?.addEventListener('click', () => openSettingsCategory('curseforge'));
+      grid.querySelector('#discover-open-cf-console')?.addEventListener('click', () => api.openCurseForgeUrl('https://console.curseforge.com/#/api-keys'));
+      return;
+    }
+    if (sourceFilter === 'curseforge' && curseForgeResult.status === 'rejected') throw curseForgeResult.reason;
     if (modrinthResult.status === 'rejected' && (curseForgeResult.status === 'rejected' || curseForgeResult.value?.configured === false)) throw modrinthResult.reason;
     const modrinthResponse = modrinthResult.status === 'fulfilled' ? modrinthResult.value : { hits: [], total_hits: 0 };
     const curseForgeResponse = curseForgeResult.status === 'fulfilled' ? curseForgeResult.value : { hits: [], total_hits: 0, configured: false };
     const modrinthHits = (modrinthResponse.hits || []).map(hit => ({ ...hit, source: 'modrinth' }));
     const curseForgeHits = (curseForgeResponse.hits || []).map(hit => ({ ...hit, source: 'curseforge' }));
-    const officialCatalog = officialDiscoverResults(query, version, loader, category);
+    const officialCatalog = sourceFilter === 'curseforge' ? [] : officialDiscoverResults(query, version, loader, category);
     const officialHits = append ? [] : officialCatalog;
     const hits = [...officialHits, ...interleaveDiscoverResults(modrinthHits, curseForgeHits)];
     state.searchOffset += SEARCH_LIMIT;
@@ -8334,10 +9698,16 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
   try {
     const project = await api.getCurseForgeProject(projectId);
     const defaultInstance = state.currentInstance || sortByRecency(state.instances)[0] || null;
+    const typeLabel = ({ mod: 'Mod', resourcepack: 'Resource pack', modpack: 'Modpack', datapack: 'Data pack', shader: 'Shader' })[type] || 'Content';
     overlay.querySelector('.modal-title').textContent = project.name || 'CurseForge project';
-    overlay.querySelector('.modal-sub').textContent = `CurseForge · ${fmtNum(project.downloadCount || 0)} downloads`;
+    overlay.querySelector('.modal-sub').textContent = `CurseForge ${typeLabel} · by ${project.authors?.[0]?.name || 'unknown'} · ${fmtNum(project.downloadCount || 0)} downloads`;
     const body = overlay.querySelector('.modal-body');
-    body.innerHTML = `<p class="modal-description">${escHtml(project.summary || 'No description supplied.')}</p>
+    const websiteUrl = project.links?.websiteUrl || null;
+    body.innerHTML = `<div class="cf-modal-heading">
+        ${project.logo?.url ? `<div class="instance-icon project-modal-icon"><img src="${escHtml(project.logo.url)}" alt=""></div>` : ''}
+        <p class="modal-description">${escHtml(project.summary || 'No description supplied.')}</p>
+      </div>
+      ${Array.isArray(project.categories) && project.categories.length ? `<div class="cf-modal-meta">${project.categories.slice(0, 6).map(c => `<span class="chip">${escHtml(c.name || '')}</span>`).join('')}</div>` : ''}
       ${type === 'modpack' ? `
         <label>New instance name</label><input id="cf-pack-name" class="input" maxlength="64" value="${escHtml(project.name || 'CurseForge Pack')}">
       ` : `
@@ -8345,29 +9715,59 @@ async function showCurseForgeDetails(projectId, focusInstall = false) {
       `}
       <label>Compatible file</label><select id="cf-file" class="input"><option>Loading…</option></select>
       <div id="cf-world-wrap" hidden><label>World</label><select id="cf-world" class="input"></select></div>
+      <div id="cf-manual-wrap" class="cf-manual-download-bar" hidden>
+        <span>This file disables third-party launcher downloads.</span>
+        <button type="button" class="btn btn-secondary btn-sm" id="cf-manual-download-btn">Open on CurseForge</button>
+      </div>
       <div id="cf-error" class="modal-error text-muted" hidden></div>`;
+    if (websiteUrl) {
+      const footer = overlay.querySelector('.modal-footer');
+      const viewBtn = document.createElement('button');
+      viewBtn.type = 'button';
+      viewBtn.className = 'btn btn-ghost';
+      viewBtn.textContent = 'View on CurseForge';
+      viewBtn.addEventListener('click', () => api.openCurseForgeUrl(websiteUrl));
+      footer?.insertBefore(viewBtn, footer.firstChild);
+    }
     overlay.querySelector('[data-close-action]').addEventListener('click', close);
     const instanceSelect = body.querySelector('#cf-instance');
     const fileSelect = body.querySelector('#cf-file');
     const worldWrap = body.querySelector('#cf-world-wrap');
     const worldSelect = body.querySelector('#cf-world');
+    const manualWrap = body.querySelector('#cf-manual-wrap');
+    const manualBtn = body.querySelector('#cf-manual-download-btn');
     const error = body.querySelector('#cf-error');
     let availableFiles = [];
     const showError = message => { error.hidden = false; error.textContent = message; };
+    const releaseBadge = rt => (rt === 1 ? 'Release' : rt === 2 ? 'Beta' : rt === 3 ? 'Alpha' : '');
+    const syncManualDownloadBar = () => {
+      const selected = availableFiles.find(f => String(f.id) === String(fileSelect.value));
+      const blocked = Boolean(selected && !selected.downloadUrl);
+      if (manualWrap) manualWrap.hidden = !blocked || !websiteUrl;
+    };
+    manualBtn?.addEventListener('click', () => {
+      const selected = availableFiles.find(f => String(f.id) === String(fileSelect.value));
+      const url = websiteUrl && selected?.id ? `${websiteUrl.replace(/\/+$/, '')}/files/${selected.id}` : websiteUrl;
+      if (url) void api.openCurseForgeUrl(url);
+    });
+    fileSelect.addEventListener('change', syncManualDownloadBar);
     const loadOptions = async () => {
       error.hidden = true;
       fileSelect.disabled = true;
       fileSelect.innerHTML = '<option>Loading…</option>';
       try {
-        availableFiles = await api.getCurseForgeFiles(projectId, type === 'modpack' ? null : instanceSelect.value);
+        availableFiles = await api.getCurseForgeFiles(projectId, type === 'modpack' ? null : instanceSelect.value, type);
         fileSelect.innerHTML = '';
         for (const file of availableFiles) {
           const option = document.createElement('option');
           option.value = String(file.id);
-          option.textContent = file.displayName || file.fileName || String(file.id);
+          const badge = releaseBadge(file.releaseType);
+          const sizeLabel = Number(file.fileLength) > 0 ? ` · ${formatBytes(file.fileLength)}` : '';
+          option.textContent = `${file.displayName || file.fileName || String(file.id)}${badge ? ` [${badge}]` : ''}${sizeLabel}`;
           fileSelect.appendChild(option);
         }
         fileSelect.disabled = !availableFiles.length;
+        syncManualDownloadBar();
         if (!availableFiles.length) showError('No compatible files were found for this instance.');
         if (type === 'datapack') {
           const worlds = await api.getInstanceWorlds(instanceSelect.value);
